@@ -91,3 +91,8 @@
 ## Post-Completion
 - Install Kiro CLI (`irm https://cli.kiro.dev/install.ps1 | iex`), run `kiro-cli login`, then exercise each feature against the real agent and update docs/protocol-notes.md with the recorded `initialize` exchange and any spec deviations.
 - Manual UX pass on Linux and macOS (path resolution defaults, terminal behaviour).
+
+## Follow-ups (from revmux rounds, not blocking)
+- [ ] `src/features/diff.ts:405` — diff entries and permission selection are keyed by tool-call id only; add the session id so two sessions reusing an id can never resolve each other's proposal
+- [ ] `src/ui/chatController.ts:1384` — automatic diff opening indexes the filtered diff list while card links use content indexes; use one indexing scheme
+- [ ] protocol-notes: capture a raw `initialize`/`session/new` exchange with `scripts/record-acp.mjs` on a machine with kiro-cli (sections still marked [unverified])
