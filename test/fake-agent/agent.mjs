@@ -158,6 +158,8 @@ let cannedCwdPinned = false;
 const extensionMethods = ["_kiro/session/context", "_kiro/account/getUsage"];
 /** Delay between accepting `_session/steer` and reporting `steering_injected` (lets tests observe the badge). */
 const STEER_INJECT_DELAY_MS = 150;
+/** While the `slow-steer` scenario runs, `_session/steer` fails only after this long (a late refusal, see D22). */
+const SLOW_STEER_REFUSAL_MS = 1500;
 
 /** Update kinds kept in the per-session history for `session/load` replay. */
 const HISTORY_KINDS = new Set([
@@ -537,7 +539,7 @@ const app = acp
     if (!session.title) session.title = text.trim().slice(0, 40) || null;
 
     const abort = new AbortController();
-    const turn = { cancelled: false, signal: abort.signal, abort, vars: { cwd: session.cwd, sessionId: session.id } };
+    const turn = { scenario, cancelled: false, signal: abort.signal, abort, vars: { cwd: session.cwd, sessionId: session.id } };
     session.turn = turn;
     try {
       const recording = loadRecording(scenario);
@@ -651,14 +653,22 @@ if (isV2) {
   // runs is accepted at once; a little later (like the real CLI, which injects
   // at the next model round trip) the session reports `steering_injected` and
   // the running turn answers with `Steered: <text>`. Without a turn: -32602.
+  // During the `slow-steer` scenario the request is refused instead, but only
+  // after SLOW_STEER_REFUSAL_MS — whether or not the turn was cancelled
+  // meanwhile — so the client sees a refusal for a turn that already ended.
   app.onRequest(
     "_session/steer",
     (params) => params,
-    (ctx) => {
+    async (ctx) => {
       requireAuth();
       const session = requireSession(ctx.params?.sessionId);
       const turn = session.turn;
       if (!turn) throw acp.RequestError.invalidParams(undefined, "no active turn to steer");
+      if (turn.scenario === "slow-steer") {
+        log(`steer for ${session.id} will be refused in ${SLOW_STEER_REFUSAL_MS} ms (slow-steer)`);
+        await sleep(SLOW_STEER_REFUSAL_MS);
+        throw acp.RequestError.invalidParams(undefined, "steer refused (slow-steer scenario)");
+      }
       const text = (ctx.params.prompt ?? [])
         .filter((b) => b && b.type === "text")
         .map((b) => b.text)

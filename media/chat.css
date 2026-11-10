@@ -292,6 +292,7 @@ summary:focus-visible {
 }
 .status-pill.status-needs_input .dot {
   background: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-charts-yellow));
+  animation: kiro-attention-blink 1s steps(1, end) infinite;
 }
 .status-pill.status-working .status-text,
 .status-pill.status-needs_input .status-text {
@@ -529,6 +530,44 @@ summary:focus-visible {
 .user-text {
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* Delivery badge at the end of a user bubble: "steering…" (pulsing) / "queued" (muted). */
+.delivery {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 0 0 auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--kiro-border);
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--kiro-dim);
+  background: var(--vscode-editorWidget-background, transparent);
+  white-space: nowrap;
+  user-select: none;
+}
+.delivery-glyph {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+.delivery-glyph .spinner {
+  width: 9px;
+  height: 9px;
+  border-width: 1.5px;
+}
+.delivery-steering {
+  color: var(--vscode-progressBar-background, var(--kiro-accent));
+  border-color: color-mix(in srgb, var(--vscode-progressBar-background, var(--kiro-accent)) 45%, var(--kiro-border));
+  animation: kiro-pulse 1.6s ease-in-out infinite;
+}
+.delivery-queued {
+  opacity: 0.8;
 }
 .msg-agent {
   align-self: stretch;
@@ -1078,6 +1117,22 @@ summary:focus-visible {
   color: var(--kiro-dim);
   font-size: 11px;
 }
+/* Session-wide "allow all …" policies: visible secondary buttons with a check. */
+.perm-policies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.perm-policy-allow {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+.perm-policy-icon {
+  flex: none;
+  color: var(--vscode-charts-green);
+}
+/* The matching "reject all …" policies: a muted link row beneath. */
 .perm-always {
   display: flex;
   flex-wrap: wrap;
@@ -1333,6 +1388,13 @@ summary:focus-visible {
 .send-btn.is-stop .icon svg {
   fill: currentColor;
 }
+/* Dedicated Stop next to Send while the host accepts prompts mid-turn. */
+.composer-stop {
+  margin-left: 6px;
+}
+.composer-stop + .send-btn {
+  margin-left: 4px;
+}
 .send-btn:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 1px;
@@ -1428,6 +1490,16 @@ summary:focus-visible {
     opacity: 0.5;
   }
 }
+/* Hard on/off blink for "needs input" indicators (used with `steps(1, end)`, ~1s period). */
+@keyframes kiro-attention-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
 @keyframes kiro-dot {
   0%,
   70%,
@@ -1454,9 +1526,14 @@ summary:focus-visible {
   .caret,
   .status-pill .dot,
   .working-dots i,
+  .delivery-steering,
   .tool-pending,
   .tool-in_progress {
     animation: none;
+  }
+  /* A blinking indicator stays fully visible when static. */
+  .status-pill.status-needs_input .dot {
+    opacity: 1;
   }
   .working-dots i {
     opacity: 1;
@@ -1643,38 +1720,13 @@ summary:focus-visible {
     width: 44px;
   }
 
-  .sp-new {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    flex: 0 0 auto;
-    height: 28px;
-    margin: 8px 8px 4px;
-    padding: 0 8px;
-    border-radius: 6px;
-    border: 1px dashed var(--kiro-border);
-    background: transparent;
-    color: var(--vscode-foreground);
-    font: inherit;
-    font-size: 12px;
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-  }
-  .sp-new:hover {
-    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-    border-style: solid;
-  }
-  .sp-new .icon {
-    color: var(--kiro-accent);
-  }
-  .sp-new:focus-visible,
   .sp-toggle:focus-visible,
   .sp-close:focus-visible {
     outline: 1px solid var(--vscode-focusBorder);
     outline-offset: -1px;
   }
 
+  /* The list is the first thing in the panel (New / Past sessions live in the header). */
   .sp-list {
     display: flex;
     flex-direction: column;
@@ -1683,7 +1735,7 @@ summary:focus-visible {
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 2px 8px;
+    padding: 8px 8px 2px;
   }
   .sp-row {
     display: flex;
@@ -1787,9 +1839,10 @@ summary:focus-visible {
   .sp-status-idle {
     color: var(--kiro-dim);
   }
+  /* Blinks on/off (expanded and collapsed alike); static under reduced motion below. */
   .sp-status-needs_input {
     color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-charts-yellow));
-    animation: kiro-pulse 2s ease-in-out infinite;
+    animation: kiro-attention-blink 1s steps(1, end) infinite;
   }
   /* The "!" is cut out of the disc in the background colour. */
   .sp-status-needs_input .mark {
@@ -1846,7 +1899,6 @@ summary:focus-visible {
   .session-panel.collapsed .sp-close {
     display: none;
   }
-  .session-panel.collapsed .sp-new,
   .session-panel.collapsed .sp-row,
   .session-panel.collapsed .sp-toggle {
     justify-content: center;

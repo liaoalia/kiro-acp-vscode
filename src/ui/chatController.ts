@@ -223,6 +223,12 @@ class ChatSession {
   readonly steering = new Set<string>();
   /** `_session/steer` failed once (e.g. -32601): later mid-turn prompts queue directly. */
   steerUnsupported = false;
+  /**
+   * Bumped whenever a turn starts or ends (D22): a steer rejection that
+   * arrives after its turn ended compares this to the value it captured and
+   * drops the message instead of queueing it into a new turn.
+   */
+  turnGeneration = 0;
   updatedAt = Date.now();
 
   constructor(
@@ -872,15 +878,12 @@ export class ChatController implements vscode.Disposable {
   // ---------------------------------------------------------------------
 
   /**
-   * Kind of a tool call known to any live session's transcript: the
+   * Kind of a tool call known to the transcript of `sessionId` (and of that
+   * session only — tool call ids repeat across sessions): the
    * `PermissionManager.resolveKind` hook for requests without `kind` (D23).
    */
-  toolCallKind(toolCallId: string): ToolKind | undefined {
-    for (const session of this.sessions.values()) {
-      const call = session.transcript.toolCalls[toolCallId];
-      if (call) return call.kind;
-    }
-    return undefined;
+  toolCallKind(sessionId: string, toolCallId: string): ToolKind | undefined {
+    return this.sessions.get(sessionId)?.transcript.toolCalls[toolCallId]?.kind;
   }
 
   private async createSession(groupId: string): Promise<ChatSession | null> {
@@ -1455,6 +1458,7 @@ export class ChatController implements vscode.Disposable {
    * reports the stop reason (or the failure) when the agent answers.
    */
   private async runTurn(agent: KiroAgent, session: ChatSession, blocks: acp.ContentBlock[]): Promise<void> {
+    session.turnGeneration++;
     this.setTurnActive(session, true);
     try {
       const response = await agent.prompt(session.id, blocks);
@@ -1502,6 +1506,10 @@ export class ChatController implements vscode.Disposable {
    * send it through `_session/steer`; when the agent refuses (method unknown,
    * no turn, …) the message becomes `queued` and goes out as a normal prompt
    * once the turn ends. A session whose steer failed once queues directly.
+   * A refusal that lands after the steered turn ended (Stop, `/cancel`,
+   * `/clear`, an error, or a normal end) is not queued: queueing then would
+   * start a turn the user already stopped, so the message is dropped with a
+   * notice instead.
    */
   private async promptDuringTurn(
     agent: KiroAgent,
@@ -1519,6 +1527,7 @@ export class ChatController implements vscode.Disposable {
     const messageId = this.echoUserMessage(session, text, chips, "steering");
     this.deps.contextTracker.clearExplicit();
     session.steering.add(messageId);
+    const generation = session.turnGeneration;
     const params = { sessionId: session.id, prompt: blocks };
     this.deps.output.appendLine(`[info] steer ${session.id}: ${STEER_METHOD} ${safeJson(params)}`);
     try {
@@ -1529,9 +1538,18 @@ export class ChatController implements vscode.Disposable {
       this.deps.output.appendLine(
         `[info] steer ${session.id}: failed${code}: ${errorMessage(error)}; queueing mid-turn prompts instead`,
       );
-      session.steerUnsupported = true;
       session.steering.delete(messageId);
       if (!this.sessions.has(session.id)) return;
+      if (session.turnGeneration !== generation || !session.turnActive) {
+        // The steered turn is over (cancelled, cleared, failed or ended): the
+        // refusal says nothing about steering support, and queueing now would
+        // start a new turn the user did not ask for.
+        this.deps.output.appendLine(`[info] steer ${session.id}: the turn ended before the refusal; message dropped`);
+        this.setDelivery(session, messageId, null);
+        this.notice(session, "info", "Message not sent: the turn ended before it was delivered.");
+        return;
+      }
+      session.steerUnsupported = true;
       this.setDelivery(session, messageId, "queued");
       this.enqueue(session, { text, chips, blocks, messageId });
     }
@@ -1584,6 +1602,7 @@ export class ChatController implements vscode.Disposable {
    * an error, else its first prompt starts the next turn (D22).
    */
   private endTurn(session: ChatSession, stopReason: acp.StopReason | "error"): void {
+    session.turnGeneration++;
     this.setTurnActive(session, false, stopReason);
     this.clearSteering(session);
     if (stopReason === "cancelled" || stopReason === "error") {

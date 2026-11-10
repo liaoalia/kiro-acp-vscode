@@ -1,0 +1,22 @@
+{
+  "name": "permission-nokind-exec",
+  "description": "Reuses the tool call id of permission-nokind with another kind: the tool_call update carries kind=execute but the session/request_permission toolCall has no kind, so the client must resolve it from this session's own transcript (not from another session that ran permission-nokind). Carries Kiro consent meta (shell on `echo nokind`).",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "call-nokind", "title": "Run echo nokind", "kind": "execute", "status": "pending" } },
+    { "kind": "permission",
+      "toolCall": { "toolCallId": "call-nokind", "title": "Run echo nokind", "status": "pending" },
+      "options": [
+        { "optionId": "accept", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "reject", "name": "Deny", "kind": "reject_once" },
+        { "optionId": "always-reject", "name": "Always deny", "kind": "reject_always" }
+      ],
+      "meta": { "kiro": { "consent": { "capability": "shell", "resource": "echo nokind", "persistableConsent": true } } },
+      "allow": [
+        { "kind": "update", "update": { "sessionUpdate": "tool_call_update", "toolCallId": "call-nokind", "content": [ { "type": "content", "content": { "type": "text", "text": "nokind\n" } } ] } }
+      ],
+      "reject": []
+    },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Done." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

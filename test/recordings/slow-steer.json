@@ -1,0 +1,11 @@
+{
+  "name": "slow-steer",
+  "description": "Same stream as `slow` (20 chunks 100 ms apart), but while this scenario runs the fake agent answers `_session/steer` with an error only after 1.5 s — so a test can cancel the turn before the steer is refused and check that the late refusal does not queue the message into a new turn (D22).",
+  "steps": [
+    { "kind": "repeat", "times": 20, "steps": [
+      { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "slow {{i}} " } } },
+      { "kind": "delay", "ms": 100 }
+    ] },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

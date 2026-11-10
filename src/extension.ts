@@ -32,9 +32,11 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
   };
 
   // Kiro V3 omits `toolCall.kind` on permission requests; the controller knows
-  // the kind from the tool_call update that preceded it (D23).
+  // the kind from the tool_call update that preceded it in that session (D23).
   let controller: ChatController | undefined;
-  const permissions = new PermissionManager({ resolveKind: (toolCallId) => controller?.toolCallKind(toolCallId) });
+  const permissions = new PermissionManager({
+    resolveKind: (sessionId, toolCallId) => controller?.toolCallKind(sessionId, toolCallId),
+  });
   const diff = new DiffManager(permissions, { logger });
   const fs = new FsService({ writeInterceptor: (p, c) => diff.interceptWrite(p, c) });
   const terminal = new TerminalService({ logger });

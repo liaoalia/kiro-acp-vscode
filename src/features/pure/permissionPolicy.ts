@@ -3,11 +3,13 @@
  *
  * "Always allow / always reject for this session" is remembered per session
  * under one of three scopes — the tool kind (`kind:<kind>`), the Kiro consent
- * capability (`cap:<capability>`) or the exact consent resource
- * (`res:<resource>`) — and auto-selects one of the options the agent supplied
- * for later requests. The most specific rule wins (resource, then capability,
- * then kind). The policy never invents option ids: when the agent offers no
- * matching option the request falls through to the user.
+ * capability (`cap:<capability>`) or the exact consent resource qualified by
+ * its capability (`res:<capability>\u0000<resource>`, so a rule for writing a
+ * file never answers a request to run or read it) — and auto-selects one of
+ * the options the agent supplied for later requests. The most specific rule
+ * wins (resource, then capability, then kind). The policy never invents
+ * option ids: when the agent offers no matching option the request falls
+ * through to the user.
  *
  * vscode-free; unit-tested in `test/features-permissionPolicy.test.ts`.
  */
@@ -62,14 +64,37 @@ export function looksLikePath(resource: string, platform?: NodeJS.Platform): boo
   return isAbsolutePath(resource, platform);
 }
 
-/** Canonical form of a resource for the `res:` scope (file paths normalised, everything else verbatim). */
-export function normalizeResource(resource: string, platform?: NodeJS.Platform): string {
-  return looksLikePath(resource, platform) ? normalizeFsPath(resource, platform) : resource;
+/** Consent capabilities whose resource is a file-system path. */
+const FS_CAPABILITIES: ReadonlySet<string> = new Set(["fs_read", "fs_write"]);
+/** Tool kinds whose resource is a file-system path (when the capability does not say). */
+const FS_TOOL_KINDS: ReadonlySet<string> = new Set<ToolKind>(["read", "edit", "delete", "move"]);
+
+/**
+ * True when the consent resource of `subject` names a file-system entry: the
+ * capability is `fs_read`/`fs_write`, or (without a capability) the tool kind
+ * is a file operation. Only such resources are path-normalised; a shell
+ * command stays verbatim however path-like it looks (D23).
+ */
+export function isFsResource(subject: Pick<PolicySubject, "toolKind" | "capability">): boolean {
+  const capability = subject.capability?.trim();
+  if (capability) return FS_CAPABILITIES.has(capability);
+  return FS_TOOL_KINDS.has(subject.toolKind);
+}
+
+/**
+ * Canonical form of a resource for the `res:` scope: an absolute path of a
+ * file-system subject is normalised with `normalizeFsPath`; everything else
+ * (a shell command, a relative path, any non-fs resource) is kept verbatim.
+ */
+export function normalizeResource(resource: string, fsResource: boolean, platform?: NodeJS.Platform): string {
+  return fsResource && looksLikePath(resource, platform) ? normalizeFsPath(resource, platform) : resource;
 }
 
 /**
  * The rule key of `scope` for `subject` (`kind:edit`, `cap:fs_write`,
- * `res:/abs/path`), or `undefined` when the subject lacks that field.
+ * `res:fs_write\u0000/abs/path`), or `undefined` when the subject lacks that
+ * field. The resource key carries the capability (empty when absent) so a
+ * rule remembered for one capability never matches another on the same path.
  */
 export function policyKey(scope: PermissionScope, subject: PolicySubject, platform?: NodeJS.Platform): string | undefined {
   switch (scope) {
@@ -77,8 +102,11 @@ export function policyKey(scope: PermissionScope, subject: PolicySubject, platfo
       return `kind:${subject.toolKind}`;
     case "capability":
       return subject.capability ? `cap:${subject.capability}` : undefined;
-    case "resource":
-      return subject.resource ? `res:${normalizeResource(subject.resource, platform)}` : undefined;
+    case "resource": {
+      if (!subject.resource) return undefined;
+      const resource = normalizeResource(subject.resource, isFsResource(subject), platform);
+      return `res:${subject.capability ?? ""}\u0000${resource}`;
+    }
     default:
       return undefined;
   }
@@ -191,8 +219,11 @@ export function decisionOfOption(
 /**
  * The session-wide policies worth offering for a request, with labels, most
  * general first: always the tool kind; the consent capability when it says
- * something the kind does not; the consent resource when present (a file
- * path is named by its basename, anything else — a shell command — verbatim).
+ * something the kind does not; the consent resource when present, worded by
+ * the capability (else the kind): "Allow all changes to <basename>" for
+ * `fs_write`/`edit`, "Allow reading <basename>" for `fs_read`/`read`,
+ * `Allow "<command>" every time` for `shell`/`execute`, and
+ * "Allow <capability> on <basename|resource>" for anything else.
  */
 export function offeredPolicies(subject: PolicySubject, platform?: NodeJS.Platform): OfferedPolicy[] {
   const out: OfferedPolicy[] = [];
@@ -212,23 +243,31 @@ export function offeredPolicies(subject: PolicySubject, platform?: NodeJS.Platfo
   }
   const resource = subject.resource;
   if (resource && resource.trim().length > 0) {
-    if (looksLikePath(resource, platform)) {
-      const base = basenameOf(resource, platform);
-      out.push({
-        scope: "resource",
-        label: `Allow all changes to ${base} this session`,
-        rejectLabel: `Reject all changes to ${base} this session`,
-      });
-    } else {
-      const quoted = JSON.stringify(resource);
-      out.push({
-        scope: "resource",
-        label: `Allow ${quoted} every time this session`,
-        rejectLabel: `Reject ${quoted} every time this session`,
-      });
-    }
+    const [label, rejectLabel] = resourceLabels(subject, resource, platform);
+    out.push({ scope: "resource", label: `${label} this session`, rejectLabel: `${rejectLabel} this session` });
   }
   return out;
+}
+
+/** Allow / reject labels (without the "this session" suffix) of the resource policy, worded by capability. */
+function resourceLabels(subject: PolicySubject, resource: string, platform?: NodeJS.Platform): [string, string] {
+  const what = subject.capability?.trim() || subject.toolKind;
+  const name = isFsResource(subject) && looksLikePath(resource, platform) ? basenameOf(resource, platform) : resource;
+  switch (what) {
+    case "fs_write":
+    case "edit":
+      return [`Allow all changes to ${name}`, `Reject all changes to ${name}`];
+    case "fs_read":
+    case "read":
+      return [`Allow reading ${name}`, `Reject reading ${name}`];
+    case "shell":
+    case "execute": {
+      const quoted = JSON.stringify(resource);
+      return [`Allow ${quoted} every time`, `Reject ${quoted} every time`];
+    }
+    default:
+      return [`Allow ${what} on ${name}`, `Reject ${what} on ${name}`];
+  }
 }
 
 function basenameOf(p: string, platform?: NodeJS.Platform): string {

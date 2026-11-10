@@ -265,6 +265,17 @@ badge and handled one of two ways:
   failed or lost its agent drop the whole queue: every badge clears and an
   info notice says "N queued message(s) discarded". Nothing is sent that the
   user did not see go.
+- **Turn generation.** Each session counts turn starts and ends
+  (`ChatSession.turnGeneration`, bumped in `runTurn` and `endTurn`). The
+  steer call captures the generation before it goes out; its refusal only
+  falls back to the queue when the generation is unchanged and the turn is
+  still active. A refusal that lands after the turn ended — Stop, `/cancel`,
+  `/clear` (which cancels), an error, or a normal end while the agent was
+  slow to answer — clears the `steering` badge and posts the info notice
+  "Message not sent: the turn ended before it was delivered." instead of
+  queueing: `enqueue` on an idle session drains at once, which would start a
+  turn the user had just stopped. Such a refusal also does not set
+  `steerUnsupported`, since it says nothing about steering support.
 
 Badge semantics in one line: `steering` = the agent has it, not yet acted on;
 `queued` = still on the client, will go when the turn ends; no badge =
@@ -299,26 +310,40 @@ the request alone, the client policy (D6) therefore landed on `other` and
 read "Always allow other this session". Two changes:
 
 - **Kind resolution.** `PermissionManager.request()` takes the kind as
-  `req.toolCall.kind ?? resolveKind(toolCallId) ?? "other"`, where
-  `resolveKind` (constructor option, wired in `extension.ts`) looks the tool
-  call up in every live session's transcript (`ChatController.toolCallKind`):
-  the `tool_call` update that precedes the request always carries the kind.
+  `req.toolCall.kind ?? resolveKind(req.sessionId, toolCallId) ?? "other"`,
+  where `resolveKind` (constructor option, wired in `extension.ts`) looks the
+  tool call up in the transcript of the request's session only
+  (`ChatController.toolCallKind(sessionId, toolCallId)`): the `tool_call`
+  update that precedes the request always carries the kind, and tool call
+  ids are only unique within a session (the fake agent reuses `call-nokind`
+  for an edit and for an execute; a lookup across sessions would take the
+  other session's kind and apply the wrong kind policy).
 - **Scopes.** Policies are remembered per session under a key of one of
   three scopes (`src/features/pure/permissionPolicy.ts`): `kind:<kind>`,
-  `cap:<capability>` (the consent capability) and `res:<resource>` (the
-  consent resource verbatim; a value that is an absolute path is normalised
-  with `normalizeFsPath` so `a/../b.txt` and `b.txt` match). `decide()`
-  consults resource, then capability, then kind — the most specific rule
-  wins. `setPolicy(requestId, decision, scope = "kind")` records one;
-  `clearPolicies(sessionId)` drops all scopes of a session. Every pending
-  request carries the policies worth offering in `PermissionView.policies`
-  with ready-made labels: always the kind ("Allow all edits this session";
-  nouns per kind, `other` → "actions of this kind"), the capability when
-  present and different from the kind ("Allow all fs_write this session"),
-  and the resource — "Allow all changes to <basename> this session" for a
-  path, `Allow "<resource>" every time this session` for anything else such
-  as a shell command. The webview sends `permissionAlways { scope }`; the
-  default stays `kind`.
+  `cap:<capability>` (the consent capability) and
+  `res:<capability>\u0000<resource>` — the consent resource qualified by the
+  capability (empty when the request carries none), so "allow all changes
+  to deploy.sh" (`fs_write`) never answers a `shell` request whose resource
+  is the same path, and an `fs_read` rule never answers an `fs_write`. The
+  resource is kept verbatim unless the subject is a file-system one — the
+  capability is `fs_read`/`fs_write`, or without a capability the tool kind
+  is `read`/`edit`/`delete`/`move` (`isFsResource`) — in which case an
+  absolute path is normalised with `normalizeFsPath` so `a/../b.txt` and
+  `b.txt` match; a shell command such as `/bin/echo x/../rm -rf target` is
+  never collapsed. `decide()` consults resource, then capability, then kind
+  — the most specific rule wins. `setPolicy(requestId, decision, scope =
+  "kind")` records one; `clearPolicies(sessionId)` drops all scopes of a
+  session. Every pending request carries the policies worth offering in
+  `PermissionView.policies` with ready-made labels: always the kind ("Allow
+  all edits this session"; nouns per kind, `other` → "actions of this
+  kind"), the capability when present and different from the kind ("Allow
+  all fs_write this session"), and the resource, worded by the capability
+  (else the kind): "Allow all changes to <basename> this session" for
+  `fs_write`/`edit`, "Allow reading <basename> this session" for
+  `fs_read`/`read`, `Allow "<command>" every time this session` for
+  `shell`/`execute`, and "Allow <capability> on <basename|resource> this
+  session" for anything else. The webview sends `permissionAlways { scope }`;
+  the default stays `kind`.
 
 Why client-side: Kiro's own "Always deny" is a `reject_always` option and
 its persistent consent (`_meta.kiro.consent { scope: "workspace", … }` on the

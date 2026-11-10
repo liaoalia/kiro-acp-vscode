@@ -21,11 +21,12 @@ import {
 
 export interface PermissionManagerOptions {
   /**
-   * Kind of an already-known tool call (from the session transcripts), used
-   * when `session/request_permission.toolCall` carries no `kind` — the real
-   * Kiro CLI omits it (D23).
+   * Kind of an already-known tool call of `sessionId` (from that session's
+   * transcript), used when `session/request_permission.toolCall` carries no
+   * `kind` — the real Kiro CLI omits it (D23). Tool call ids are only unique
+   * within a session, so the lookup never consults other sessions.
    */
-  resolveKind?: (toolCallId: string) => ToolKind | undefined;
+  resolveKind?: (sessionId: string, toolCallId: string) => ToolKind | undefined;
 }
 
 /** Everything the manager knows about a pending request. */
@@ -157,10 +158,12 @@ export class PermissionManager implements vscode.Disposable {
     signal: AbortSignal,
   ): Promise<acp.RequestPermissionResponse> {
     const toolCallId = req.toolCall?.toolCallId ?? "";
-    // The request's own kind, else the kind of the tool call it refers to
-    // (Kiro V3 sends none on the request), else `other`.
+    // The request's own kind, else the kind of the tool call it refers to in
+    // the request's session (Kiro V3 sends none on the request), else `other`.
     const toolKind: ToolKind =
-      asToolKind(req.toolCall?.kind) ?? (toolCallId ? this.options.resolveKind?.(toolCallId) : undefined) ?? "other";
+      asToolKind(req.toolCall?.kind) ??
+      (toolCallId ? this.options.resolveKind?.(req.sessionId, toolCallId) : undefined) ??
+      "other";
     const options = Array.isArray(req.options) ? req.options : [];
     const consent = readConsent(req._meta);
     const auto = decide(this.policy, req.sessionId, subjectOf({ toolKind, consent }), options);

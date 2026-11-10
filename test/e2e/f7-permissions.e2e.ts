@@ -176,3 +176,53 @@ test("F7.4 a request without toolCall.kind takes the kind of the known tool call
   assertEqual(await workspaceFileExists("config.json"), false, "config.json was never written");
   assertEqual(await workspaceFileExists("nokind.txt"), false, "nokind.txt was never written");
 });
+
+test("F7.5 a kind-less request resolves its kind from its own session's transcript, not from another session reusing the id", async ({ api, recorder }) => {
+  // Session A: the fake agent's `call-nokind` is an edit; remember "allow all edits" there.
+  const sessionA = await freshSession(api);
+  await closeAllEditors();
+  await deleteWorkspaceFile("nokind.txt");
+  const turnA = api.controller.prompt("/scenario permission-nokind", []);
+  const editRequest = await waitFor(() => api.permissions.pending()[0], 15_000, "session A's pending permission");
+  assertEqual(editRequest.toolCallId, "call-nokind", "session A's tool call id");
+  assertEqual(editRequest.kind, "edit", "session A resolves call-nokind as an edit");
+  await waitFor(() => proposedDiffTabs().length > 0, 15_000, "the proposal diff editor");
+  await api.controller.handle({ type: "permissionAlways", requestId: editRequest.requestId, decision: "allow", scope: "kind" });
+  await withTimeout(turnA, 30_000, "session A's turn");
+  await waitFor(() => !api.controller.snapshot().turnActive, 15_000, "session A's turn to end");
+  await waitFor(() => workspaceFileExists("nokind.txt"), 15_000, "nokind.txt to be written");
+  await waitFor(() => !proposalTabsOpen(), 15_000, "proposal editors to close");
+  assertEqual(toolCall(api.controller.snapshot(), "call-nokind").kind, "edit", "A's transcript keeps call-nokind as an edit");
+
+  // Session B (A stays open): the same tool call id is an execute, and the request again carries no kind.
+  const sessionB = await freshSession(api);
+  assert(sessionB !== sessionA, "a second session");
+  assert(
+    api.controller.snapshot().sessions.some((s) => s.id === sessionA),
+    "session A is still open while B asks",
+  );
+  const mark = recorder.mark();
+  const turnB = api.controller.prompt("/scenario permission-nokind-exec", []);
+  const execRequest = await waitFor(() => api.permissions.pending()[0], 15_000, "session B's pending permission");
+  assertEqual(execRequest.toolCallId, "call-nokind", "session B reuses the tool call id");
+  assertEqual(execRequest.kind, "execute", "the kind comes from B's own transcript, not from A's edit");
+  assertEqual(execRequest.consent?.capability, "shell", "consent capability");
+  assertEqual(execRequest.consent?.resource, "echo nokind", "consent resource");
+  assertEqual(recorder.ofType("permission", mark).length, 1, "B's request was shown: A's 'allow all edits' did not answer it");
+  const policies = execRequest.policies ?? [];
+  assertEqual(policies.map((p) => p.scope).join(","), "kind,capability,resource", "offered policy scopes");
+  assertEqual(policies[0]?.label, "Allow all commands this session", "kind label follows the execute kind");
+  assertEqual(policies[1]?.label, "Allow all shell this session", "capability label");
+  assertEqual(policies[2]?.label, 'Allow "echo nokind" every time this session', "resource label is worded for a command");
+  assertEqual(toolCall(api.controller.snapshot(), "call-nokind").kind, "execute", "B's transcript has call-nokind as an execute");
+
+  const reject = execRequest.options.find((o) => o.kind === "reject_once");
+  assert(reject, "the agent offers a reject_once option");
+  api.permissions.resolve(execRequest.requestId, reject.optionId);
+  await withTimeout(turnB, 30_000, "session B's turn");
+  await waitFor(() => !api.controller.snapshot().turnActive, 15_000, "session B's turn to end");
+  const call = toolCall(api.controller.snapshot(), "call-nokind");
+  assertEqual(call.status, "failed", "B's tool call was denied");
+  assertEqual(call.failureReason, "denied", "B's failure reason");
+  await deleteWorkspaceFile("nokind.txt");
+});
