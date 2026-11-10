@@ -168,4 +168,22 @@ Paste the output of `node scripts/record-acp.mjs` here, redacting tokens.
 
 ## Spec vs. real behaviour differences
 
-None recorded yet.
+None recorded yet (no real `kiro-cli` exchange captured).
+
+## Verification
+
+| # | Feature | Fake agent (unit + extension-host E2E) | Real `kiro-cli acp` |
+|---|---------|----------------------------------------|---------------------|
+| 1 | Chat panel: streaming, tool cards, cancel, new session, mode/model/config pickers | ✅ `test/acp-client.test.ts`, `test/e2e/f1-chat.e2e.ts` (pickers: reducer tests + webview; v2 `models`/`set_model` and v3 `configOptions` both covered by the fake agent) | ⏳ not run – kiro-cli not installed |
+| 2 | Diff editor with Accept/Reject, edited proposal is what gets written | ✅ `test/e2e/f2-diff.e2e.ts` (accept with user edit → disk has the edited text; reject → `failed`/`denied`) | ⏳ |
+| 3 | Live plan document, approve/reject of `switch_mode` requests | ✅ `test/e2e/f3-plan.e2e.ts` | ⏳ (whether Kiro V3 emits a `switch_mode` permission request is unknown) |
+| 4 | `@` file context, active-file chip | ✅ `test/e2e/f4-context.e2e.ts`, `test/features-contentBlocks.test.ts` | ⏳ |
+| 5 | Selection context chip + command/keybinding | ✅ `test/e2e/f5-selection.e2e.ts` | ⏳ |
+| 6 | Client fs (dirty buffers, WorkspaceEdit writes) and terminal methods | ✅ `test/acp-client.test.ts`, `test/e2e/f6-fs-terminal.e2e.ts` | ⏳ |
+| 7 | Permissions: allow once / always for session / reject per tool kind | ✅ `test/features-permissionPolicy.test.ts`, `test/e2e/f7-permissions.e2e.ts` | ⏳ |
+
+To complete the right-hand column: install Kiro CLI, run `kiro-cli login`,
+then (a) `node scripts/record-acp.mjs --prompt "hello" --out docs/recordings/kiro-initialize.ndjson`
+and paste the `initialize` / `session/new` messages above, (b) launch the
+Extension Development Host (`F5`) with default settings and walk through the
+seven features, noting any deviation in the table and in the section above.
