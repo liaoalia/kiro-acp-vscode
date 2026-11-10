@@ -1,14 +1,20 @@
 /**
- * Client-side permission policy (DECISIONS.md D6).
+ * Client-side permission policy (DECISIONS.md D6, D23).
  *
- * "Always allow / always reject for this session" is remembered per
- * `(sessionId, toolKind)` and auto-selects one of the options the agent
- * supplied for later requests. The policy never invents option ids: when the
- * agent offers no matching option the request falls through to the user.
+ * "Always allow / always reject for this session" is remembered per session
+ * under one of three scopes — the tool kind (`kind:<kind>`), the Kiro consent
+ * capability (`cap:<capability>`) or the exact consent resource
+ * (`res:<resource>`) — and auto-selects one of the options the agent supplied
+ * for later requests. The most specific rule wins (resource, then capability,
+ * then kind). The policy never invents option ids: when the agent offers no
+ * matching option the request falls through to the user.
  *
  * vscode-free; unit-tested in `test/features-permissionPolicy.test.ts`.
  */
+import * as path from "node:path";
 import type * as acp from "@agentclientprotocol/sdk";
+import type { PermissionScope, PermissionView, ToolKind } from "../../ui/protocol.js";
+import { isAbsolutePath, normalizeFsPath } from "./textRange.js";
 
 export type PolicyDecision = "allow" | "reject";
 
@@ -18,8 +24,68 @@ export interface OptionLike {
   kind: acp.PermissionOptionKind;
 }
 
-function policyKey(sessionId: string, toolKind: string): string {
-  return `${sessionId}\u0000${toolKind}`;
+/** What a permission request is about: the inputs of every policy scope. */
+export interface PolicySubject {
+  toolKind: string;
+  /** `_meta.kiro.consent.capability` (e.g. `fs_write`, `shell`). */
+  capability?: string;
+  /** `_meta.kiro.consent.resource` verbatim (a file path, a shell command, …). */
+  resource?: string;
+}
+
+export type OfferedPolicy = NonNullable<PermissionView["policies"]>[number];
+
+/** Scopes from the most to the least specific; `decide` consults them in this order. */
+export const SCOPE_PRECEDENCE: readonly PermissionScope[] = ["resource", "capability", "kind"];
+
+/** Plural nouns for the tool-kind labels ("Allow all edits this session"). */
+const KIND_NOUNS: Record<ToolKind, string> = {
+  edit: "edits",
+  read: "reads",
+  execute: "commands",
+  delete: "deletions",
+  move: "moves",
+  search: "searches",
+  fetch: "fetches",
+  switch_mode: "mode switches",
+  think: "thoughts",
+  other: "actions of this kind",
+};
+
+function kindNoun(toolKind: string): string {
+  return (KIND_NOUNS as Record<string, string>)[toolKind] ?? KIND_NOUNS.other;
+}
+
+/** True when a consent resource names a file: an absolute path without line breaks. */
+export function looksLikePath(resource: string, platform?: NodeJS.Platform): boolean {
+  if (/[\r\n]/.test(resource)) return false;
+  return isAbsolutePath(resource, platform);
+}
+
+/** Canonical form of a resource for the `res:` scope (file paths normalised, everything else verbatim). */
+export function normalizeResource(resource: string, platform?: NodeJS.Platform): string {
+  return looksLikePath(resource, platform) ? normalizeFsPath(resource, platform) : resource;
+}
+
+/**
+ * The rule key of `scope` for `subject` (`kind:edit`, `cap:fs_write`,
+ * `res:/abs/path`), or `undefined` when the subject lacks that field.
+ */
+export function policyKey(scope: PermissionScope, subject: PolicySubject, platform?: NodeJS.Platform): string | undefined {
+  switch (scope) {
+    case "kind":
+      return `kind:${subject.toolKind}`;
+    case "capability":
+      return subject.capability ? `cap:${subject.capability}` : undefined;
+    case "resource":
+      return subject.resource ? `res:${normalizeResource(subject.resource, platform)}` : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function ruleKey(sessionId: string, key: string): string {
+  return `${sessionId}\u0000${key}`;
 }
 
 /**
@@ -42,21 +108,35 @@ export function selectOption(
   return undefined;
 }
 
-/** Remembered decisions keyed by `(sessionId, toolKind)`. */
+/** Remembered decisions keyed by `(sessionId, scope key)`; see {@link policyKey}. */
 export class PermissionPolicy {
   private readonly rules = new Map<string, PolicyDecision>();
 
-  /** Record `decision` for every later request of `toolKind` in `sessionId`. */
-  set(sessionId: string, toolKind: string, decision: PolicyDecision): void {
-    this.rules.set(policyKey(sessionId, toolKind), decision);
+  /** Record `decision` for every later request of `sessionId` matching `key`. */
+  set(sessionId: string, key: string, decision: PolicyDecision): void {
+    this.rules.set(ruleKey(sessionId, key), decision);
   }
 
-  /** The remembered decision, if any. */
-  get(sessionId: string, toolKind: string): PolicyDecision | undefined {
-    return this.rules.get(policyKey(sessionId, toolKind));
+  /** The remembered decision for one key, if any. */
+  get(sessionId: string, key: string): PolicyDecision | undefined {
+    return this.rules.get(ruleKey(sessionId, key));
   }
 
-  /** Forget the rules of one session, or of every session when omitted. */
+  /**
+   * The remembered decision for `subject`, consulting the resource, then the
+   * capability, then the kind rule.
+   */
+  lookup(sessionId: string, subject: PolicySubject, platform?: NodeJS.Platform): PolicyDecision | undefined {
+    for (const scope of SCOPE_PRECEDENCE) {
+      const key = policyKey(scope, subject, platform);
+      if (key === undefined) continue;
+      const decision = this.get(sessionId, key);
+      if (decision) return decision;
+    }
+    return undefined;
+  }
+
+  /** Forget the rules (of every scope) of one session, or of every session when omitted. */
   clear(sessionId?: string): void {
     if (sessionId === undefined) {
       this.rules.clear();
@@ -79,14 +159,17 @@ export class PermissionPolicy {
 /**
  * Consult `policy` for a request: returns the option id to auto-select, or
  * `undefined` when the user must be asked (no rule, or no matching option).
+ * A bare string subject is a tool kind.
  */
 export function decide(
   policy: PermissionPolicy,
   sessionId: string,
-  toolKind: string,
+  subject: PolicySubject | string,
   options: readonly OptionLike[],
+  platform?: NodeJS.Platform,
 ): string | undefined {
-  const decision = policy.get(sessionId, toolKind);
+  const resolved: PolicySubject = typeof subject === "string" ? { toolKind: subject } : subject;
+  const decision = policy.lookup(sessionId, resolved, platform);
   if (!decision) {
     return undefined;
   }
@@ -103,4 +186,53 @@ export function decisionOfOption(
     return undefined;
   }
   return option.kind === "allow_once" || option.kind === "allow_always" ? "allow" : "reject";
+}
+
+/**
+ * The session-wide policies worth offering for a request, with labels, most
+ * general first: always the tool kind; the consent capability when it says
+ * something the kind does not; the consent resource when present (a file
+ * path is named by its basename, anything else — a shell command — verbatim).
+ */
+export function offeredPolicies(subject: PolicySubject, platform?: NodeJS.Platform): OfferedPolicy[] {
+  const out: OfferedPolicy[] = [];
+  const noun = kindNoun(subject.toolKind);
+  out.push({
+    scope: "kind",
+    label: `Allow all ${noun} this session`,
+    rejectLabel: `Reject all ${noun} this session`,
+  });
+  const capability = subject.capability?.trim();
+  if (capability && capability !== subject.toolKind) {
+    out.push({
+      scope: "capability",
+      label: `Allow all ${capability} this session`,
+      rejectLabel: `Reject all ${capability} this session`,
+    });
+  }
+  const resource = subject.resource;
+  if (resource && resource.trim().length > 0) {
+    if (looksLikePath(resource, platform)) {
+      const base = basenameOf(resource, platform);
+      out.push({
+        scope: "resource",
+        label: `Allow all changes to ${base} this session`,
+        rejectLabel: `Reject all changes to ${base} this session`,
+      });
+    } else {
+      const quoted = JSON.stringify(resource);
+      out.push({
+        scope: "resource",
+        label: `Allow ${quoted} every time this session`,
+        rejectLabel: `Reject ${quoted} every time this session`,
+      });
+    }
+  }
+  return out;
+}
+
+function basenameOf(p: string, platform?: NodeJS.Platform): string {
+  const plat = platform ?? process.platform;
+  const base = plat === "win32" ? path.win32.basename(p) : path.posix.basename(p);
+  return base.length > 0 ? base : p;
 }

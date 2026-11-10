@@ -31,7 +31,10 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     error: (m: string) => output.appendLine(`[error] ${m}`),
   };
 
-  const permissions = new PermissionManager();
+  // Kiro V3 omits `toolCall.kind` on permission requests; the controller knows
+  // the kind from the tool_call update that preceded it (D23).
+  let controller: ChatController | undefined;
+  const permissions = new PermissionManager({ resolveKind: (toolCallId) => controller?.toolCallKind(toolCallId) });
   const diff = new DiffManager(permissions, { logger });
   const fs = new FsService({ writeInterceptor: (p, c) => diff.interceptWrite(p, c) });
   const terminal = new TerminalService({ logger });
@@ -39,7 +42,7 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
   const contextTracker = new ContextTracker();
   const services = createClientServices({ permissions, fs, terminal, logger });
 
-  const controller = new ChatController({
+  controller = new ChatController({
     context,
     output,
     services,
@@ -100,6 +103,10 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     vscode.commands.registerCommand("kiroAcp.restart", () => controller.restart()),
     vscode.commands.registerCommand("kiroAcp.openPlan", () => plan.open()),
     vscode.commands.registerCommand("kiroAcp.showLog", () => output.show(true)),
+    vscode.commands.registerCommand("kiroAcp.forgetSessionOptions", async () => {
+      await controller?.forgetSessionOptions();
+      void vscode.window.showInformationMessage("Kiro: remembered session options forgotten; new sessions use the agent's defaults.");
+    }),
     vscode.commands.registerCommand("kiroAcp.sendSelection", () => {
       if (!controller.addSelectionChip()) {
         void vscode.window.showInformationMessage("Open a file and select some text first.");

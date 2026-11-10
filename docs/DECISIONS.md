@@ -289,3 +289,79 @@ _session/steer {…}` followed by `accepted …` or `failed (<code>): …`; read
 those lines to learn what the CLI expects, then fix `STEER_METHOD` / the
 params in `src/ui/chatController.ts` (`promptDuringTurn`). The fake agent
 implements the guessed shape (v3 only; v2 answers -32601).
+
+## D23. Permission policies have three scopes and resolve the kind themselves
+The real Kiro CLI V3 sends `session/request_permission.toolCall` *without*
+`kind` (it carries only `toolCallId`, `title`, `status`, `content`), offers
+only Allow / Deny / Always deny for `fs_write`, and attaches
+`_meta.kiro.consent { capability, resource, persistableConsent }`. Keyed on
+the request alone, the client policy (D6) therefore landed on `other` and
+read "Always allow other this session". Two changes:
+
+- **Kind resolution.** `PermissionManager.request()` takes the kind as
+  `req.toolCall.kind ?? resolveKind(toolCallId) ?? "other"`, where
+  `resolveKind` (constructor option, wired in `extension.ts`) looks the tool
+  call up in every live session's transcript (`ChatController.toolCallKind`):
+  the `tool_call` update that precedes the request always carries the kind.
+- **Scopes.** Policies are remembered per session under a key of one of
+  three scopes (`src/features/pure/permissionPolicy.ts`): `kind:<kind>`,
+  `cap:<capability>` (the consent capability) and `res:<resource>` (the
+  consent resource verbatim; a value that is an absolute path is normalised
+  with `normalizeFsPath` so `a/../b.txt` and `b.txt` match). `decide()`
+  consults resource, then capability, then kind — the most specific rule
+  wins. `setPolicy(requestId, decision, scope = "kind")` records one;
+  `clearPolicies(sessionId)` drops all scopes of a session. Every pending
+  request carries the policies worth offering in `PermissionView.policies`
+  with ready-made labels: always the kind ("Allow all edits this session";
+  nouns per kind, `other` → "actions of this kind"), the capability when
+  present and different from the kind ("Allow all fs_write this session"),
+  and the resource — "Allow all changes to <basename> this session" for a
+  path, `Allow "<resource>" every time this session` for anything else such
+  as a shell command. The webview sends `permissionAlways { scope }`; the
+  default stays `kind`.
+
+Why client-side: Kiro's own "Always deny" is a `reject_always` option and
+its persistent consent (`_meta.kiro.consent { scope: "workspace", … }` on the
+response) is not understood by this client (see protocol-notes), while an
+"allow everything of this sort for the rest of the session" is exactly what
+users want in a chat and needs no agreement from the agent — the policy
+simply picks the agent's own `allow_once` option for later requests. Nothing
+is persisted; a new session or restart starts clean (D6). To change the
+precedence or add a scope, edit `SCOPE_PRECEDENCE` / `policyKey` in the pure
+module and extend `PermissionScope` in `src/ui/protocol.ts`.
+
+## D24. Mode, model and config options are remembered across sessions
+Every new session started with the agent's defaults, so users re-picked the
+same model (and mode) after each `/clear`. With `kiroAcp.rememberSessionOptions`
+(default `true`), every change made through the pickers or the slash
+commands (`setMode` / `/mode`, `setConfigOption` / `/model`, `/effort` …,
+`setModel`) is written to `context.workspaceState` under
+`kiroAcp.sessionOptions` as `{ modeId?, modelId?, configOptions: { id: value } }`
+(per workspace, not per session). `/plan`'s implicit switch to the planner
+mode is not remembered — it is a side effect of the command, not a choice.
+
+They are applied on `session/new` only (`createSession`; never on
+`session/load`, which restores the session's own state):
+
+1. `_meta.kiro { modeId, modelId }` goes on the `session/new` request when
+   remembered (`modelId` falls back to the remembered `model` config option),
+   because Kiro V3 accepts these there. An agent may ignore `_meta`; should it
+   reject the request, it is retried once without the hints so a stale id
+   never blocks session creation.
+2. Once the session state is known, each remembered config option is sent
+   with `session/set_config_option` **only if** the agent advertises that
+   option id, the value is one of its advertised values (or a boolean for a
+   boolean option) and the current value differs; the mode with
+   `session/set_mode` only if the id is advertised and differs; the v2 model
+   with `session/set_model` likewise. Nothing the agent does not advertise is
+   ever sent, so a model remembered from another account or CLI version is
+   simply skipped. What was applied and what was skipped is logged to the
+   **Kiro ACP** channel (`[info] session <id>: remembered options applied: …`).
+
+`ChatController.rememberedSessionOptions()` / `forgetSessionOptions()` and
+the command `Kiro: Forget Remembered Session Options` expose the store; the
+`/capabilities` reply ends with "Remembered for new sessions: …". With the
+setting off nothing is recorded or applied (the stored values stay until
+forgotten). The fake agent ignores `_meta.kiro` on `session/new`, so the
+e2e suite (F13) exercises the post-create `set_config_option` / `set_mode`
+path; whether the real CLI honours the hints is unverified.

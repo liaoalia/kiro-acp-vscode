@@ -900,7 +900,7 @@ function defaultOpen(call: ToolCallView, perm: PermissionView | undefined): bool
 }
 
 function renderPermission(perm: PermissionView, call: ToolCallView): HTMLElement {
-  const kindLabel = TOOL_KIND_LABEL[perm.kind] ?? perm.kind;
+  const policies = permissionPolicies(perm);
   const diffIndex = Math.max(
     0,
     call.content.findIndex((c) => c.type === "diff"),
@@ -943,17 +943,43 @@ function renderPermission(perm: PermissionView, call: ToolCallView): HTMLElement
       : null,
     h(
       "div",
-      { class: "perm-always" },
-      actionButton("perm-always", `Always allow ${kindLabel} this session`, {
-        cls: "link-btn",
-        data: { request: perm.requestId, decision: "allow" },
-      }),
-      actionButton("perm-always", `Always reject ${kindLabel} this session`, {
-        cls: "link-btn",
-        data: { request: perm.requestId, decision: "reject" },
-      }),
+      { class: "perm-policies", role: "group", "aria-label": "Allow for the rest of the session" },
+      ...policies.map((p) =>
+        actionButton("perm-always", [icon("check", "icon perm-policy-icon"), p.label], {
+          cls: "btn btn-sm btn-secondary perm-policy-allow",
+          data: { request: perm.requestId, decision: "allow", scope: p.scope },
+          title: "Remember this choice for the rest of the session",
+        }),
+      ),
+    ),
+    h(
+      "div",
+      { class: "perm-always", role: "group", "aria-label": "Reject for the rest of the session" },
+      ...policies.map((p) =>
+        actionButton("perm-always", p.rejectLabel, {
+          cls: "link-btn perm-policy-reject",
+          data: { request: perm.requestId, decision: "reject", scope: p.scope },
+          title: "Remember this choice for the rest of the session",
+        }),
+      ),
     ),
   );
+}
+
+/**
+ * The session-wide policies offered under a permission card: the host's
+ * ready-made entries when present, else the legacy tool-kind pair.
+ */
+function permissionPolicies(perm: PermissionView): NonNullable<PermissionView["policies"]> {
+  if (perm.policies && perm.policies.length > 0) return perm.policies;
+  const kindLabel = TOOL_KIND_LABEL[perm.kind] ?? perm.kind;
+  return [
+    {
+      scope: "kind",
+      label: `Always allow ${kindLabel} this session`,
+      rejectLabel: `Always reject ${kindLabel} this session`,
+    },
+  ];
 }
 
 function renderToolCard(el: HTMLElement, call: ToolCallView, perm: PermissionView | undefined, open: boolean): void {
@@ -986,19 +1012,24 @@ function renderToolCard(el: HTMLElement, call: ToolCallView, perm: PermissionVie
       body.appendChild(h("pre", { class: "tool-text" }, c.text));
     } else if (c.type === "diff") {
       const { added, removed } = diffLineCounts(c.oldText, c.newText);
+      // No text on either side (e.g. a diff the host could not materialise):
+      // "+0/−0" would only mislead, so show just the path and the button.
+      const hasText = Boolean(c.oldText) || c.newText.length > 0;
       body.appendChild(
         h(
           "div",
           { class: "tool-diff" },
           icon("diff"),
           h("span", { class: "diff-path", title: c.path }, shortPath(c.path)),
-          h(
-            "span",
-            { class: "diff-counts", "aria-label": `${added} lines added, ${removed} lines removed` },
-            h("span", { class: "diff-add" }, `+${added}`),
-            " ",
-            h("span", { class: "diff-del" }, `−${removed}`),
-          ),
+          hasText
+            ? h(
+                "span",
+                { class: "diff-counts", "aria-label": `${added} lines added, ${removed} lines removed` },
+                h("span", { class: "diff-add" }, `+${added}`),
+                " ",
+                h("span", { class: "diff-del" }, `−${removed}`),
+              )
+            : null,
           actionButton("open-diff", "Open diff", {
             cls: "btn btn-secondary btn-xs",
             data: { tool: call.toolCallId, index },

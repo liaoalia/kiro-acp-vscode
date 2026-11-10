@@ -71,6 +71,7 @@ import type {
   ToWebview,
   ToolCallView,
   ToolDiffContent,
+  ToolKind,
   UiState,
 } from "./protocol.js";
 
@@ -141,6 +142,23 @@ export interface PastSessionEntry {
 
 /** Diff tabs open automatically: for every edit, only when a permission asks for it, or never. */
 export type AutoOpenDiffs = "always" | "whenPermissionRequired" | "never";
+
+/**
+ * Session options the user chose last, re-applied to every new session when
+ * `kiroAcp.rememberSessionOptions` is on (D24). Stored in `workspaceState`
+ * under {@link SESSION_OPTIONS_KEY}.
+ */
+export interface RememberedSessionOptions {
+  /** `session/set_mode` id. */
+  modeId?: string;
+  /** CLI v2 `session/set_model` id. */
+  modelId?: string;
+  /** `session/set_config_option` values by config id (V3: `model`, `effortLevel`, ...). */
+  configOptions: Record<string, string | boolean>;
+}
+
+/** `workspaceState` key of {@link RememberedSessionOptions}. */
+export const SESSION_OPTIONS_KEY = "kiroAcp.sessionOptions";
 
 /**
  * Kiro V3 extension method that injects a prompt into the running turn. Its
@@ -853,15 +871,29 @@ export class ChatController implements vscode.Disposable {
   // Session lifecycle
   // ---------------------------------------------------------------------
 
+  /**
+   * Kind of a tool call known to any live session's transcript: the
+   * `PermissionManager.resolveKind` hook for requests without `kind` (D23).
+   */
+  toolCallKind(toolCallId: string): ToolKind | undefined {
+    for (const session of this.sessions.values()) {
+      const call = session.transcript.toolCalls[toolCallId];
+      if (call) return call.kind;
+    }
+    return undefined;
+  }
+
   private async createSession(groupId: string): Promise<ChatSession | null> {
     const agent = this.agent;
     if (!agent) return null;
     try {
-      const state = await agent.newSession(this.workspaceRoot());
+      const remembered = this.rememberSessionOptionsEnabled() ? this.rememberedSessionOptions() : null;
+      const state = await this.newSessionWithHints(agent, remembered);
       const session = new ChatSession(state, ++this.sessionSeq, groupId);
       this.sessions.set(session.id, session);
       this.deps.output.appendLine(`[info] session ${session.id} opened (group ${groupId})`);
       this.scheduleSessions();
+      if (remembered) await this.applyRememberedOptions(agent, session, remembered);
       return session;
     } catch (error) {
       const message = errorMessage(error);
@@ -871,6 +903,159 @@ export class ChatController implements vscode.Disposable {
         this.notice(null, "error", `Could not create a session: ${message}`);
       }
       return null;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Remembered session options (D24)
+  // ---------------------------------------------------------------------
+
+  /** `kiroAcp.rememberSessionOptions` (default true). */
+  private rememberSessionOptionsEnabled(): boolean {
+    return vscode.workspace.getConfiguration("kiroAcp").get<boolean>("rememberSessionOptions", true);
+  }
+
+  /** The options remembered for new sessions, or null when nothing is remembered. */
+  rememberedSessionOptions(): RememberedSessionOptions | null {
+    const raw = this.deps.context.workspaceState.get<unknown>(SESSION_OPTIONS_KEY);
+    if (!raw || typeof raw !== "object") return null;
+    const r = raw as Record<string, unknown>;
+    const out: RememberedSessionOptions = { configOptions: {} };
+    if (typeof r.modeId === "string" && r.modeId) out.modeId = r.modeId;
+    if (typeof r.modelId === "string" && r.modelId) out.modelId = r.modelId;
+    if (r.configOptions && typeof r.configOptions === "object") {
+      for (const [id, value] of Object.entries(r.configOptions as Record<string, unknown>)) {
+        if (typeof value === "string" || typeof value === "boolean") out.configOptions[id] = value;
+      }
+    }
+    return out.modeId || out.modelId || Object.keys(out.configOptions).length > 0 ? out : null;
+  }
+
+  /** Forget the remembered options; the next session starts with the agent's defaults. */
+  async forgetSessionOptions(): Promise<void> {
+    await this.deps.context.workspaceState.update(SESSION_OPTIONS_KEY, undefined);
+    this.deps.output.appendLine("[info] remembered session options forgotten");
+  }
+
+  /** Merge a user choice into the remembered options (no-op when the setting is off). */
+  private rememberSessionOption(patch: {
+    modeId?: string;
+    modelId?: string;
+    configOption?: { id: string; value: string | boolean };
+  }): void {
+    if (!this.rememberSessionOptionsEnabled()) return;
+    const current = this.rememberedSessionOptions() ?? { configOptions: {} };
+    const next: RememberedSessionOptions = { ...current, configOptions: { ...current.configOptions } };
+    if (patch.modeId !== undefined) next.modeId = patch.modeId;
+    if (patch.modelId !== undefined) next.modelId = patch.modelId;
+    if (patch.configOption) next.configOptions[patch.configOption.id] = patch.configOption.value;
+    void this.deps.context.workspaceState.update(SESSION_OPTIONS_KEY, next).then(undefined, (error: unknown) => {
+      this.deps.output.appendLine(`[warn] could not remember session options: ${errorMessage(error)}`);
+    });
+  }
+
+  /** One line for `/capabilities`: what the next session gets. */
+  private describeRememberedOptions(): string {
+    const remembered = this.rememberedSessionOptions();
+    const enabled = this.rememberSessionOptionsEnabled();
+    if (!remembered) return enabled ? "none" : "none (kiroAcp.rememberSessionOptions is off)";
+    const parts: string[] = [];
+    if (remembered.modeId) parts.push(`mode \`${remembered.modeId}\``);
+    if (remembered.modelId) parts.push(`model \`${remembered.modelId}\``);
+    for (const [id, value] of Object.entries(remembered.configOptions)) parts.push(`\`${id}\` = \`${String(value)}\``);
+    return parts.join(", ") + (enabled ? "" : " (not applied: kiroAcp.rememberSessionOptions is off)");
+  }
+
+  /**
+   * `session/new` with `_meta.kiro { modeId, modelId }` hints when remembered
+   * (Kiro V3 reads them; other agents ignore `_meta`). Should the agent reject
+   * the hinted request, it is retried without hints so a stale id never
+   * blocks session creation.
+   */
+  private async newSessionWithHints(agent: KiroAgent, remembered: RememberedSessionOptions | null): Promise<SessionState> {
+    const cwd = this.workspaceRoot();
+    const kiro: Record<string, string> = {};
+    if (remembered?.modeId) kiro.modeId = remembered.modeId;
+    const modelId = remembered?.modelId ?? remembered?.configOptions["model"];
+    if (typeof modelId === "string" && modelId) kiro.modelId = modelId;
+    if (Object.keys(kiro).length === 0) return agent.newSession(cwd);
+    try {
+      return await agent.newSession(cwd, { meta: { kiro } });
+    } catch (error) {
+      this.deps.output.appendLine(
+        `[warn] session/new with remembered hints ${safeJson(kiro)} failed (${errorMessage(error)}); retrying without them`,
+      );
+      return agent.newSession(cwd);
+    }
+  }
+
+  /**
+   * Re-apply the remembered options to a freshly created session, each only
+   * when the agent advertises it and its current value differs: config
+   * options first (`model`, `effortLevel`, ...), then the mode, then the v2
+   * model. Nothing the agent does not advertise is ever sent.
+   */
+  private async applyRememberedOptions(
+    agent: KiroAgent,
+    session: ChatSession,
+    remembered: RememberedSessionOptions,
+  ): Promise<void> {
+    const applied: string[] = [];
+    const skipped: string[] = [];
+    const log = (text: string) => this.deps.output.appendLine(text);
+    for (const [id, value] of Object.entries(remembered.configOptions)) {
+      const option = (session.state.configOptions ?? []).find((o) => o.id === id);
+      if (!option) {
+        skipped.push(`${id} (not advertised)`);
+        continue;
+      }
+      const allowed =
+        option.type === "boolean"
+          ? typeof value === "boolean"
+          : typeof value === "string" && flattenValues(option).includes(value);
+      if (!allowed) {
+        skipped.push(`${id}=${String(value)} (not an advertised value)`);
+        continue;
+      }
+      if (option.currentValue === value) continue;
+      try {
+        await agent.setConfigOption(session.id, id, value);
+        applied.push(`${id}=${String(value)}`);
+      } catch (error) {
+        log(`[warn] session ${session.id}: could not apply remembered ${id}=${String(value)}: ${errorMessage(error)}`);
+      }
+    }
+    if (remembered.modeId) {
+      const modes = session.state.modes;
+      if (!modes || !modes.availableModes.some((m) => m.id === remembered.modeId)) {
+        skipped.push(`mode ${remembered.modeId} (not advertised)`);
+      } else if (modes.currentModeId !== remembered.modeId) {
+        try {
+          await agent.setMode(session.id, remembered.modeId);
+          applied.push(`mode=${remembered.modeId}`);
+        } catch (error) {
+          log(`[warn] session ${session.id}: could not apply remembered mode ${remembered.modeId}: ${errorMessage(error)}`);
+        }
+      }
+    }
+    if (remembered.modelId) {
+      const models = session.state.models;
+      if (!models || !models.availableModels.some((m) => m.modelId === remembered.modelId)) {
+        skipped.push(`model ${remembered.modelId} (not advertised)`);
+      } else if (models.currentModelId !== remembered.modelId) {
+        try {
+          await agent.setModel(session.id, remembered.modelId);
+          applied.push(`model=${remembered.modelId}`);
+        } catch (error) {
+          log(`[warn] session ${session.id}: could not apply remembered model ${remembered.modelId}: ${errorMessage(error)}`);
+        }
+      }
+    }
+    if (applied.length > 0 || skipped.length > 0) {
+      log(
+        `[info] session ${session.id}: remembered options applied: ${applied.join(", ") || "none"}` +
+          (skipped.length > 0 ? `; skipped: ${skipped.join(", ")}` : ""),
+      );
     }
   }
 
@@ -1652,16 +1837,29 @@ export class ChatController implements vscode.Disposable {
         }
         return;
       case "permissionAlways":
-        this.deps.permissions.setPolicy(message.requestId, message.decision);
+        try {
+          this.deps.permissions.setPolicy(message.requestId, message.decision, message.scope ?? "kind");
+        } catch (error) {
+          this.notice(session ?? null, "warning", errorMessage(error));
+        }
         return;
       case "setMode":
-        await this.withSession(session, (agent, id) => agent.setMode(id, message.modeId));
+        await this.withSession(session, async (agent, id) => {
+          await agent.setMode(id, message.modeId);
+          this.rememberSessionOption({ modeId: message.modeId });
+        });
         return;
       case "setConfigOption":
-        await this.withSession(session, (agent, id) => agent.setConfigOption(id, message.configId, message.value));
+        await this.withSession(session, async (agent, id) => {
+          await agent.setConfigOption(id, message.configId, message.value);
+          this.rememberSessionOption({ configOption: { id: message.configId, value: message.value } });
+        });
         return;
       case "setModel":
-        await this.withSession(session, (agent, id) => agent.setModel(id, message.modelId));
+        await this.withSession(session, async (agent, id) => {
+          await agent.setModel(id, message.modelId);
+          this.rememberSessionOption({ modelId: message.modelId });
+        });
         return;
       case "queryFiles": {
         const items = await searchFiles(message.query);
@@ -1828,6 +2026,7 @@ export class ChatController implements vscode.Disposable {
         if (!agent) return true;
         try {
           await agent.setMode(sessionId, action.modeId);
+          this.rememberSessionOption({ modeId: action.modeId });
           this.localExchange(session, raw, `Mode set to \`${action.modeId}\`.`);
         } catch (error) {
           this.localExchange(session, raw, `Could not set the mode: ${errorMessage(error)}`);
@@ -1837,6 +2036,7 @@ export class ChatController implements vscode.Disposable {
         if (!agent) return true;
         try {
           await agent.setConfigOption(sessionId, action.configId, action.value);
+          this.rememberSessionOption({ configOption: { id: action.configId, value: action.value } });
           this.localExchange(session, raw, `\`${action.configId}\` set to \`${action.value}\`.`);
         } catch (error) {
           this.localExchange(session, raw, `Could not change \`${action.configId}\`: ${errorMessage(error)}`);
@@ -1940,6 +2140,7 @@ export class ChatController implements vscode.Disposable {
     if (commands.length > 0) {
       lines.push("", `**Agent commands:** ${commands.map((c) => `\`/${c.name}\``).join(", ")}`);
     }
+    lines.push("", `Remembered for new sessions: ${this.describeRememberedOptions()}`);
     return lines.join("\n");
   }
 
@@ -1981,6 +2182,21 @@ export class ChatController implements vscode.Disposable {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Every selectable value of a select config option (groups flattened). */
+function flattenValues(option: acp.SessionConfigOption): string[] {
+  if (option.type !== "select") return [];
+  const out: string[] = [];
+  for (const entry of option.options ?? []) {
+    const group = entry as { options?: Array<{ value: string }> };
+    if (Array.isArray(group.options)) {
+      for (const o of group.options) if (typeof o.value === "string") out.push(o.value);
+    } else if (typeof (entry as { value?: unknown }).value === "string") {
+      out.push((entry as { value: string }).value);
+    }
+  }
+  return out;
+}
 
 function toAuthMethodView(method: acp.AuthMethod): AuthMethodView {
   const terminal = "type" in method && method.type === "terminal";

@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -75,6 +75,10 @@
       {
         "command": "kiroAcp.showLog",
         "title": "Kiro: Show Protocol Log"
+      },
+      {
+        "command": "kiroAcp.forgetSessionOptions",
+        "title": "Kiro: Forget Remembered Session Options"
       },
       {
         "command": "kiroAcp.acceptDiff",
@@ -303,6 +307,11 @@
           "type": "boolean",
           "default": false,
           "description": "Start the chat with the session list collapsed to icons."
+        },
+        "kiroAcp.rememberSessionOptions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remember the mode, model and config options you choose and apply them to every new session (only values the agent advertises are applied). `Kiro: Forget Remembered Session Options` clears them."
         }
       }
     }

@@ -1,0 +1,22 @@
+{
+  "name": "permission-nokind",
+  "description": "Like the real Kiro CLI: the tool_call update carries kind=edit but the session/request_permission toolCall has no kind; the client must resolve it from the known tool call. Carries Kiro consent meta (fs_write on nokind.txt).",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "call-nokind", "title": "Create nokind.txt", "kind": "edit", "status": "pending", "locations": [ { "path": "{{cwd}}/nokind.txt" } ], "content": [ { "type": "diff", "path": "{{cwd}}/nokind.txt", "oldText": null, "newText": "no kind on the request\n" } ] } },
+    { "kind": "permission",
+      "toolCall": { "toolCallId": "call-nokind", "title": "Create nokind.txt", "status": "pending", "content": [ { "type": "diff", "path": "{{cwd}}/nokind.txt", "oldText": null, "newText": "no kind on the request\n" } ] },
+      "options": [
+        { "optionId": "accept", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "reject", "name": "Deny", "kind": "reject_once" },
+        { "optionId": "always-reject", "name": "Always deny", "kind": "reject_always" }
+      ],
+      "meta": { "kiro": { "consent": { "capability": "fs_write", "resource": "{{cwd}}/nokind.txt", "persistableConsent": true } } },
+      "allow": [
+        { "kind": "client_request", "method": "fs/write_text_file", "params": { "sessionId": "{{sessionId}}", "path": "{{cwd}}/nokind.txt", "content": "no kind on the request\n" } }
+      ],
+      "reject": []
+    },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Done." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

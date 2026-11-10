@@ -1,5 +1,5 @@
 /**
- * Pending `session/request_permission` registry + session policy (D6).
+ * Pending `session/request_permission` registry + session policy (D6, D23).
  *
  * The ACP layer calls {@link PermissionManager.request}; the webview, the
  * diff editor title buttons and the plan tab resolve entries through
@@ -7,14 +7,26 @@
  */
 import * as vscode from "vscode";
 import type * as acp from "@agentclientprotocol/sdk";
-import type { PermissionView, ToolDiffContent, ToolKind } from "../ui/protocol.js";
+import type { PermissionScope, PermissionView, ToolDiffContent, ToolKind } from "../ui/protocol.js";
 import {
   PermissionPolicy,
   decide,
   decisionOfOption,
+  offeredPolicies,
+  policyKey,
   selectOption,
   type PolicyDecision,
+  type PolicySubject,
 } from "./pure/permissionPolicy.js";
+
+export interface PermissionManagerOptions {
+  /**
+   * Kind of an already-known tool call (from the session transcripts), used
+   * when `session/request_permission.toolCall` carries no `kind` — the real
+   * Kiro CLI omits it (D23).
+   */
+  resolveKind?: (toolCallId: string) => ToolKind | undefined;
+}
 
 /** Everything the manager knows about a pending request. */
 export interface PendingPermission {
@@ -61,8 +73,16 @@ const TOOL_KINDS: ReadonlySet<string> = new Set<ToolKind>([
 
 export const PLAN_APPROVAL_CONTEXT_KEY = "kiroAcp.planApprovalPending";
 
-function asToolKind(kind: unknown): ToolKind {
-  return typeof kind === "string" && TOOL_KINDS.has(kind) ? (kind as ToolKind) : "other";
+function asToolKind(kind: unknown): ToolKind | undefined {
+  return typeof kind === "string" && TOOL_KINDS.has(kind) ? (kind as ToolKind) : undefined;
+}
+
+function subjectOf(entry: Pick<PendingPermission, "toolKind" | "consent">): PolicySubject {
+  return {
+    toolKind: entry.toolKind,
+    ...(entry.consent?.capability ? { capability: entry.consent.capability } : {}),
+    ...(entry.consent?.resource ? { resource: entry.consent.resource } : {}),
+  };
 }
 
 function readConsent(meta: unknown): PendingPermission["consent"] {
@@ -119,7 +139,7 @@ export class PermissionManager implements vscode.Disposable {
   /** Fires when a request is answered (selected or cancelled). */
   readonly onDidResolve: vscode.Event<PermissionResolution> = this.resolveEmitter.event;
 
-  constructor() {
+  constructor(private readonly options: PermissionManagerOptions = {}) {
     void this.updateContextKeys();
   }
 
@@ -136,9 +156,14 @@ export class PermissionManager implements vscode.Disposable {
     req: acp.RequestPermissionRequest,
     signal: AbortSignal,
   ): Promise<acp.RequestPermissionResponse> {
-    const toolKind = asToolKind(req.toolCall?.kind);
+    const toolCallId = req.toolCall?.toolCallId ?? "";
+    // The request's own kind, else the kind of the tool call it refers to
+    // (Kiro V3 sends none on the request), else `other`.
+    const toolKind: ToolKind =
+      asToolKind(req.toolCall?.kind) ?? (toolCallId ? this.options.resolveKind?.(toolCallId) : undefined) ?? "other";
     const options = Array.isArray(req.options) ? req.options : [];
-    const auto = decide(this.policy, req.sessionId, toolKind, options);
+    const consent = readConsent(req._meta);
+    const auto = decide(this.policy, req.sessionId, subjectOf({ toolKind, consent }), options);
     if (auto !== undefined) {
       return Promise.resolve({ outcome: { outcome: "selected", optionId: auto } });
     }
@@ -153,12 +178,12 @@ export class PermissionManager implements vscode.Disposable {
       const entry: Entry = {
         requestId,
         sessionId: req.sessionId,
-        toolCallId: req.toolCall?.toolCallId ?? "",
+        toolCallId,
         toolKind,
         title: req.toolCall?.title ?? req.toolCall?.toolCallId ?? "Permission request",
         options,
         hasDiff: extractDiffs(req.toolCall?.content).length > 0,
-        consent: readConsent(req._meta),
+        consent,
         diffs: extractDiffs(req.toolCall?.content),
         createdAt: Date.now(),
         resolve,
@@ -209,15 +234,21 @@ export class PermissionManager implements vscode.Disposable {
   }
 
   /**
-   * Remember `decision` for `(sessionId, toolKind)` of the request for the
-   * rest of the session and answer the request accordingly.
+   * Remember `decision` for the rest of the session — for the request's tool
+   * kind (default), its consent capability or its exact consent resource —
+   * and answer the request accordingly.
+   * @throws when the request is unknown or has nothing to key `scope` on.
    */
-  setPolicy(requestId: string, decision: PolicyDecision): void {
+  setPolicy(requestId: string, decision: PolicyDecision, scope: PermissionScope = "kind"): void {
     const entry = this.entries.get(requestId);
     if (!entry) {
       throw new Error(`Unknown permission request: ${requestId}`);
     }
-    this.policy.set(entry.sessionId, entry.toolKind, decision);
+    const key = policyKey(scope, subjectOf(entry));
+    if (key === undefined) {
+      throw new Error(`Permission request ${requestId} has no ${scope} to remember`);
+    }
+    this.policy.set(entry.sessionId, key, decision);
     this.decideRequest(requestId, decision);
   }
 
@@ -345,6 +376,7 @@ function toView(entry: Entry): PermissionView {
     options: entry.options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
     hasDiff: entry.hasDiff,
     ...(entry.consent ? { consent: { ...entry.consent } } : {}),
+    policies: offeredPolicies(subjectOf(entry)),
   };
 }
 

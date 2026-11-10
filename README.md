@@ -20,7 +20,8 @@ network access happens inside `kiro-cli`, which inherits your environment
 | 4 | File context: type `@` in the input to pick workspace files; the active editor file is attached by default as a removable chip | chat input |
 | 5 | Selection context: the current selection becomes a chip like `file.ts:12-40` and is sent with path and line range | `Kiro: Send Selection to Kiro Chat` (`Ctrl+Alt+K` / `Cmd+Alt+K`) |
 | 6 | Client-side file system and terminal: reads are served from open (unsaved) buffers, writes go through `WorkspaceEdit` so they are undoable, agent commands run in a visible VS Code terminal | automatic |
-| 7 | Permissions: allow once / always allow for this session / reject, per tool kind, using only the options the agent offers | chat permission card |
+| 7 | Permissions: allow once / reject, plus session-wide policies — all actions of a kind, all actions of a capability (e.g. `fs_write`) or all changes to one file / one command — using only the options the agent offers; the tool kind is taken from the tool call when the request omits it | chat permission card |
+| 8 | Remembered session options: the mode, model and config options you pick are applied to every new session (only values the agent advertises); `Kiro: Forget Remembered Session Options` resets them | automatic, `kiroAcp.rememberSessionOptions` |
 
 ## Tabs and sessions
 
@@ -128,6 +129,7 @@ into a compact header.
 | `kiroAcp.terminal.mode` | `shared` | How agent commands are shown: `shared`: one terminal per Kiro session; `perCommand`: one terminal per command; `hidden`: no terminal, output only in the chat card. |
 | `kiroAcp.terminal.outputByteLimit` | `1048576` | Bytes of terminal output retained for the agent when it does not specify a limit. |
 | `kiroAcp.logProtocol` | `false` | Log every JSON-RPC message to the **Kiro ACP** output channel. |
+| `kiroAcp.rememberSessionOptions` | `true` | Remember the mode, model and config options you choose and apply them to every new session (only values the agent advertises are applied). |
 
 With the default `shared` mode every command the agent runs during a session
 goes into a single `Kiro · <session>` terminal: each command is introduced by
@@ -179,6 +181,7 @@ from `kiro-cli` (proxy errors appear there).
 | `Kiro: Accept Proposed Change` / `Reject Proposed Change` | Answer a pending diff permission |
 | `Kiro: Approve Plan` / `Reject Plan` | Answer a pending plan hand-off request |
 | `Kiro: Show Protocol Log` | Open the **Kiro ACP** output channel |
+| `Kiro: Forget Remembered Session Options` | Drop the remembered mode / model / config options; the next session uses the agent's defaults |
 
 ## Development
 

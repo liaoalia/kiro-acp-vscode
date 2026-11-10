@@ -2,7 +2,7 @@
  * Webview entry point. Wires the reducer, renderer and composer together and
  * handles user intents via `data-action` click delegation.
  */
-import type { ContextChip, ToWebview } from "../ui/protocol";
+import type { ContextChip, PermissionScope, ToWebview } from "../ui/protocol";
 import { Composer } from "./composer";
 import { actionButton, h, icon } from "./dom";
 import { copyText } from "./markdown";
@@ -363,7 +363,9 @@ app.addEventListener("click", (event) => {
     }
     case "perm-always": {
       if (!d.request || (d.decision !== "allow" && d.decision !== "reject")) break;
-      post({ type: "permissionAlways", requestId: d.request, decision: d.decision });
+      const scope: PermissionScope | undefined =
+        d.scope === "kind" || d.scope === "capability" || d.scope === "resource" ? d.scope : undefined;
+      post({ type: "permissionAlways", requestId: d.request, decision: d.decision, scope });
       const group = target.closest<HTMLElement>(".perm");
       group?.querySelectorAll("button").forEach((b) => (b.disabled = true));
       break;
