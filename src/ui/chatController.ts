@@ -29,6 +29,15 @@ import {
   type TranscriptState,
 } from "../features/pure/transcript.js";
 import { buildPromptBlocks } from "../features/pure/contentBlocks.js";
+import {
+  describeOptions,
+  formatExtensionResult,
+  mergeCommands,
+  parseSlash,
+  routeSlash,
+  type ParsedSlash,
+  type SlashContext,
+} from "../features/pure/slashCommands.js";
 import { ContextTracker, searchFiles } from "../features/context.js";
 import { DiffManager } from "../features/diff.js";
 import { PermissionManager } from "../features/permissions.js";
@@ -127,7 +136,7 @@ export class ChatController implements vscode.Disposable {
       toolCalls[id] = this.withTerminalOutput(call);
     }
     const showSettings = vscode.workspace.getConfiguration("kiroAcp").get<boolean>("showSettingsByDefault", false);
-    return { ...state, toolCalls, prefs: { showSettings } };
+    return { ...state, toolCalls, commands: this.commandsView(), prefs: { showSettings } };
   }
 
   private post(message: ToWebview): void {
@@ -370,6 +379,9 @@ export class ChatController implements vscode.Disposable {
     const trimmed = text.trim();
     if (!trimmed && chips.length === 0) return;
 
+    const parsed = parseSlash(trimmed);
+    if (parsed && (await this.runSlash(parsed, chips))) return;
+
     const embeddedContext = this.agentInfo?.agentCapabilities.promptCapabilities?.embeddedContext === true;
     const blocks = await buildPromptBlocks(trimmed, chips, readWorkspaceText, { embeddedContext });
 
@@ -439,7 +451,7 @@ export class ChatController implements vscode.Disposable {
         const result = applyUpdate(this.transcript, event.update);
         this.transcript = result.state;
         for (const emit of result.emits) {
-          this.post(emit);
+          this.post(emit.type === "commands" ? { type: "commands", commands: this.commandsView() } : emit);
           if (emit.type === "toolCall") void this.onToolCallChanged(emit.call);
           if (emit.type === "plan") this.deps.plan.update(emit.entries, event.sessionId);
         }
@@ -461,7 +473,7 @@ export class ChatController implements vscode.Disposable {
         this.post({ type: "modes", modes: this.transcript.modes });
         this.post({ type: "configOptions", options: this.transcript.configOptions });
         this.post({ type: "models", models: this.models });
-        this.post({ type: "commands", commands: this.transcript.commands });
+        this.post({ type: "commands", commands: this.commandsView() });
         return;
       }
       case "turn_started":
@@ -647,6 +659,127 @@ export class ChatController implements vscode.Disposable {
     if (!chip) return false;
     this.post({ type: "focusInput" });
     return true;
+  }
+
+  // ---------------------------------------------------------------------
+  // Slash commands (client-side routing, see DECISIONS D18)
+  // ---------------------------------------------------------------------
+
+  private slashContext(): SlashContext {
+    return {
+      extensionMethods: this.agentInfo?.kiroExtensionMethods ?? [],
+      modes: this.transcript.modes,
+      configOptions: this.transcript.configOptions,
+      agentCommands: this.transcript.commands,
+    };
+  }
+
+  /** Agent-advertised commands plus the client built-ins (for the `/` popup). */
+  private commandsView() {
+    return mergeCommands(this.transcript.commands, this.slashContext());
+  }
+
+  /** Show the user's command and a local reply in the transcript. */
+  private localExchange(userText: string, replyText: string): void {
+    this.applyLocalUpdate({
+      sessionUpdate: "user_message_chunk",
+      messageId: `user-${++this.userMessageSeq}`,
+      content: { type: "text", text: userText },
+    });
+    this.applyLocalUpdate({
+      sessionUpdate: "agent_message_chunk",
+      messageId: `local-${this.userMessageSeq}`,
+      content: { type: "text", text: replyText },
+    });
+    // Close the local message so the agent's next chunk starts a new one.
+    this.transcript = { ...this.transcript, openMessage: null };
+  }
+
+  /**
+   * Returns true when the command was handled locally. `forward` commands
+   * (advertised by the agent) return false so the text goes out as a prompt.
+   */
+  private async runSlash(parsed: ParsedSlash, chips: ContextChip[]): Promise<boolean> {
+    const raw = `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`;
+    const action = routeSlash(parsed, this.slashContext());
+    const agent = this.agent;
+    const sessionId = this.session?.sessionId;
+    switch (action.kind) {
+      case "forward":
+        return false;
+      case "new_session":
+        await this.newSession();
+        return true;
+      case "cancel":
+        await this.cancel();
+        return true;
+      case "restart":
+        await this.restart();
+        return true;
+      case "help":
+        this.localExchange(
+          raw,
+          "Available commands:\n" + action.commands.map((c) => `- \`/${c.name}\`${c.hint ? ` *${c.hint}*` : ""} — ${c.description}`).join("\n"),
+        );
+        return true;
+      case "show_options":
+        this.localExchange(raw, describeOptions(this.slashContext(), action.configId));
+        return true;
+      case "unavailable":
+        this.localExchange(raw, `\`/${action.name}\` is not available: ${action.reason}.`);
+        return true;
+      case "set_mode":
+        if (!agent || !sessionId) return true;
+        try {
+          await agent.setMode(sessionId, action.modeId);
+          this.localExchange(raw, `Mode set to \`${action.modeId}\`.`);
+        } catch (error) {
+          this.localExchange(raw, `Could not set the mode: ${errorMessage(error)}`);
+        }
+        return true;
+      case "set_config":
+        if (!agent || !sessionId) return true;
+        try {
+          await agent.setConfigOption(sessionId, action.configId, action.value);
+          this.localExchange(raw, `\`${action.configId}\` set to \`${action.value}\`.`);
+        } catch (error) {
+          this.localExchange(raw, `Could not change \`${action.configId}\`: ${errorMessage(error)}`);
+        }
+        return true;
+      case "extension": {
+        if (!agent || !sessionId) return true;
+        try {
+          const result = await agent.callExtension(action.method, { sessionId });
+          this.localExchange(raw, formatExtensionResult(result));
+        } catch (error) {
+          this.localExchange(raw, `\`/${action.label}\` failed: ${errorMessage(error)}`);
+        }
+        return true;
+      }
+      case "plan": {
+        if (!agent || !sessionId) return true;
+        if (action.modeId === null) {
+          this.localExchange(raw, "The agent did not advertise a planner mode. Ask it to plan in plain words instead.");
+          return true;
+        }
+        if (this.transcript.modes?.currentModeId !== action.modeId) {
+          try {
+            await agent.setMode(sessionId, action.modeId);
+          } catch (error) {
+            this.localExchange(raw, `Could not switch to planner mode: ${errorMessage(error)}`);
+            return true;
+          }
+        }
+        if (action.text) {
+          await this.prompt(action.text, chips);
+        } else {
+          this.localExchange(raw, `Planner mode \`${action.modeId}\` is active. Describe what to plan.`);
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
   }
 
   // ---------------------------------------------------------------------

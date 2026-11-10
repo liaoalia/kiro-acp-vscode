@@ -128,3 +128,20 @@ composer card: chips, textarea, then a toolbar with `+` (attach file = `@`),
 send/stop button on the right. Below 640px (secondary sidebar) the compact
 layout stays. The reference for the arrangement was a screenshot the user
 supplied; all code, icons, mascot and copy are original to this project.
+
+## D18. Slash commands are routed on the client
+Kiro CLI V3 removed server-side slash command execution over ACP (the
+migration guide maps each command to client behaviour, a standard method or
+an advertised extension). `src/features/pure/slashCommands.ts` therefore
+routes `/clear`, `/new`, `/cancel`, `/restart`, `/help` locally; `/usage`,
+`/context`, `/compact` to `_kiro/account/getUsage`, `_kiro/session/context`,
+`_kiro/session/compact` only when advertised in
+`agentCapabilities._meta.kiro.extensionMethods`; `/model`, `/effort`,
+`/mode` (`/agent`) to `session/set_config_option` / `session/set_mode`
+using only advertised values; `/plan [text]` switches to a mode whose id or
+name contains "plan" and then sends the text. Commands the agent itself
+advertises (`available_commands_update`) are forwarded as prompt text;
+anything else gets an "Unknown command" reply. Built-ins are merged into the
+`/` popup after the agent's own commands. Results of extension calls are
+shown as a local agent message (JSON pretty-printed) because their payload
+shapes are not documented.

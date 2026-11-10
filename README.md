@@ -22,6 +22,22 @@ network access happens inside `kiro-cli`, which inherits your environment
 | 6 | Client-side file system and terminal: reads are served from open (unsaved) buffers, writes go through `WorkspaceEdit` so they are undoable, agent commands run in a visible VS Code terminal | automatic |
 | 7 | Permissions: allow once / always allow for this session / reject, per tool kind, using only the options the agent offers | chat permission card |
 
+## Slash commands
+
+Type `/` in the chat to see the list. Kiro CLI V3 does not execute slash
+commands sent as text, so the extension routes them itself:
+
+| Command | What happens |
+|---------|--------------|
+| `/clear`, `/new` | Start a new session |
+| `/help` | List the commands available with the connected agent |
+| `/mode <id>`, `/agent <id>` | Switch the session mode (`session/set_mode`); no argument lists the modes |
+| `/plan [text]` | Switch to the planner mode (when the agent has one) and send the text |
+| `/model <id>`, `/effort <level>` | Change the advertised config option; no argument lists the values |
+| `/usage`, `/context`, `/compact` | Call `_kiro/account/getUsage`, `_kiro/session/context`, `_kiro/session/compact` when the agent advertises them; the result is shown in the chat |
+| `/cancel`, `/restart` | Cancel the turn / restart `kiro-cli` |
+| anything else | Sent to the agent as a prompt (agent-advertised commands and custom prompts) |
+
 ## Requirements
 
 - VS Code **1.106** or newer (the secondary side bar contribution point).
