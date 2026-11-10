@@ -215,6 +215,15 @@ test("F10.7 each chat tab is a session group: its list, its new sessions, and cl
   api.controller.selectSession(s2, v1);
   assertEqual(v1.sessionId, s3, "tab 1 keeps its session when asked to show tab 2's");
 
+  // Closing the displayed (and focused) session: the tab falls back to its
+  // other session and focus follows that replacement, not the globally
+  // newest session (which would be tab 2's).
+  assertEqual(api.controller.focusedSessionId, s3, "the new session is focused");
+  await withTimeout(api.controller.closeSession(s3), 15_000, "closeSession(s3)");
+  assertEqual(v1.sessionId, s1, "tab 1 fell back to its remaining session");
+  assertEqual(api.controller.focusedSessionId, v1.sessionId, "focus followed the tab's replacement session");
+  assertEqual(v2.sessionId, s2, "tab 2 still displays its own session");
+
   p1.dispose();
   await waitFor(
     () => {
@@ -222,7 +231,7 @@ test("F10.7 each chat tab is a session group: its list, its new sessions, and cl
       return !ids.includes(s1) && !ids.includes(s3) ? true : undefined;
     },
     15_000,
-    "tab 1's sessions to close with the tab",
+    "tab 1's session to close with the tab",
   );
   assert(api.controller.sessionIds().includes(s2), "tab 2's session survives");
   assertEqual(v2.snapshot().sessions.map((s) => s.id).join(","), s2, "tab 2 still lists only its own session");
@@ -264,4 +273,89 @@ test("F10.9 stopping the agent marks every session error; restart() recovers wit
   for (const summary of state.sessions) {
     assertEqual(summary.status, "idle", `status of ${summary.id} after restart`);
   }
+});
+
+test("F10.10 a tab opened for a waiting permission is a fresh group; closing it spares the session's old group", async ({ api, recorder }) => {
+  await closeAllEditors();
+  await deleteWorkspaceFile("config.json");
+  await ensureReady(api);
+  const waiting = await freshSession(api);
+  const sibling = await freshSession(api);
+  assertEqual(api.controller.sessionGroup(waiting), "default", "the waiting session starts in the default group");
+  assertEqual(api.controller.sessionGroup(sibling), "default", "its sibling is in the default group too");
+  const before = panelTabs().length;
+
+  // No chat view at all (the test recorder included): the permission request
+  // has nobody to ask, so the host opens a tab on the waiting session.
+  api.controller.detach();
+  try {
+    assert(!api.controller.hasView, "no view is attached");
+    const turn = api.controller.prompt("/scenario permission-reject", [], waiting);
+    const permission = await waitFor(() => api.permissions.pending()[0], 15_000, "a pending permission request");
+    const panel = await waitFor(
+      () => api.panel.panels().find((p) => api.panel.sessionOf(p) === waiting),
+      15_000,
+      "a chat tab opened on the waiting session",
+    );
+    await waitFor(() => panelTabs().length === before + 1 || undefined, 15_000, "one more Kiro Chat tab");
+    const view = api.panel.viewOf(panel);
+    assert(view, "the tab has a view handle");
+    assert(view.groupId?.startsWith("tab-"), `the tab is a group of its own (${view.groupId})`);
+    assertEqual(api.controller.sessionGroup(waiting), view.groupId, "the waiting session moved into the tab's group");
+    assertEqual(view.snapshot().sessions.map((s) => s.id).join(","), waiting, "the tab lists only the waiting session");
+    assertEqual(api.controller.sessionGroup(sibling), "default", "the sibling stays in the default group");
+
+    const reject = permission.options.find((o) => o.kind === "reject_once");
+    assert(reject, "the agent offers a reject_once option");
+    api.permissions.resolve(permission.requestId, reject.optionId);
+    await withTimeout(turn, 30_000, "the permission turn");
+    await waitFor(() => !api.controller.snapshot(waiting).turnActive, 15_000, "the turn to end");
+    await waitFor(() => !proposalTabsOpen(), 15_000, "proposal editors to close");
+
+    panel.dispose();
+    await waitFor(
+      () => (api.controller.sessionIds().includes(waiting) ? undefined : true),
+      15_000,
+      "the tab's session to close with the tab",
+    );
+    assert(api.controller.sessionIds().includes(sibling), "the sibling of the old group survives the tab");
+    assertEqual(api.controller.sessionGroup(sibling), "default", "the sibling still belongs to the default group");
+  } finally {
+    api.controller.attach(recorder.poster);
+    await closeAllEditors();
+  }
+});
+
+test("F10.11 closing a tab while its first session/new is in flight closes that session too", async ({ api }) => {
+  await closeAllEditors();
+  await ensureReady(api);
+  // Give every empty session a transcript: a new tab adopts a spare (idle,
+  // empty) session when one exists, and this test needs the create path.
+  for (const id of api.controller.sessionIds()) {
+    if (api.controller.snapshot(id).items.length > 0) continue;
+    await withTimeout(api.controller.prompt("/scenario chat", [], id), 30_000, `a chat turn in ${id}`);
+    await waitFor(() => !api.controller.snapshot(id).turnActive, 15_000, `the turn in ${id} to end`);
+  }
+  const before = api.controller.sessionIds();
+
+  const panel = api.panel.openNew();
+  const view = api.panel.viewOf(panel);
+  assert(view?.groupId, "the tab has a group");
+  // Drain the microtask queue until the assignment is under way: the agent's
+  // `session/new` reply needs I/O, so it cannot have arrived yet.
+  const binding = view as unknown as { assigning: Promise<void> | null };
+  for (let i = 0; i < 100 && binding.assigning === null && view.sessionId === null; i++) await Promise.resolve();
+  assertEqual(view.sessionId, null, "the tab has no session yet (no spare was adopted)");
+  const assigning = binding.assigning;
+  assert(assigning, "session/new for the tab is in flight");
+
+  panel.dispose();
+  await withTimeout(assigning, 15_000, "the in-flight assignment to settle");
+  await sleep(200);
+  const after = api.controller.sessionIds();
+  for (const id of after) {
+    assert(api.controller.sessionGroup(id) !== view.groupId, `session ${id} lingers in the closed tab's group ${view.groupId}`);
+  }
+  assertEqual(after.length, before.length, "the session created for the closed tab was closed again");
+  assert(api.controller.snapshot().sessionId, "a session remains focused");
 });

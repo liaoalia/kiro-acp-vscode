@@ -50,9 +50,12 @@ export type SlashAction =
   | { kind: "unavailable"; name: string; reason: string };
 
 /**
- * Documented Kiro extension method names. The real CLI did not advertise
- * these exact names, so {@link findExtension} matches advertised methods by
- * pattern instead; the documented names still match their pattern.
+ * Documented Kiro extension method names. {@link findExtension} matches the
+ * advertised methods by pattern rather than by exact name to tolerate
+ * variants and renames; the documented names match their own pattern. On the
+ * real CLI (docs/protocol-notes.md) `_kiro/session/context` and
+ * `_kiro/session/compact` were advertised verbatim, while
+ * `_kiro/account/getUsage` was absent (organisation-managed account).
  */
 const EXT = {
   usage: "_kiro/account/getUsage",

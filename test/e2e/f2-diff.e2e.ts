@@ -12,6 +12,7 @@ import {
   proposalTabsOpen,
   proposedDiffTabs,
   readWorkspaceFile,
+  sleep,
   test,
   toolCall,
   waitFor,
@@ -113,4 +114,41 @@ test("F2.2 rejecting a proposal fails the tool call with reason denied and write
   assertEqual(call.failureReason, "denied", "edit tool call failure reason");
   assertEqual(await workspaceFileExists("config.json"), false, "config.json was not written");
   await waitFor(() => !proposalTabsOpen(), 15_000, "proposal editors to close");
+});
+
+test("F2.3 autoOpenDiffs: never leaves the proposal closed while the permission is pending", async ({ api }) => {
+  await freshSession(api);
+  await closeAllEditors();
+  await deleteWorkspaceFile("config.json");
+  const config = vscode.workspace.getConfiguration("kiroAcp");
+  const prior = config.inspect<string | boolean>("autoOpenDiffs")?.workspaceValue;
+  await config.update("autoOpenDiffs", "never", vscode.ConfigurationTarget.Workspace);
+  try {
+    assertEqual(
+      vscode.workspace.getConfiguration("kiroAcp").get<string>("autoOpenDiffs"),
+      "never",
+      "the workspace setting took effect",
+    );
+    const turn = api.controller.prompt("/scenario permission-reject", []);
+    const permission = await waitFor(
+      () => api.permissions.pending().find((p) => p.hasDiff),
+      15_000,
+      "a pending permission with a diff",
+    );
+    await sleep(750);
+    assertEqual(proposedDiffTabs().length, 0, "no proposal diff tab opened for the pending permission");
+    assertEqual(proposalTabsOpen(), false, "no proposal editor of any kind is open");
+    assert(api.permissions.pending().some((p) => p.requestId === permission.requestId), "the permission is still pending");
+
+    const reject = permission.options.find((o) => o.kind === "reject_once");
+    assert(reject, "the agent offers a reject_once option");
+    api.permissions.resolve(permission.requestId, reject.optionId);
+    await withTimeout(turn, 30_000, "the permission-reject turn");
+    await waitFor(() => !api.controller.snapshot().turnActive, 15_000, "turn to end");
+    assertEqual(toolCall(api.controller.snapshot(), "call-edit").failureReason, "denied", "the edit was denied");
+    assertEqual(await workspaceFileExists("config.json"), false, "config.json was not written");
+    assertEqual(proposalTabsOpen(), false, "still no proposal editor after the answer");
+  } finally {
+    await vscode.workspace.getConfiguration("kiroAcp").update("autoOpenDiffs", prior, vscode.ConfigurationTarget.Workspace);
+  }
 });

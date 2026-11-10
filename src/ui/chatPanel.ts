@@ -20,7 +20,6 @@ const TITLE_PREFIX = "Kiro Chat";
 interface PanelEntry {
   panel: vscode.WebviewPanel;
   view: ViewHandle;
-  groupId: string;
 }
 
 export class ChatPanelManager implements vscode.Disposable {
@@ -51,8 +50,8 @@ export class ChatPanelManager implements vscode.Disposable {
 
   /**
    * Open a new chat tab in the active editor group. It displays `sessionId`
-   * when given (joining that session's group), otherwise a fresh session
-   * created once the agent is ready.
+   * when given (the session moves into the tab's own group), otherwise a
+   * fresh session created once the agent is ready.
    */
   openNew(sessionId?: string): vscode.WebviewPanel {
     const panel = vscode.window.createWebviewPanel(
@@ -129,12 +128,14 @@ export class ChatPanelManager implements vscode.Disposable {
     const poster = (message: ToWebview): void => {
       void webview.postMessage(message);
     };
-    // A tab opened on an existing session joins that session's group (a
-    // permission request arrived while no chat was open); otherwise the tab
-    // is a new group.
-    const groupId = (sessionId && this.controller.sessionGroup(sessionId)) || `tab-${++this.groupCounter}`;
+    // Every tab is a group of its own, also one opened on an existing session
+    // (a permission request arrived while no chat was open): `setSession()`
+    // moves that session into the tab's group. Joining the session's old
+    // group (`sidebar` / `default`) instead would make closing the tab close
+    // sessions it never showed (D20).
+    const groupId = `tab-${++this.groupCounter}`;
     const view = this.controller.attachView(poster, { prefer: "fresh", groupId });
-    const entry: PanelEntry = { panel, view, groupId };
+    const entry: PanelEntry = { panel, view };
     this.entries.push(entry);
     this.recent = entry;
     if (sessionId) view.setSession(sessionId);
@@ -158,8 +159,8 @@ export class ChatPanelManager implements vscode.Disposable {
       const index = this.entries.indexOf(entry);
       if (index >= 0) this.entries.splice(index, 1);
       if (this.recent === entry) this.recent = this.entries[this.entries.length - 1] ?? null;
-      // Closing the tab ends its sessions (D20), unless another tab shares the group.
-      if (!this.entries.some((e) => e.groupId === groupId)) void this.controller.closeGroup(groupId);
+      // Closing the tab ends its sessions (D20); the group is the tab's alone.
+      void this.controller.closeGroup(groupId);
     });
   }
 

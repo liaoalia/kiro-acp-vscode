@@ -485,7 +485,11 @@ export class ChatController implements vscode.Disposable {
     const groupId = view.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
     if (view.prefer === "fresh") {
       const spare = this.spareSession(groupId) ?? this.spareSession(DEFAULT_GROUP);
-      const id = spare?.id ?? (await this.createSession(groupId))?.id ?? null;
+      const created = spare ? null : await this.createSession(groupId);
+      const id = spare?.id ?? created?.id ?? null;
+      // Only the create path awaits here: adopting a spare stays synchronous,
+      // so two tabs opened together cannot both pick the same spare.
+      if (created && (await this.dropIfOrphaned(created, view))) return;
       if (id && view.displayed === null && this.views.has(view)) {
         this.setViewSession(view, id);
         this.focusView(view);
@@ -497,11 +501,30 @@ export class ChatController implements vscode.Disposable {
     const usable =
       focused && (view.groupId === null || focused.groupId === view.groupId || focused.groupId === DEFAULT_GROUP);
     const spare = usable ? undefined : (this.spareSession(groupId) ?? this.spareSession(DEFAULT_GROUP));
-    const id = (usable ? focused.id : spare?.id) ?? (await this.createSession(groupId))?.id ?? null;
+    const existing = usable ? focused.id : spare?.id;
+    const created = existing ? null : await this.createSession(groupId);
+    const id = existing ?? created?.id ?? null;
+    if (created && (await this.dropIfOrphaned(created, view))) return;
     if (id && view.displayed === null && this.views.has(view)) {
       this.setViewSession(view, id);
       if (!this.focusedId) this.focus(id);
     }
+  }
+
+  /**
+   * A session created for `view` arrived after the view went away (its tab
+   * was closed while `session/new` was in flight): close it unless another
+   * attached view lists its group, so no session lingers in a group nothing
+   * shows or closes (D20). `default` sessions stay: any view can adopt them.
+   * Returns true when the session was dropped.
+   */
+  private async dropIfOrphaned(session: ChatSession, view: ViewBinding): Promise<boolean> {
+    if (this.views.has(view) || !this.sessions.has(session.id)) return false;
+    if (session.groupId === DEFAULT_GROUP) return false;
+    if ([...this.views].some((v) => v.groupId === session.groupId)) return false;
+    this.deps.output.appendLine(`[info] session ${session.id} orphaned (its view closed while it was opening)`);
+    await this.closeSession(session.id);
+    return true;
   }
 
   private async assignPendingViews(): Promise<void> {
@@ -823,7 +846,10 @@ export class ChatController implements vscode.Disposable {
     }
     const session = await this.createSession(groupId);
     if (!session) return null;
-    if (binding && !binding.follows) this.setViewSession(binding, session.id);
+    if (binding && !binding.follows) {
+      if (await this.dropIfOrphaned(session, binding)) return null;
+      this.setViewSession(binding, session.id);
+    }
     this.focus(session.id);
     return session.id;
   }
@@ -855,7 +881,9 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * Cancel, forget and drop a session. Views displaying it switch to the
-   * most recent remaining session (a new one is created when none is left).
+   * most recent remaining session of their group (a new one is created when
+   * none is left); when the closed session was focused, focus follows the
+   * replacement of the view that showed it (the focused view's first).
    */
   async closeSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
@@ -876,16 +904,25 @@ export class ChatController implements vscode.Disposable {
     const displaying = [...this.views].filter((v) => !v.follows && v.displayed === sessionId);
     const ready = this.agent?.status === "ready";
     // Each displaying view falls back to the most recent session of its group (a new one when none is left).
+    let replacement: string | null = null;
     for (const view of displaying) {
       const groupId = view.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
       let fallback: string | null =
         this.sortedSessions().find((s) => view.groupId === null || s.groupId === groupId)?.id ?? null;
-      if (!fallback && ready) fallback = (await this.createSession(groupId))?.id ?? null;
-      if (this.views.has(view)) this.setViewSession(view, fallback);
+      let created: ChatSession | null = null;
+      if (!fallback && ready) {
+        created = await this.createSession(groupId);
+        fallback = created?.id ?? null;
+      }
+      if (created && (await this.dropIfOrphaned(created, view))) continue;
+      if (!this.views.has(view)) continue;
+      this.setViewSession(view, fallback);
+      if (fallback && (replacement === null || view === this.focusedView)) replacement = fallback;
     }
     if (wasFocused) {
       this.focusedId = null;
-      let fallback: string | null = this.sortedSessions()[0]?.id ?? null;
+      // Focus what the user now sees in place of the closed session, not the globally newest one.
+      let fallback: string | null = replacement ?? this.sortedSessions()[0]?.id ?? null;
       if (!fallback && ready) {
         fallback = (await this.createSession(this.focusedView?.groupId ?? DEFAULT_GROUP))?.id ?? null;
       }

@@ -117,7 +117,9 @@ writeFileSync(
   JSON.stringify(
     {
       ...cliSettings(),
-      "kiroAcp.autoOpenDiffs": true,
+      // The default: proposal diffs open from the permission path (syncPermissions);
+      // tests that need `always` / `never` set it themselves and restore it.
+      "kiroAcp.autoOpenDiffs": "whenPermissionRequired",
       "kiroAcp.attachActiveFile": true,
       "files.autoSave": "off",
       "workbench.startupEditor": "none",

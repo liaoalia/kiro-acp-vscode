@@ -177,4 +177,8 @@ permissions rejected and the sessions dropped — a closed tab is gone, not
 parked. Tabs are numbered (`Kiro Chat 1`, `Kiro Chat 2`, ...); a restored
 tab keeps its saved title. When a permission request arrives while no chat
 view is attached, the host opens a tab (or the sidebar) on *that* session
-rather than a fresh one.
+rather than a fresh one; the tab is still a group of its own and the session
+moves into it (it does not join the session's old `sidebar` / `default`
+group, so closing the tab later ends only the sessions it showed). A session
+created for a tab that was closed while `session/new` was in flight is closed
+as soon as it arrives, so no session lingers in a group nothing lists.
