@@ -28,6 +28,12 @@ interface ExitStatus {
   signal: string | null;
 }
 
+/** Output retained for a terminal plus its exit code (`undefined` while running). */
+export interface TerminalSnapshot {
+  output: string;
+  exitCode: number | null | undefined;
+}
+
 interface TerminalEntry {
   id: string;
   child: ChildProcess;
@@ -90,6 +96,8 @@ export class TerminalService implements vscode.Disposable {
   private readonly active = new Map<string, TerminalEntry>();
   /** Every VS Code terminal ever created, including released ones (for "show"). */
   private readonly terminals = new Map<string, vscode.Terminal>();
+  /** Final output/exit of released terminals so tool cards can still show them. */
+  private readonly released = new Map<string, TerminalSnapshot>();
   private counter = 0;
 
   constructor(private readonly options: TerminalServiceOptions = {}) {}
@@ -226,8 +234,21 @@ export class TerminalService implements vscode.Disposable {
   async releaseTerminal(req: acp.ReleaseTerminalRequest): Promise<acp.ReleaseTerminalResponse> {
     const entry = this.require(req.terminalId);
     await this.killEntry(entry);
+    this.released.set(entry.id, snapshotOf(entry));
     this.active.delete(entry.id);
     return {};
+  }
+
+  /**
+   * Output so far and exit code of a terminal (also after release), for the
+   * chat tool card; `undefined` for unknown ids.
+   */
+  snapshot(terminalId: string): TerminalSnapshot | undefined {
+    const entry = this.active.get(terminalId);
+    if (entry) {
+      return snapshotOf(entry);
+    }
+    return this.released.get(terminalId);
   }
 
   // ---------------------------------------------------------------------
@@ -257,6 +278,7 @@ export class TerminalService implements vscode.Disposable {
     }
     this.active.clear();
     this.terminals.clear();
+    this.released.clear();
   }
 
   dispose(): void {
@@ -315,6 +337,13 @@ export class TerminalService implements vscode.Disposable {
       .get<number>("terminal.outputByteLimit", DEFAULT_LIMIT);
     return typeof configured === "number" && configured > 0 ? configured : DEFAULT_LIMIT;
   }
+}
+
+function snapshotOf(entry: TerminalEntry): TerminalSnapshot {
+  return {
+    output: stripAnsi(entry.buffer.text),
+    exitCode: entry.exit ? entry.exit.exitCode : undefined,
+  };
 }
 
 function truncate(s: string, max: number): string {

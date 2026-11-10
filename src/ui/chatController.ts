@@ -99,7 +99,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   snapshot(): UiState {
-    return snapshotToUiState(this.transcript, {
+    const state = snapshotToUiState(this.transcript, {
       connection: this.connection,
       sessionId: this.session?.sessionId ?? null,
       turnActive: this.turnActive,
@@ -108,10 +108,37 @@ export class ChatController implements vscode.Disposable {
       chips: this.deps.contextTracker.chips(),
       notices: this.notices,
     });
+    const toolCalls: Record<string, ToolCallView> = {};
+    for (const [id, call] of Object.entries(state.toolCalls)) {
+      toolCalls[id] = this.withTerminalOutput(call);
+    }
+    return { ...state, toolCalls };
   }
 
   private post(message: ToWebview): void {
+    if (message.type === "toolCall") {
+      message = { type: "toolCall", call: this.withTerminalOutput(message.call) };
+    }
     this.poster?.(message);
+  }
+
+  /**
+   * The transcript reducer only knows a terminal's id; fill in the retained
+   * output and exit code from the terminal service so the card can show them.
+   */
+  private withTerminalOutput(call: ToolCallView): ToolCallView {
+    if (!call.content.some((c) => c.type === "terminal")) return call;
+    return {
+      ...call,
+      content: call.content.map((c) => {
+        if (c.type !== "terminal") return c;
+        const snap = this.deps.terminal.snapshot(c.terminalId);
+        if (!snap) return c;
+        return snap.exitCode === undefined
+          ? { ...c, output: snap.output }
+          : { ...c, output: snap.output, exitCode: snap.exitCode };
+      }),
+    };
   }
 
   // ---------------------------------------------------------------------

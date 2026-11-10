@@ -64,6 +64,8 @@ async function readDisk(filePath: string): Promise<string | undefined> {
 
 export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider {
   private readonly entries = new Map<string, DiffEntry>();
+  /** `vscode.diff` opens still in flight, by entry key; awaited before closing. */
+  private readonly opening = new Map<string, Promise<void>>();
   private readonly state = new DiffState((p) => normalizeFsPath(p));
   private readonly fsEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
   private readonly originalEmitter = new vscode.EventEmitter<vscode.Uri>();
@@ -165,13 +167,25 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
     }
 
     const title = `${path.basename(diff.path)} (Kiro proposal)`;
-    await vscode.commands.executeCommand(
-      "vscode.diff",
-      makeUri(ORIGINAL_SCHEME, key, diff.path),
-      makeUri(PROPOSED_SCHEME, key, diff.path),
-      title,
-      { preview: options.preview ?? false },
-    );
+    // Track the open so finalize() cannot close the editor before it exists
+    // (a policy-answered permission can arrive while vscode.diff is in flight).
+    const open: Promise<void> = Promise.resolve(
+      vscode.commands.executeCommand(
+        "vscode.diff",
+        makeUri(ORIGINAL_SCHEME, key, diff.path),
+        makeUri(PROPOSED_SCHEME, key, diff.path),
+        title,
+        { preview: options.preview ?? false },
+      ),
+    ).then(() => undefined);
+    this.opening.set(key, open);
+    try {
+      await open;
+    } finally {
+      if (this.opening.get(key) === open) {
+        this.opening.delete(key);
+      }
+    }
     void this.updateContextKey();
   }
 
@@ -429,6 +443,7 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
       }
     }
     this.state.remove(toolCallId);
+    await Promise.allSettled(entries.map((e) => this.opening.get(e.key) ?? Promise.resolve()));
     await this.closeEditors(entries);
     for (const entry of entries) {
       this.entries.delete(entry.key);
