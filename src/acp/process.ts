@@ -120,9 +120,31 @@ export interface SpawnAgentOptions {
   env: NodeJS.ProcessEnv;
 }
 
+/**
+ * Node refuses to spawn `.cmd`/`.bat` files without a shell on Windows
+ * (EINVAL, CVE-2024-27980). Route those through `cmd.exe /d /s /c` with
+ * every argument quoted; anything else (`.exe`, bare names, POSIX) is
+ * spawned directly so stdio stays a clean pipe.
+ */
+export function shellWrappedCommand(
+  command: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): { command: string; args: string[] } {
+  if (platform !== "win32" || !/.(cmd|bat)$/i.test(command)) {
+    return { command, args: [...args] };
+  }
+  const quote = (value: string): string => `"${value.replace(/"/g, '""')}"`;
+  const line = [quote(command), ...args.map(quote)].join(" ");
+  return { command: env.ComSpec || env.COMSPEC || "cmd.exe", args: ["/d", "/s", "/c", `"${line}"`] };
+}
+
 /** Spawn the agent with piped stdio. The environment is passed through untouched. */
 export function spawnAgentProcess(options: SpawnAgentOptions): AgentChildProcess {
-  return spawn(options.command, options.args, {
+  const wrapped = shellWrappedCommand(options.command, options.args, process.platform, options.env);
+  return spawn(wrapped.command, wrapped.args, {
+    windowsVerbatimArguments: wrapped.command !== options.command,
     cwd: options.cwd,
     env: options.env,
     stdio: ["pipe", "pipe", "pipe"],

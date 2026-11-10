@@ -47,6 +47,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  e2e:
+    name: Extension host integration tests (VS Code stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build, compile and run e2e tests in VS Code (fake ACP agent)
+        run: xvfb-run -a npm run test:e2e
+
   release:
     name: Attach VSIX to GitHub Release
     needs: build

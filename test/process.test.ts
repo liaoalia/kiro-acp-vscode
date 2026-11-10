@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveCliPath } from "../src/acp/index.js";
+import { resolveCliPath, shellWrappedCommand } from "../src/acp/index.js";
 
 function existsIn(found: string[]): (p: string) => Promise<boolean> {
   const set = new Set(found.map((f) => f.toLowerCase()));
@@ -86,4 +86,15 @@ test("resolveCliPath only tries kiro-cli defaults for the kiro-cli command", asy
   const { exists, probed } = tracking(["/usr/bin/kiro-cli"]);
   assert.equal(await resolveCliPath("node", "linux", { PATH: "/opt/none", HOME: "/home/me" }, exists), "node");
   assert.ok(!probed.includes("/usr/bin/kiro-cli"));
+});
+
+test("shellWrappedCommand routes .cmd/.bat through cmd.exe on win32 only", () => {
+  const env = { ComSpec: "C:\Windows\System32\cmd.exe" };
+  const cmd = shellWrappedCommand("C:\tools\kiro-cli.cmd", ["acp", "--agent-engine=v3"], "win32", env);
+  assert.equal(cmd.command, env.ComSpec);
+  assert.deepEqual(cmd.args, ["/d", "/s", "/c", '""C:\tools\kiro-cli.cmd" "acp" "--agent-engine=v3""']);
+  const exe = shellWrappedCommand("C:\Program Files\Kiro-Cli\kiro-cli.exe", ["acp"], "win32", env);
+  assert.deepEqual(exe, { command: "C:\Program Files\Kiro-Cli\kiro-cli.exe", args: ["acp"] });
+  const posix = shellWrappedCommand("/opt/wrap/kiro-cli.cmd", ["acp"], "linux", env);
+  assert.deepEqual(posix, { command: "/opt/wrap/kiro-cli.cmd", args: ["acp"] });
 });

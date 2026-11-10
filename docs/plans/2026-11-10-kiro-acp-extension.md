@@ -73,7 +73,7 @@
 - [x] run tests – must pass before task 8
 
 ### Task 8: Verify acceptance criteria
-- [ ] all 7 features wired end to end in the Extension Development Host against the fake agent (➕ automated with @vscode/test-electron in test/e2e)
+- [x] all 7 features wired end to end in the Extension Development Host against the fake agent (➕ automated with @vscode/test-electron in test/e2e: 14 tests, run by `npm run test:e2e` and the CI e2e job)
 - [x] run full test suite, typecheck, build (77 unit tests)
 - [ ] ⚠️ run against real `kiro-cli acp` (blocked until kiro-cli is installed + logged in); record the real `initialize` exchange in docs/protocol-notes.md
 

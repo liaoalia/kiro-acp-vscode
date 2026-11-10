@@ -122,7 +122,8 @@ that ships with the tests (it speaks ACP over stdio and replays recorded
 sessions):
 
 ```jsonc
-// settings.json of the development host (Windows: use kiro-cli-fake.cmd)
+// settings.json of the development host (Windows: kiro-cli-fake.cmd; .cmd/.bat
+// paths are run through cmd.exe automatically)
 "kiroAcp.cliPath": "<absolute path to repo>/test/fake-agent/kiro-cli-fake",
 "kiroAcp.cliArgs": ["--scenario", "tour"]
 ```

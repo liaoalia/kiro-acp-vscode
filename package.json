@@ -218,13 +218,16 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json",
     "compile-tests": "tsc -p tsconfig.test.json",
+    "compile-e2e": "tsc -p tsconfig.e2e.json",
     "test": "npm run typecheck && npm run compile-tests && node --test \"out/test/**/*.test.js\"",
+    "test:e2e": "npm run build && npm run compile-e2e && node scripts/run-e2e.mjs",
     "package": "npm run typecheck && npm run build && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.106.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0"
