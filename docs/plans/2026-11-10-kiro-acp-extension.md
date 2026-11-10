@@ -79,8 +79,8 @@
 
 ### Task 9: Packaging + docs (milestone 6)
 - [x] `vsce package` produces a VSIX (`--no-dependencies`, bundled)
-- [ ] README: install (VSIX), settings, proxy setup, auth, troubleshooting, feature list with verification status
-- [ ] docs/protocol-notes.md and docs/DECISIONS.md complete
+- [x] README: install (VSIX), settings, proxy setup, auth, troubleshooting, feature list with verification status
+- [x] docs/protocol-notes.md and docs/DECISIONS.md complete (real-CLI sections remain marked [unverified] until kiro-cli is installed)
 
 ## Technical Details
 - Transport: `spawn(cli, ["acp", ...cliArgs], { env: process.env, cwd: workspaceRoot, stdio: ["pipe","pipe","pipe"] })`; `ndJsonStream(Writable.toWeb(stdin), Readable.toWeb(stdout))`.
