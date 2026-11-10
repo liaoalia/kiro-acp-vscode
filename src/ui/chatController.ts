@@ -173,6 +173,11 @@ class ChatSession {
   firstPrompt: string | null = null;
   /** True while `session/load` replays the session's history (see D21). */
   loading = false;
+  /**
+   * Ids of tool calls replayed by `session/load`: their terminal content is
+   * history and is never resolved against this run's live terminals (D21).
+   */
+  readonly replayedToolCalls = new Set<string>();
   updatedAt = Date.now();
 
   constructor(
@@ -394,7 +399,7 @@ export class ChatController implements vscode.Disposable {
     });
     const toolCalls: Record<string, ToolCallView> = {};
     for (const [callId, call] of Object.entries(state.toolCalls)) {
-      toolCalls[callId] = this.withTerminalOutput(call);
+      toolCalls[callId] = this.withTerminalOutput(call, session);
     }
     const config = vscode.workspace.getConfiguration("kiroAcp");
     const showSettings = config.get<boolean>("showSettingsByDefault", false);
@@ -421,7 +426,8 @@ export class ChatController implements vscode.Disposable {
 
   private postView(view: ViewBinding, message: ToWebview): void {
     if (message.type === "toolCall") {
-      message = { type: "toolCall", call: this.withTerminalOutput(message.call) };
+      const session = view.sessionId ? (this.sessions.get(view.sessionId) ?? null) : null;
+      message = { type: "toolCall", call: this.withTerminalOutput(message.call, session) };
     }
     view.poster(message);
   }
@@ -435,14 +441,18 @@ export class ChatController implements vscode.Disposable {
   /**
    * The transcript reducer only knows a terminal's id; fill in the retained
    * output and exit code from the terminal service so the card can show them.
+   * Only terminals of `session` qualify, and a tool call replayed by
+   * `session/load` keeps whatever the agent sent: its ids come from an
+   * earlier run and must never show this run's live output (D9, D21).
    */
-  private withTerminalOutput(call: ToolCallView): ToolCallView {
+  private withTerminalOutput(call: ToolCallView, session: ChatSession | null): ToolCallView {
+    if (!session || session.replayedToolCalls.has(call.toolCallId)) return call;
     if (!call.content.some((c) => c.type === "terminal")) return call;
     return {
       ...call,
       content: call.content.map((c) => {
         if (c.type !== "terminal") return c;
-        const snap = this.deps.terminal.snapshot(c.terminalId);
+        const snap = this.deps.terminal.snapshot(c.terminalId, session.id);
         if (!snap) return c;
         return snap.exitCode === undefined
           ? { ...c, output: snap.output }
@@ -1305,8 +1315,12 @@ export class ChatController implements vscode.Disposable {
             session.id,
             emit.type === "commands" ? { type: "commands", commands: this.commandsView(session) } : emit,
           );
-          // Replayed tool calls are history: no diff editors to open or reconcile.
-          if (emit.type === "toolCall" && !replay) void this.onToolCallChanged(session, emit.call);
+          // Replayed tool calls are history: no diff editors to open or reconcile,
+          // and no terminal output resolved against live terminals.
+          if (emit.type === "toolCall") {
+            if (replay) session.replayedToolCalls.add(emit.call.toolCallId);
+            else void this.onToolCallChanged(session, emit.call);
+          }
           if (emit.type === "plan" && this.focusedId === session.id) {
             this.deps.plan.update(emit.entries, session.id);
           }
@@ -1505,7 +1519,7 @@ export class ChatController implements vscode.Disposable {
         return;
       }
       case "showTerminal":
-        if (!this.deps.terminal.showTerminal(message.terminalId)) {
+        if (!session || !this.deps.terminal.showTerminal(message.terminalId, session.id)) {
           this.notice(session ?? null, "info", "That terminal is no longer available.");
         }
         return;

@@ -27,6 +27,8 @@ import {
   concurrentPrefix,
   formatCommandHeader,
   formatExitFooter,
+  makeRunId,
+  makeTerminalId,
   parseTerminalMode,
   pickInputTarget,
   sharedTerminalName,
@@ -143,6 +145,11 @@ export class TerminalService implements vscode.Disposable {
   /** `shared` mode: the session's terminal, present while its tab is open. */
   private readonly shared = new Map<string, SharedTerminal>();
   private counter = 0;
+  /**
+   * Random per-run id baked into every terminal id, so ids of an earlier
+   * extension-host run (replayed by `session/load`) never match a live one.
+   */
+  private readonly runId = makeRunId();
 
   constructor(private readonly options: TerminalServiceOptions = {}) {}
 
@@ -156,7 +163,7 @@ export class TerminalService implements vscode.Disposable {
       throw new Error("terminal/create requires a command");
     }
     const seq = ++this.counter;
-    const id = `term-${seq}`;
+    const id = makeTerminalId(this.runId, seq);
     const sessionId = typeof req.sessionId === "string" && req.sessionId ? req.sessionId : "default";
     const mode = this.currentMode();
     const commandLine = buildShellCommand(req.command, req.args);
@@ -278,9 +285,13 @@ export class TerminalService implements vscode.Disposable {
 
   /**
    * Output so far and exit code of a terminal (also after release), for the
-   * chat tool card; `undefined` for unknown ids.
+   * chat tool card; `undefined` for unknown ids (including ids of a previous
+   * run) and, when `sessionId` is given, for terminals of another session.
    */
-  snapshot(terminalId: string): TerminalSnapshot | undefined {
+  snapshot(terminalId: string, sessionId?: string): TerminalSnapshot | undefined {
+    if (!this.belongsTo(terminalId, sessionId)) {
+      return undefined;
+    }
     const entry = this.active.get(terminalId);
     if (entry) {
       return snapshotOf(entry);
@@ -295,12 +306,13 @@ export class TerminalService implements vscode.Disposable {
   /**
    * Reveal the VS Code terminal that showed `terminalId` (works after release
    * too): its own tab in `perCommand` mode, the session's tab in `shared`
-   * mode. `false` when there is none (`hidden` mode, unknown id, or the user
-   * closed the shared tab).
+   * mode. `false` when there is none (`hidden` mode, unknown id, the user
+   * closed the shared tab) or, when `sessionId` is given, the terminal
+   * belongs to another session.
    */
-  showTerminal(terminalId: string): boolean {
+  showTerminal(terminalId: string, sessionId?: string): boolean {
     const placement = this.placements.get(terminalId);
-    if (!placement) {
+    if (!placement || !this.belongsTo(terminalId, sessionId)) {
       return false;
     }
     const terminal =
@@ -349,6 +361,20 @@ export class TerminalService implements vscode.Disposable {
   // ---------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------
+
+  /**
+   * Whether `terminalId` may be looked up on behalf of `sessionId`: every
+   * placement (all modes) records the session that created the terminal, so
+   * a card of one session never shows another session's command output.
+   * Without a `sessionId` the check is skipped; unknown ids fail it.
+   */
+  private belongsTo(terminalId: string, sessionId: string | undefined): boolean {
+    if (sessionId === undefined) {
+      return true;
+    }
+    const placement = this.placements.get(terminalId);
+    return placement !== undefined && placement.sessionId === sessionId;
+  }
 
   private require(terminalId: string): TerminalEntry {
     const entry = this.active.get(terminalId);

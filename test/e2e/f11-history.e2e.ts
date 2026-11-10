@@ -99,6 +99,10 @@ test("F11.3 openPastSession('past-1') restores the transcript: user text, answer
   assertEqual(call.status, "completed", "the replayed tool call is completed");
   assert(state.items.some((i) => i.type === "tool" && i.toolCallId === PAST_1_TOOL), "the tool call is in the transcript order");
   assert(!state.notices.some((n) => n.text.startsWith("Restoring")), "the progress notice was withdrawn");
+  // Terminal ids replayed from an earlier run (`term-N` / another run's id)
+  // resolve to nothing on behalf of the restored session (D9/D21).
+  assertEqual(api.terminal.snapshot("term-1", PAST_1), undefined, "a replayed-style terminal id has no live snapshot");
+  assertEqual(api.terminal.showTerminal("term-1", PAST_1), false, "a replayed-style terminal id reveals nothing");
 
   const summary = state.sessions.find((s) => s.id === PAST_1);
   assert(summary, "the restored session is listed");

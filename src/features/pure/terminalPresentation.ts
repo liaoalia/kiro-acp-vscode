@@ -53,6 +53,26 @@ export function parseTerminalMode(value: unknown): TerminalMode {
   }
 }
 
+const RUN_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/**
+ * A short random id for one extension-host run (`TerminalService`
+ * constructor), so terminal ids never repeat across restarts: a restored
+ * session's replayed `term-…` ids must not resolve to this run's terminals.
+ */
+export function makeRunId(length = 6): string {
+  let out = "";
+  for (let i = 0; i < length; i++) {
+    out += RUN_ID_ALPHABET[Math.floor(Math.random() * RUN_ID_ALPHABET.length)];
+  }
+  return out;
+}
+
+/** Terminal id of the `n`-th `terminal/create` of run `runId`: `term-<runId>-<n>`. */
+export function makeTerminalId(runId: string, n: number): string {
+  return `term-${runId}-${n}`;
+}
+
 /** Prefix of every terminal name this extension creates (`Kiro · …`, `Kiro: …`). */
 export const TERMINAL_NAME_PREFIX = "Kiro";
 

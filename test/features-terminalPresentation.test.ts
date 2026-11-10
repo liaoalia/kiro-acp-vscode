@@ -7,6 +7,8 @@ import {
   exitLabel,
   formatCommandHeader,
   formatExitFooter,
+  makeRunId,
+  makeTerminalId,
   parseTerminalMode,
   pickInputTarget,
   sharedTerminalName,
@@ -14,6 +16,23 @@ import {
   shouldMirrorOutput,
 } from "../src/features/pure/terminalPresentation.js";
 import { stripAnsi } from "../src/features/pure/outputBuffer.js";
+
+test("makeTerminalId is term-<runId>-<n>", () => {
+  assert.equal(makeTerminalId("ab12cd", 1), "term-ab12cd-1");
+  assert.equal(makeTerminalId("ab12cd", 42), "term-ab12cd-42");
+  assert.match(makeTerminalId(makeRunId(), 7), /^term-[A-Za-z0-9]+-\d+$/);
+});
+
+test("makeRunId yields distinct ids per run so two service instances never share terminal ids", () => {
+  const runA = makeRunId();
+  const runB = makeRunId();
+  assert.match(runA, /^[a-z0-9]{6}$/);
+  assert.notEqual(runA, runB);
+  // The same counter value in two runs (an extension-host restart) is a different terminal id.
+  assert.notEqual(makeTerminalId(runA, 1), makeTerminalId(runB, 1));
+  assert.notEqual(makeTerminalId(runA, 1), "term-1");
+  assert.equal(makeRunId(10).length, 10);
+});
 
 test("parseTerminalMode accepts the enum values", () => {
   assert.equal(parseTerminalMode("shared"), "shared");

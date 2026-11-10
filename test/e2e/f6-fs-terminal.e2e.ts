@@ -69,6 +69,25 @@ test("F6.1 the read tool sees unsaved edits and the execute tool runs in the ses
   assert(terminal && terminal.type === "terminal", "execute card has terminal content");
   assert(terminal.output.includes("hello"), `terminal output: ${JSON.stringify(terminal.output)}`);
   assertEqual(terminal.exitCode, 0, "terminal exit code");
+  // Ids are unique per extension-host run (`term-<run>-<n>`) and lookups are
+  // session-checked, so a restored session's replayed ids never resolve to
+  // another session's live terminal (D9/D21).
+  assert(
+    /^term-[A-Za-z0-9]+-\d+$/.test(terminal.terminalId),
+    `terminal id carries the run id: ${terminal.terminalId}`,
+  );
+  assert(api.terminal.snapshot(terminal.terminalId, sessionId), "snapshot works with the owning session id");
+  assert(api.terminal.showTerminal(terminal.terminalId, sessionId), "showTerminal works with the owning session id");
+  assertEqual(
+    api.terminal.snapshot(terminal.terminalId, "some-other-session"),
+    undefined,
+    "snapshot is refused for another session",
+  );
+  assertEqual(
+    api.terminal.showTerminal(terminal.terminalId, "some-other-session"),
+    false,
+    "showTerminal is refused for another session",
+  );
   assert(api.terminal.showTerminal(terminal.terminalId), "showTerminal works after release");
   // After terminal/release the command is cut off: its snapshot is frozen
   // (the pseudoterminal's bytes are not observable through the public API,

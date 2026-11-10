@@ -62,6 +62,10 @@ is retained up to `outputByteLimit` (default 1 MiB), truncating from the start
 on a character boundary, and served to the agent (`terminal/output`,
 `wait_for_exit`) and to the chat card per `terminalId`. `release` kills a
 still-running process; the retained output survives for the card.
+Terminal ids are unique per extension-host run (`term-<random run id>-<n>`)
+and every lookup for the UI (`snapshot`, `showTerminal`) is checked against
+the session that created the terminal, so an id replayed from an earlier run
+or another session never shows a different session's command output.
 
 How that output is mirrored into VS Code is a setting, `kiroAcp.terminal.mode`,
 read on every `terminal/create` (`src/features/pure/terminalPresentation.ts`):
@@ -222,7 +226,9 @@ session…" notice and calls `session/load` with the workspace cwd. The
 history the agent replays before answering is applied to that transcript
 exactly like live updates — including the user chunks, which D13 only
 suppresses for live turns — except that replayed tool calls open or reconcile
-no diff editors. The returned modes/config options/models are merged, the
+no diff editors, and their terminal content is never resolved against this
+run's live terminals (the card keeps the replayed output, with no exit code;
+see D9). The returned modes/config options/models are merged, the
 title is the agent's (`session/list` title, later `session_info_update`) with
 the first replayed user message as fallback, and the views showing the
 session get a fresh `state` snapshot. If the load fails the placeholder
