@@ -80,3 +80,16 @@ different mechanism this is recorded in `docs/protocol-notes.md`.
 Markdown is rendered with `marked` and sanitised with `DOMPurify` under a
 strict CSP (`default-src 'none'`, nonce-scoped script, no remote resources).
 Vanilla TypeScript, no UI framework, to keep the dependency surface small.
+
+## D13. User messages are echoed locally
+The chat shows the user's prompt (text plus one resource chip per attached
+file/selection) immediately from the extension side with a local
+`messageId` (`user-N`). Incoming `user_message_chunk` updates are ignored for
+the live session so an agent that echoes the prompt does not produce a
+duplicate. Session replay (`session/load`) is out of scope; when it is added,
+replayed user chunks (`_meta.kiro.replay: true`) must be rendered.
+
+## D14. Compiled artifacts are not committed
+`dist/` and `*.vsix` stay out of git. GitHub Actions builds and tests on
+Linux/Windows/macOS, uploads the VSIX as a build artifact on every push to
+`main`, and attaches it to a GitHub Release for `v*` tags.

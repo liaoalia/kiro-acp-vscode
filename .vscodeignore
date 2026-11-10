@@ -1,11 +1,14 @@
+.github/**
 .vscode/**
 src/**
 test/**
 out/**
 node_modules/**
 scripts/**
+docs/plans/**
 esbuild.mjs
 tsconfig*.json
 *.vsix
 .gitignore
+.gitattributes
 **/*.map
