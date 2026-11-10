@@ -50,7 +50,7 @@ body {
   flex: 1 1 auto;
 }
 
-/* Below the header: [session panel | main column]. The panel only exists in
+/* Below the header: [main column | session panel]. The panel only exists in
    the wide layout; narrow views get a session <select> in the header. */
 .body {
   display: flex;
@@ -284,6 +284,23 @@ summary:focus-visible {
 }
 .status-error .dot {
   background: var(--vscode-errorForeground);
+}
+/* Activity of the displayed session wins over the connection colour. */
+.status-pill.status-working .dot {
+  background: var(--vscode-progressBar-background, var(--kiro-accent));
+  animation: kiro-pulse 1.2s ease-in-out infinite;
+}
+.status-pill.status-needs_input .dot {
+  background: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-charts-yellow));
+}
+.status-pill.status-working .status-text,
+.status-pill.status-needs_input .status-text {
+  color: var(--vscode-foreground);
+}
+/* Header slots are layout-transparent wrappers around the memoised parts. */
+.hdr-session-slot,
+.hdr-actions {
+  display: contents;
 }
 
 /* Compact session switcher (narrow layout only). */
@@ -552,11 +569,67 @@ summary:focus-visible {
   font-size: 12px;
 }
 
-.msg-agent.streaming .md:last-child > :last-child::after {
-  content: "\258D";
+/* Streaming caret, appended by the renderer to the message being written. */
+.caret {
+  display: inline-block;
   margin-left: 1px;
-  color: var(--kiro-dim);
+  color: var(--vscode-progressBar-background, var(--kiro-accent));
   animation: kiro-blink 1s steps(2, start) infinite;
+  user-select: none;
+}
+
+/* "Kiro is working…" strip under the last transcript item while a turn runs. */
+.working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: var(--kiro-radius);
+  border: 1px solid var(--kiro-border);
+  border-left: 3px solid var(--vscode-progressBar-background, var(--kiro-accent));
+  background: var(--vscode-editorWidget-background, transparent);
+  font-size: 12px;
+  color: var(--vscode-foreground);
+}
+.working-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+.working-dots i {
+  display: block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--vscode-progressBar-background, var(--kiro-accent));
+  animation: kiro-dot 1.2s ease-in-out infinite;
+}
+.working-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.working-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+.working-text {
+  flex: 0 0 auto;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.working-sep {
+  flex: 0 0 auto;
+  color: var(--kiro-dim);
+}
+.working-step {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--kiro-dim);
 }
 
 /* Markdown */
@@ -781,13 +854,32 @@ summary:focus-visible {
   transform: rotate(90deg);
 }
 
+/* Status badge: glyph + short word, so colour is never the only signal. */
 .status {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
+  gap: 4px;
+  flex: 0 0 auto;
   font-size: 11px;
   color: var(--kiro-dim);
+  white-space: nowrap;
+}
+.status-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  line-height: 0;
+}
+.status-label {
+  font-size: 10px;
+  line-height: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.status-pending,
+.status-in_progress {
+  color: var(--vscode-progressBar-background, var(--kiro-accent));
 }
 .status-completed {
   color: var(--vscode-charts-green);
@@ -798,15 +890,41 @@ summary:focus-visible {
 .status-cancelled {
   color: var(--vscode-charts-yellow);
 }
+
+/* Card states. Running: accent edge + slow pulse; done: dimmed; failed: red edge. */
+.tool-pending,
+.tool-in_progress {
+  border-left: 3px solid var(--vscode-progressBar-background, var(--kiro-accent));
+  background: color-mix(in srgb, var(--vscode-progressBar-background, var(--kiro-accent)) 5%, var(--vscode-editorWidget-background, transparent));
+  animation: kiro-tool-pulse 2s ease-in-out infinite;
+}
+/* Waiting for the user, not working: warning edge, no pulse. */
+.tool-has-perm {
+  border-left-color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-charts-yellow));
+  animation: none;
+}
+.tool-completed {
+  opacity: 0.85;
+}
+.tool-completed .tool-title {
+  color: var(--kiro-dim);
+}
 .tool-failed {
   border-color: var(--vscode-errorForeground);
+  border-left-width: 3px;
+}
+.tool-cancelled {
+  opacity: 0.7;
+}
+.tool-cancelled .tool-title {
+  color: var(--kiro-dim);
 }
 
 .spinner {
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  border: 2px solid var(--kiro-dim);
+  border: 2px solid currentColor;
   border-top-color: transparent;
   animation: kiro-spin 0.8s linear infinite;
 }
@@ -1310,14 +1428,38 @@ summary:focus-visible {
     opacity: 0.5;
   }
 }
+@keyframes kiro-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  35% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@keyframes kiro-tool-pulse {
+  50% {
+    background-color: color-mix(in srgb, var(--vscode-progressBar-background, var(--kiro-accent)) 14%, var(--vscode-editorWidget-background, transparent));
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .spinner {
     animation: none;
     border-style: dashed;
-    border-top-color: var(--kiro-dim);
+    border-top-color: currentColor;
   }
-  .msg-agent.streaming .md:last-child > :last-child::after {
+  .caret,
+  .status-pill .dot,
+  .working-dots i,
+  .tool-pending,
+  .tool-in_progress {
     animation: none;
+  }
+  .working-dots i {
+    opacity: 1;
   }
   .chevron {
     transition: none;
@@ -1469,7 +1611,7 @@ summary:focus-visible {
     right: 0;
   }
 
-  /* Session switcher moves from the header into the left panel. */
+  /* Session switcher moves from the header into the right-hand panel. */
   .hdr-session {
     display: none;
   }
@@ -1481,18 +1623,19 @@ summary:focus-visible {
   }
 
   /* -------------------------------------------------------------------------
-     Session panel: full height between the header and the bottom of the tab.
-     240px expanded, 44px collapsed (icons only).
+     Session panel on the right: full height between the header and the
+     bottom of the tab. 240px expanded, 44px collapsed (icons only).
   ------------------------------------------------------------------------- */
   .session-panel {
     --kiro-panel-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
     display: flex;
     flex-direction: column;
     flex: 0 0 auto;
+    order: 2;
     width: 240px;
     min-height: 0;
     overflow: hidden;
-    border-right: 1px solid var(--kiro-border);
+    border-left: 1px solid var(--kiro-border);
     background: var(--kiro-panel-bg);
     transition: width 180ms ease;
   }
@@ -1685,8 +1828,9 @@ summary:focus-visible {
     color: var(--vscode-foreground);
     background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
   }
+  /* Chevron points at where the panel goes: right to collapse, left to expand. */
   .sp-chevron {
-    transform: rotate(180deg);
+    transform: rotate(0deg);
     transition: transform 180ms ease;
   }
   .sp-badge {
@@ -1711,7 +1855,7 @@ summary:focus-visible {
     width: 28px;
   }
   .session-panel.collapsed .sp-chevron {
-    transform: rotate(0deg);
+    transform: rotate(180deg);
   }
   .session-panel.collapsed .sp-toggle {
     overflow: visible;

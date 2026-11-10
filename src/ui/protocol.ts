@@ -172,7 +172,7 @@ export type SessionStatus =
   | "running"
   /** Waiting for the user: a permission request is pending. */
   | "needs_input"
-  /** The session is unusable (agent process died or an error ended it). */
+  /** The agent process is stopped or crashed; every session is unusable until restart. */
   | "error";
 
 export interface SessionSummary {
@@ -199,7 +199,11 @@ export interface UiState {
   connection: ConnectionView;
   /** The session this webview currently displays; all other fields describe it. */
   sessionId: string | null;
-  /** Every live session of the agent process, most recent first. */
+  /**
+   * The sessions this webview can switch between, most recent first: the
+   * sessions of its group (one group per chat tab, one for the sidebar) or,
+   * for a view without a group, every live session of the agent process.
+   */
   sessions: SessionSummary[];
   turnActive: boolean;
   items: TranscriptItem[];

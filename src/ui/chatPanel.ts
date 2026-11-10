@@ -2,7 +2,9 @@
  * Chat as editor tabs (WebviewPanels), the default location.
  *
  * Any number of tabs can be open; each has its own view handle on the
- * shared ChatController and displays its own session. `openNew()` adds a
+ * shared ChatController, displays its own session and is a session *group*
+ * of its own: its session panel lists only the sessions created in that
+ * tab, and closing the tab closes them (DECISIONS D20). `openNew()` adds a
  * tab, `open()` reveals the most recently active one (or adds the first).
  */
 import { randomBytes } from "node:crypto";
@@ -13,10 +15,12 @@ import type { FromWebview, ToWebview } from "./protocol.js";
 import { getWebviewHtml } from "./webviewHtml.js";
 
 export const CHAT_PANEL_VIEW_TYPE = "kiroAcp.chatPanel";
+const TITLE_PREFIX = "Kiro Chat";
 
 interface PanelEntry {
   panel: vscode.WebviewPanel;
   view: ViewHandle;
+  groupId: string;
 }
 
 export class ChatPanelManager implements vscode.Disposable {
@@ -24,15 +28,21 @@ export class ChatPanelManager implements vscode.Disposable {
   /** The panel most recently active (or created). */
   private recent: PanelEntry | null = null;
   private readonly disposables: vscode.Disposable[] = [];
+  /** Numbers the tab titles (`Kiro Chat 1`, `Kiro Chat 2`, ...). */
+  private titleCounter = 0;
+  private groupCounter = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly controller: ChatController,
   ) {
-    // Restore the tabs after a window reload; each gets a fresh session.
+    // Restore the tabs after a window reload; each gets a fresh session in a
+    // group of its own and keeps the title it was saved with.
     this.disposables.push(
       vscode.window.registerWebviewPanelSerializer(CHAT_PANEL_VIEW_TYPE, {
         deserializeWebviewPanel: async (panel) => {
+          const numbered = /^Kiro Chat (\d+)$/.exec(panel.title);
+          if (numbered) this.titleCounter = Math.max(this.titleCounter, Number(numbered[1]));
           this.adopt(panel);
         },
       }),
@@ -41,12 +51,13 @@ export class ChatPanelManager implements vscode.Disposable {
 
   /**
    * Open a new chat tab in the active editor group. It displays `sessionId`
-   * when given, otherwise a fresh session created once the agent is ready.
+   * when given (joining that session's group), otherwise a fresh session
+   * created once the agent is ready.
    */
   openNew(sessionId?: string): vscode.WebviewPanel {
     const panel = vscode.window.createWebviewPanel(
       CHAT_PANEL_VIEW_TYPE,
-      "Kiro Chat",
+      `${TITLE_PREFIX} ${++this.titleCounter}`,
       { viewColumn: vscode.ViewColumn.Active },
       {
         enableScripts: true,
@@ -84,6 +95,11 @@ export class ChatPanelManager implements vscode.Disposable {
     return this.entries.find((e) => e.panel === panel)?.view.sessionId ?? null;
   }
 
+  /** The controller view handle of a chat tab (null when the tab is not one of ours). */
+  viewOf(panel: vscode.WebviewPanel): ViewHandle | null {
+    return this.entries.find((e) => e.panel === panel)?.view ?? null;
+  }
+
   focusInput(): void {
     this.open();
     this.recent?.panel.webview.postMessage({ type: "focusInput" } satisfies ToWebview);
@@ -113,8 +129,12 @@ export class ChatPanelManager implements vscode.Disposable {
     const poster = (message: ToWebview): void => {
       void webview.postMessage(message);
     };
-    const view = this.controller.attachView(poster, { prefer: "fresh" });
-    const entry: PanelEntry = { panel, view };
+    // A tab opened on an existing session joins that session's group (a
+    // permission request arrived while no chat was open); otherwise the tab
+    // is a new group.
+    const groupId = (sessionId && this.controller.sessionGroup(sessionId)) || `tab-${++this.groupCounter}`;
+    const view = this.controller.attachView(poster, { prefer: "fresh", groupId });
+    const entry: PanelEntry = { panel, view, groupId };
     this.entries.push(entry);
     this.recent = entry;
     if (sessionId) view.setSession(sessionId);
@@ -138,6 +158,8 @@ export class ChatPanelManager implements vscode.Disposable {
       const index = this.entries.indexOf(entry);
       if (index >= 0) this.entries.splice(index, 1);
       if (this.recent === entry) this.recent = this.entries[this.entries.length - 1] ?? null;
+      // Closing the tab ends its sessions (D20), unless another tab shares the group.
+      if (!this.entries.some((e) => e.groupId === groupId)) void this.controller.closeGroup(groupId);
     });
   }
 

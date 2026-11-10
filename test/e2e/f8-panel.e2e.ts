@@ -18,7 +18,8 @@ test("F8.1 kiroAcp.focus opens the chat as an editor tab by default", async ({ a
 
   await vscode.commands.executeCommand("kiroAcp.focus");
   await waitFor(() => panelTabs().length === 1 || undefined, 15_000, "the Kiro Chat editor tab");
-  assertEqual(panelTabs()[0]?.label, "Kiro Chat", "tab label");
+  const label = panelTabs()[0]?.label ?? "";
+  assert(/^Kiro Chat \d+$/.test(label), `tab label is numbered: ${label}`);
 
   // Focusing again reveals the same tab instead of opening a second one
   // (`kiroAcp.openInEditor` is the "new tab" command, covered by F10.5).

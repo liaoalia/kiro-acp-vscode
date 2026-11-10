@@ -50,6 +50,35 @@ export function setChildren(el: Element, children: Child[]): void {
   append(el, children);
 }
 
+/**
+ * Makes the children of `parent` equal `children` (in order) by inserting or
+ * moving only the nodes that differ. Nodes already in place are not touched,
+ * so a focused row or an open `<select>` survives a re-render.
+ */
+export function reconcileChildren(parent: Element, children: Element[]): void {
+  const wanted = new Set<ChildNode>(children);
+  let cursor: ChildNode | null = parent.firstChild;
+  for (const child of children) {
+    // Drop stale nodes at the cursor first, so the nodes after them stay put.
+    while (cursor && cursor !== child && !wanted.has(cursor)) {
+      const next: ChildNode | null = cursor.nextSibling;
+      parent.removeChild(cursor);
+      cursor = next;
+    }
+    if (child === cursor) {
+      cursor = cursor.nextSibling;
+      continue;
+    }
+    parent.insertBefore(child, cursor);
+  }
+  // Everything still at/after the cursor is no longer wanted.
+  while (cursor) {
+    const next: ChildNode | null = cursor.nextSibling;
+    parent.removeChild(cursor);
+    cursor = next;
+  }
+}
+
 /** Convenience for `data-action` buttons (click delegated in main.ts). */
 export function actionButton(
   action: string,
@@ -198,26 +227,35 @@ export const TOOL_STATUS_LABEL: Record<ToolStatus, string> = {
   cancelled: "Cancelled",
 };
 
-/** Status badge: spinner for in-progress, glyphs otherwise. */
+/** Short status word shown next to the badge glyph, so colour is not the only signal. */
+export const TOOL_STATUS_SHORT: Record<ToolStatus, string> = {
+  pending: "pending",
+  in_progress: "running",
+  completed: "done",
+  failed: "failed",
+  cancelled: "cancelled",
+};
+
+/** Status badge: a glyph (spinner while pending/running, ✓, ✗, ⊘) plus a short status word. */
 export function statusBadge(status: ToolStatus): HTMLSpanElement {
-  const badge = h("span", { class: `status status-${status}`, title: TOOL_STATUS_LABEL[status], role: "img", "aria-label": TOOL_STATUS_LABEL[status] });
+  const badge = h("span", { class: `status status-${status}`, title: TOOL_STATUS_LABEL[status] });
+  const glyph = h("span", { class: "status-glyph", "aria-hidden": "true" });
   switch (status) {
     case "pending":
-      badge.textContent = "⏳"; // hourglass
-      break;
     case "in_progress":
-      badge.appendChild(h("span", { class: "spinner" }));
+      glyph.appendChild(h("span", { class: "spinner" }));
       break;
     case "completed":
-      badge.appendChild(icon("check", "icon"));
+      glyph.appendChild(icon("check", "icon"));
       break;
     case "failed":
-      badge.appendChild(icon("cross", "icon"));
+      glyph.appendChild(icon("cross", "icon"));
       break;
     case "cancelled":
-      badge.textContent = "⊘"; // circled division slash
+      glyph.textContent = "⊘"; // circled division slash
       break;
   }
+  badge.append(glyph, h("span", { class: "status-label" }, TOOL_STATUS_SHORT[status]));
   return badge;
 }
 

@@ -154,7 +154,27 @@ notices, opened diffs, title). Every webview (editor tab or sidebar) is a
 showing that session, while `connection`/`sessions`/`chips` go everywhere.
 The controller also tracks a *focused* session (last used) for commands,
 the plan document and the e2e API. New tabs prefer a fresh idle session; the
-sidebar follows the focused one. Closing a session cancels its turn and
-permissions; agent exit marks all sessions `error`. Session titles come from
-the first prompt (≤ 40 chars) until the agent reports one via
-`session_info_update`.
+sidebar starts on the focused session (when that session may belong to its
+group, see D20) and then keeps its own (revealing it focuses its session).
+Closing a session cancels its turn and permissions; agent exit marks all
+sessions `error`. Session titles come from the first prompt (≤ 40 chars)
+until the agent reports one via `session_info_update`.
+
+## D20. Sessions are grouped by tab; closing a tab ends its sessions
+With several chat tabs open, every tab listed every session of the process,
+which read as "the same chat four times". Each editor tab (WebviewPanel) is
+therefore a session *group* (a fresh id per tab, also per restored tab), the
+sidebar is the `sidebar` group, and sessions created without a view (the
+auto-created first session, the API, tests) live in `default`. A grouped
+view lists only the sessions of its group (`UiState.sessions`, the
+`sessions` updates and their dedupe key are computed per group) and only
+switches within it; `newSession` / `/clear` create in the sender's group;
+a new tab takes a spare idle session of its own group or of `default`
+(adopting it) and otherwise creates one. Plain `attach()` views have no group
+and see everything, which keeps the test harness semantics. Closing a tab
+closes every session of its group: their turns are cancelled, their pending
+permissions rejected and the sessions dropped — a closed tab is gone, not
+parked. Tabs are numbered (`Kiro Chat 1`, `Kiro Chat 2`, ...); a restored
+tab keeps its saved title. When a permission request arrives while no chat
+view is attached, the host opens a tab (or the sidebar) on *that* session
+rather than a fresh one.

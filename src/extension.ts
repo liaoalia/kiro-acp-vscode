@@ -58,6 +58,12 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     if (chatInEditor()) panel.open();
     else view.reveal();
   };
+  // A permission request arrived while no chat was open: show *that* session
+  // (a fresh tab would hide the session waiting for an answer).
+  controller.onNeedsView = (sessionId) => {
+    if (chatInEditor()) panel.openNew(sessionId);
+    else view.showSession(sessionId);
+  };
 
   // Status bar entry (bottom right) that opens the chat, like other assistants do.
   const statusItem = vscode.window.createStatusBarItem("kiroAcp.status", vscode.StatusBarAlignment.Right, 100);
@@ -85,6 +91,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     vscode.commands.registerCommand("kiroAcp.openInEditor", () => panel.openNew()),
     // Acts on the focused view (the chat tab / sidebar the user last used).
     vscode.commands.registerCommand("kiroAcp.newSession", () => controller.newSession()),
+    // The sidebar's own title-bar button: always a session in the sidebar, whatever has focus.
+    vscode.commands.registerCommand("kiroAcp.newSessionInSidebar", () => view.newSession()),
     vscode.commands.registerCommand("kiroAcp.cancel", () => controller.cancel()),
     vscode.commands.registerCommand("kiroAcp.restart", () => controller.restart()),
     vscode.commands.registerCommand("kiroAcp.openPlan", () => plan.open()),

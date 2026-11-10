@@ -19,6 +19,7 @@ import {
   renderPickers,
   renderPlanBar,
   renderSessionPanel,
+  renderWorkingStrip,
   statusAnnouncement,
   type LocalUi,
 } from "./render";
@@ -57,11 +58,14 @@ notices.hidden = true;
 const empty = h("div", { class: "empty" });
 empty.hidden = true;
 const items = h("div", { class: "items" });
+// "Kiro is working…" strip; sits below the last item so it counts as the bottom for auto-scroll.
+const working = h("div", { class: "working" });
+working.hidden = true;
 // The transcript is the only scroll container; its content sits in a centered column.
 const transcript = h(
   "main",
   { class: "transcript", "aria-label": "Conversation" },
-  h("div", { class: "column transcript-col" }, notices, empty, items),
+  h("div", { class: "column transcript-col" }, notices, empty, items, working),
 );
 const jump = actionButton("jump-bottom", [icon("down"), "Jump to latest"], {
   cls: "jump",
@@ -73,7 +77,7 @@ planBar.hidden = true;
 const pickers = h("div", { class: "pickers", role: "toolbar", "aria-label": "Session options" });
 pickers.hidden = true;
 const live = h("div", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" });
-// Wide-layout session panel; hidden by the stylesheet below 640px.
+// Wide-layout session panel on the right; hidden by the stylesheet below 640px.
 const sessionPanel = h("aside", { class: "session-panel", "aria-label": "Sessions" });
 
 const composer = new Composer({
@@ -96,7 +100,6 @@ app.append(
   h(
     "div",
     { class: "body" },
-    sessionPanel,
     h(
       "div",
       { class: "main-col" },
@@ -104,6 +107,7 @@ app.append(
       h("div", { class: "transcript-wrap" }, transcript, jump),
       h("div", { class: "column bottom-col" }, planBar, pickers, composer.el),
     ),
+    sessionPanel,
   ),
   live,
 );
@@ -133,12 +137,14 @@ function scrollToBottom(): void {
   jump.hidden = true;
 }
 
-// Content may grow after a render (e.g. details toggled); keep following.
+// Content may grow after a render (e.g. details toggled, working strip shown); keep following.
 if (typeof ResizeObserver !== "undefined") {
-  new ResizeObserver(() => {
+  const ro = new ResizeObserver(() => {
     if (stuckToBottom) transcript.scrollTop = transcript.scrollHeight;
     jump.hidden = stuckToBottom || nearBottom();
-  }).observe(items);
+  });
+  ro.observe(items);
+  ro.observe(working);
 }
 window.addEventListener("resize", () => {
   if (stuckToBottom) transcript.scrollTop = transcript.scrollHeight;
@@ -196,6 +202,7 @@ function render(): void {
   renderNotices(notices, state, local);
   renderEmpty(empty, state);
   transcriptRenderer.render(state);
+  renderWorkingStrip(working, state);
   renderPlanBar(planBar, state);
   renderPickers(pickers, state);
   if (!local.showSettings) pickers.hidden = true;

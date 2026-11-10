@@ -8,6 +8,11 @@
  * through its API or from a view — which the plan document, the status bar
  * commands and plain `attach()` views follow.
  *
+ * Sessions are grouped: every chat tab is a group of its own, the sidebar is
+ * the `sidebar` group and sessions created without a view live in `default`.
+ * A grouped view lists and switches between the sessions of its group only;
+ * closing a tab closes the sessions of its group (see DECISIONS D20).
+ *
  * The webview only ever sees `ToWebview` messages produced here; the agent
  * process only ever sees ACP requests issued through the `KiroAgent` facade.
  */
@@ -83,7 +88,12 @@ export interface ChatControllerDeps {
 export interface ViewHandle {
   /** The session this view displays, or null when it has none yet. */
   readonly sessionId: string | null;
-  /** Display `sessionId` (must be a live session) or nothing; posts `session` + `state`. */
+  /** The group whose sessions this view lists, or null for a view that sees every session. */
+  readonly groupId: string | null;
+  /**
+   * Display `sessionId` (must be a live session) or nothing; posts `session` +
+   * `state`. A grouped view adopts the session into its group.
+   */
   setSession(sessionId: string | null): void;
   /** Make this view the focused one (its session becomes the focused session). */
   focus(): void;
@@ -100,11 +110,33 @@ export interface AttachViewOptions {
    * session — the sidebar). Default `focused`.
    */
   prefer?: "fresh" | "focused";
+  /**
+   * The session group of the view (a chat tab, the sidebar). Omitted: the
+   * view lists every session and `newSession()` through it uses the focused
+   * view's group.
+   */
+  groupId?: string;
 }
+
+/** Group of sessions created without any view (API, tests, the first auto-created session). */
+export const DEFAULT_GROUP = "default";
+
+/** Diff tabs open automatically: for every edit, only when a permission asks for it, or never. */
+export type AutoOpenDiffs = "always" | "whenPermissionRequired" | "never";
 
 const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
 const TITLE_MAX = 40;
 const SESSIONS_DEBOUNCE_MS = 50;
+/** Webview messages that act on the view's session and may therefore need one assigned first. */
+const NEEDS_SESSION = new Set<FromWebview["type"]>([
+  "prompt",
+  "setMode",
+  "setConfigOption",
+  "setModel",
+  "cancel",
+  "newSession",
+  "selectSession",
+]);
 
 // ---------------------------------------------------------------------------
 // Per-session state
@@ -128,6 +160,8 @@ class ChatSession {
     public state: SessionState,
     /** Creation order, breaks `updatedAt` ties. */
     readonly seq: number,
+    /** The tab / sidebar group the session belongs to (see D20). */
+    public groupId: string,
   ) {
     this.transcript = withSessionSnapshot(createTranscript(), {
       modes: state.modes,
@@ -158,13 +192,17 @@ interface ViewOps {
   focusedId(): string | null;
   setSession(view: ViewBinding, sessionId: string | null): void;
   focus(view: ViewBinding): void;
-  snapshot(sessionId: string | null): UiState;
+  snapshot(view: ViewBinding): UiState;
   detach(view: ViewBinding): void;
 }
 
 class ViewBinding implements ViewHandle {
   /** Displayed session of a non-following view. */
   displayed: string | null = null;
+  /** In-flight initial assignment (one per view, see {@link ChatController.assignSession}). */
+  assigning: Promise<void> | null = null;
+  /** Dedupe key of the last `sessions` list posted to this view. */
+  lastSessionsKey = "";
 
   constructor(
     readonly poster: (message: ToWebview) => void,
@@ -172,6 +210,8 @@ class ViewBinding implements ViewHandle {
     readonly follows: boolean,
     /** Pending initial assignment; cleared once a session is displayed. */
     public prefer: "fresh" | "focused" | null,
+    /** Session group (tab / sidebar); null lists every session. */
+    readonly groupId: string | null,
     private readonly ops: ViewOps,
   ) {}
 
@@ -188,7 +228,7 @@ class ViewBinding implements ViewHandle {
   }
 
   snapshot(): UiState {
-    return this.ops.snapshot(this.sessionId);
+    return this.ops.snapshot(this);
   }
 
   dispose(): void {
@@ -221,13 +261,18 @@ export class ChatController implements vscode.Disposable {
   private readonly unsubscribers: Array<() => void> = [];
   private starting: Promise<void> | null = null;
   private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
-  private lastSessionsJson = "";
+
+  /**
+   * Called when a session waits for the user (permission request) while no
+   * view is attached at all; the host opens a view on that session.
+   */
+  onNeedsView: ((sessionId: string) => void) | null = null;
 
   private readonly viewOps: ViewOps = {
     focusedId: () => this.focusedId,
     setSession: (view, sessionId) => this.setViewSession(view, sessionId),
     focus: (view) => this.focusView(view),
-    snapshot: (sessionId) => this.snapshot(sessionId),
+    snapshot: (view) => this.snapshotFor(view),
     detach: (view) => this.detachView(view),
   };
 
@@ -250,7 +295,7 @@ export class ChatController implements vscode.Disposable {
   attach(poster: (message: ToWebview) => void): () => void {
     let view = [...this.views].find((v) => v.follows && v.poster === poster);
     if (!view) {
-      view = new ViewBinding(poster, true, null, this.viewOps);
+      view = new ViewBinding(poster, true, null, null, this.viewOps);
       this.views.add(view);
     }
     const bound = view;
@@ -263,7 +308,7 @@ export class ChatController implements vscode.Disposable {
    * {@link ensureViewSession} / the webview's `ready` message.
    */
   attachView(poster: (message: ToWebview) => void, options: AttachViewOptions = {}): ViewHandle {
-    const view = new ViewBinding(poster, false, options.prefer ?? "focused", this.viewOps);
+    const view = new ViewBinding(poster, false, options.prefer ?? "focused", options.groupId ?? null, this.viewOps);
     this.views.add(view);
     return view;
   }
@@ -295,18 +340,31 @@ export class ChatController implements vscode.Disposable {
     return this.sortedSessions().map((s) => s.id);
   }
 
+  /** The group of a live session, or null when unknown. */
+  sessionGroup(sessionId: string): string | null {
+    return this.sessions.get(sessionId)?.groupId ?? null;
+  }
+
   /**
-   * Full `UiState` for `sessionId`; `undefined` means the focused session,
-   * `null` an empty view with no session.
+   * Full `UiState` for `sessionId` listing every session; `undefined` means
+   * the focused session, `null` an empty view with no session.
    */
   snapshot(sessionId?: string | null): UiState {
-    const id = sessionId === undefined ? this.focusedId : sessionId;
+    return this.buildSnapshot(sessionId === undefined ? this.focusedId : sessionId, null);
+  }
+
+  /** `UiState` as `view` sees it: its session and the sessions of its group. */
+  private snapshotFor(view: ViewBinding): UiState {
+    return this.buildSnapshot(view.sessionId, view.groupId);
+  }
+
+  private buildSnapshot(id: string | null, groupId: string | null): UiState {
     const session = id ? (this.sessions.get(id) ?? null) : null;
     const transcript = session?.transcript ?? createTranscript();
     const state = snapshotToUiState(transcript, {
       connection: this.connection,
       sessionId: session?.id ?? null,
-      sessions: this.sessionSummaries(),
+      sessions: this.sessionSummaries(groupId),
       turnActive: session?.turnActive ?? false,
       permissions: session ? this.pendingFor(session.id) : [],
       models: session?.models ?? null,
@@ -347,6 +405,12 @@ export class ChatController implements vscode.Disposable {
     view.poster(message);
   }
 
+  /** Post `session` + a full `state` snapshot (as the view sees it) to `view`. */
+  private postSessionState(view: ViewBinding, sessionId: string | null): void {
+    this.postView(view, { type: "session", sessionId });
+    this.postView(view, { type: "state", state: this.snapshotFor(view) });
+  }
+
   /**
    * The transcript reducer only knows a terminal's id; fill in the retained
    * output and exit code from the terminal service so the card can show them.
@@ -372,11 +436,18 @@ export class ChatController implements vscode.Disposable {
 
   private setViewSession(view: ViewBinding, sessionId: string | null): void {
     if (view.follows) return;
-    const id = sessionId !== null && this.sessions.has(sessionId) ? sessionId : null;
-    if (id !== null) view.prefer = null;
+    const session = sessionId !== null ? this.sessions.get(sessionId) : undefined;
+    const id = session?.id ?? null;
+    if (session) {
+      view.prefer = null;
+      // A displayed session belongs to the view's group (adopts `default` / API-assigned sessions).
+      if (view.groupId !== null && session.groupId !== view.groupId) {
+        session.groupId = view.groupId;
+        this.scheduleSessions();
+      }
+    }
     view.displayed = id;
-    this.postView(view, { type: "session", sessionId: id });
-    this.postView(view, { type: "state", state: this.snapshot(id) });
+    this.postSessionState(view, id);
   }
 
   private focusView(view: ViewBinding): void {
@@ -395,19 +466,38 @@ export class ChatController implements vscode.Disposable {
     if (binding) await this.assignSession(binding);
   }
 
-  private async assignSession(view: ViewBinding): Promise<void> {
-    if (view.follows || view.displayed !== null || !this.views.has(view)) return;
-    if (!this.agent || this.agent.status !== "ready") return;
+  /**
+   * Give `view` its first session. One assignment per view is in flight at a
+   * time: `adopt()` and the webview's `ready` both call this while
+   * `session/new` is pending and must not open two sessions.
+   */
+  private assignSession(view: ViewBinding): Promise<void> {
+    if (view.follows || view.displayed !== null || !this.views.has(view)) return Promise.resolve();
+    if (!this.agent || this.agent.status !== "ready") return Promise.resolve();
+    if (view.assigning) return view.assigning;
+    view.assigning = this.doAssignSession(view).finally(() => {
+      view.assigning = null;
+    });
+    return view.assigning;
+  }
+
+  private async doAssignSession(view: ViewBinding): Promise<void> {
+    const groupId = view.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
     if (view.prefer === "fresh") {
-      const spare = this.spareSession();
-      const id = spare?.id ?? (await this.createSession())?.id ?? null;
+      const spare = this.spareSession(groupId) ?? this.spareSession(DEFAULT_GROUP);
+      const id = spare?.id ?? (await this.createSession(groupId))?.id ?? null;
       if (id && view.displayed === null && this.views.has(view)) {
         this.setViewSession(view, id);
         this.focusView(view);
       }
       return;
     }
-    const id = this.focusedId ?? (await this.createSession())?.id ?? null;
+    // `focused`: the focused session when the view may list it, else a session of its own.
+    const focused = this.focusedId ? this.sessions.get(this.focusedId) : undefined;
+    const usable =
+      focused && (view.groupId === null || focused.groupId === view.groupId || focused.groupId === DEFAULT_GROUP);
+    const spare = usable ? undefined : (this.spareSession(groupId) ?? this.spareSession(DEFAULT_GROUP));
+    const id = (usable ? focused.id : spare?.id) ?? (await this.createSession(groupId))?.id ?? null;
     if (id && view.displayed === null && this.views.has(view)) {
       this.setViewSession(view, id);
       if (!this.focusedId) this.focus(id);
@@ -420,14 +510,14 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  /** An idle, empty session no view displays (the auto-created first session, typically). */
-  private spareSession(): ChatSession | undefined {
+  /** An idle, empty session of `groupId` that no view displays (the auto-created first session, typically). */
+  private spareSession(groupId: string): ChatSession | undefined {
     const displayed = new Set<string>();
     for (const view of this.views) {
       if (!view.follows && view.displayed) displayed.add(view.displayed);
     }
     return this.sortedSessions().find(
-      (s) => !displayed.has(s.id) && !s.turnActive && s.transcript.items.length === 0,
+      (s) => s.groupId === groupId && !displayed.has(s.id) && !s.turnActive && s.transcript.items.length === 0,
     );
   }
 
@@ -444,9 +534,7 @@ export class ChatController implements vscode.Disposable {
     else this.deps.plan.reset(sessionId);
     void vscode.commands.executeCommand("setContext", TURN_ACTIVE_KEY, session.turnActive);
     for (const view of this.views) {
-      if (!view.follows) continue;
-      this.postView(view, { type: "session", sessionId });
-      this.postView(view, { type: "state", state: this.snapshot(sessionId) });
+      if (view.follows) this.postSessionState(view, sessionId);
     }
   }
 
@@ -457,9 +545,7 @@ export class ChatController implements vscode.Disposable {
     void vscode.commands.executeCommand("setContext", TURN_ACTIVE_KEY, false);
     if (!hadFocus) return;
     for (const view of this.views) {
-      if (!view.follows) continue;
-      this.postView(view, { type: "session", sessionId: null });
-      this.postView(view, { type: "state", state: this.snapshot(null) });
+      if (view.follows) this.postSessionState(view, null);
     }
   }
 
@@ -483,25 +569,43 @@ export class ChatController implements vscode.Disposable {
     return [...this.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt || b.seq - a.seq);
   }
 
-  private sessionSummaries(): SessionSummary[] {
-    return this.sortedSessions().map((s) => ({
-      id: s.id,
-      title: s.title(),
-      status: this.statusOf(s),
-      updatedAt: s.updatedAt,
-    }));
+  /** Summaries of the sessions of `groupId` (every session when null), most recent first. */
+  private sessionSummaries(groupId: string | null): SessionSummary[] {
+    return this.sortedSessions()
+      .filter((s) => groupId === null || s.groupId === groupId)
+      .map((s) => ({
+        id: s.id,
+        title: s.title(),
+        status: this.statusOf(s),
+        updatedAt: s.updatedAt,
+      }));
   }
 
-  /** Post `sessions` to every view, debounced and only when the list changed. */
+  /**
+   * Post `sessions` to every view, debounced and only when that view's list
+   * changed. `updatedAt` ticks on every streamed chunk, so the dedupe key
+   * rounds it to the minute: the webview must not rebuild its session panel
+   * (and lose clicks) every 50 ms during a turn.
+   */
   private scheduleSessions(): void {
     if (this.sessionsTimer) return;
     this.sessionsTimer = setTimeout(() => {
       this.sessionsTimer = undefined;
-      const sessions = this.sessionSummaries();
-      const json = JSON.stringify(sessions);
-      if (json === this.lastSessionsJson) return;
-      this.lastSessionsJson = json;
-      this.postAll({ type: "sessions", sessions });
+      const cache = new Map<string | null, { sessions: SessionSummary[]; key: string }>();
+      for (const view of this.views) {
+        let entry = cache.get(view.groupId);
+        if (!entry) {
+          const sessions = this.sessionSummaries(view.groupId);
+          const key = JSON.stringify(
+            sessions.map((s) => [s.id, s.title, s.status, Math.floor(s.updatedAt / 60_000)]),
+          );
+          entry = { sessions, key };
+          cache.set(view.groupId, entry);
+        }
+        if (entry.key === view.lastSessionsKey) continue;
+        view.lastSessionsKey = entry.key;
+        this.postView(view, { type: "sessions", sessions: entry.sessions });
+      }
     }, SESSIONS_DEBOUNCE_MS);
   }
 
@@ -576,7 +680,7 @@ export class ChatController implements vscode.Disposable {
       this.agentInfo = await agent.start();
       this.setConnection(this.connectionFromAgent("ready"));
       if (this.sessions.size === 0) {
-        const first = await this.createSession();
+        const first = await this.createSession(this.focusedView?.groupId ?? DEFAULT_GROUP);
         if (first) this.focus(first.id);
       }
       await this.assignPendingViews();
@@ -606,6 +710,21 @@ export class ChatController implements vscode.Disposable {
     await this.teardownAgent();
     this.setConnection({ status: "stopped" });
     await this.ensureStarted();
+  }
+
+  /**
+   * Stop the agent process without forgetting the sessions: they stay listed
+   * with status `error` until {@link restart}, exactly as after a crash.
+   * (Used by the integration tests to simulate an agent exit.)
+   */
+  async shutdownAgent(): Promise<void> {
+    const agent = this.agent;
+    if (!agent) return;
+    try {
+      await agent.stop();
+    } catch (error) {
+      this.deps.output.appendLine(`[warn] agent stop failed: ${errorMessage(error)}`);
+    }
   }
 
   private connectionFromAgent(status: ConnectionView["status"], message?: string): ConnectionView {
@@ -648,14 +767,14 @@ export class ChatController implements vscode.Disposable {
   // Session lifecycle
   // ---------------------------------------------------------------------
 
-  private async createSession(): Promise<ChatSession | null> {
+  private async createSession(groupId: string): Promise<ChatSession | null> {
     const agent = this.agent;
     if (!agent) return null;
     try {
       const state = await agent.newSession(this.workspaceRoot());
-      const session = new ChatSession(state, ++this.sessionSeq);
+      const session = new ChatSession(state, ++this.sessionSeq, groupId);
       this.sessions.set(session.id, session);
-      this.deps.output.appendLine(`[info] session ${session.id} opened`);
+      this.deps.output.appendLine(`[info] session ${session.id} opened (group ${groupId})`);
       this.scheduleSessions();
       return session;
     } catch (error) {
@@ -679,8 +798,7 @@ export class ChatController implements vscode.Disposable {
     for (const view of this.views) {
       if (view.follows || view.displayed === null) continue;
       view.displayed = null;
-      this.postView(view, { type: "session", sessionId: null });
-      this.postView(view, { type: "state", state: this.snapshot(null) });
+      this.postSessionState(view, null);
     }
     this.clearFocus();
     this.scheduleSessions();
@@ -693,25 +811,46 @@ export class ChatController implements vscode.Disposable {
    */
   async newSession(view?: ViewHandle): Promise<string | null> {
     const binding = asBinding(view) ?? this.focusedView;
+    const groupId = binding?.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
     if (!this.agent || this.agent.status !== "ready") {
+      // Starting the agent opens a first session; a view with none gets one assigned.
       await this.ensureStarted();
-      const id = this.focusedId;
-      if (id && binding && !binding.follows && binding.displayed !== id) this.setViewSession(binding, id);
-      return id;
+      if (binding && !binding.follows) {
+        await this.assignSession(binding);
+        return binding.displayed ?? this.focusedId;
+      }
+      return this.focusedId;
     }
-    const session = await this.createSession();
+    const session = await this.createSession(groupId);
     if (!session) return null;
     if (binding && !binding.follows) this.setViewSession(binding, session.id);
     this.focus(session.id);
     return session.id;
   }
 
-  /** Display an existing session in `view` (or the focused view) and focus it. */
+  /**
+   * Display an existing session in `view` (or the focused view) and focus it.
+   * A grouped view only switches within its group (plus `default`, which it
+   * adopts); a session of another tab is ignored.
+   */
   selectSession(sessionId: string, view?: ViewHandle): void {
-    if (!this.sessions.has(sessionId)) return;
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
     const binding = asBinding(view) ?? this.focusedView;
-    if (binding && !binding.follows) this.setViewSession(binding, sessionId);
+    if (binding && !binding.follows) {
+      if (binding.groupId !== null && session.groupId !== binding.groupId && session.groupId !== DEFAULT_GROUP) {
+        return;
+      }
+      this.setViewSession(binding, sessionId);
+    }
     this.focus(sessionId);
+  }
+
+  /** Close every session of `groupId` (a chat tab was closed, see D20). */
+  async closeGroup(groupId: string): Promise<void> {
+    for (const session of this.sortedSessions()) {
+      if (session.groupId === groupId) await this.closeSession(session.id);
+    }
   }
 
   /**
@@ -735,13 +874,21 @@ export class ChatController implements vscode.Disposable {
 
     const wasFocused = this.focusedId === sessionId;
     const displaying = [...this.views].filter((v) => !v.follows && v.displayed === sessionId);
-    let fallback: string | null = this.sortedSessions()[0]?.id ?? null;
-    if (!fallback && (wasFocused || displaying.length > 0) && this.agent?.status === "ready") {
-      fallback = (await this.createSession())?.id ?? null;
+    const ready = this.agent?.status === "ready";
+    // Each displaying view falls back to the most recent session of its group (a new one when none is left).
+    for (const view of displaying) {
+      const groupId = view.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
+      let fallback: string | null =
+        this.sortedSessions().find((s) => view.groupId === null || s.groupId === groupId)?.id ?? null;
+      if (!fallback && ready) fallback = (await this.createSession(groupId))?.id ?? null;
+      if (this.views.has(view)) this.setViewSession(view, fallback);
     }
-    for (const view of displaying) this.setViewSession(view, fallback);
     if (wasFocused) {
       this.focusedId = null;
+      let fallback: string | null = this.sortedSessions()[0]?.id ?? null;
+      if (!fallback && ready) {
+        fallback = (await this.createSession(this.focusedView?.groupId ?? DEFAULT_GROUP))?.id ?? null;
+      }
       if (fallback) this.focus(fallback);
       else this.clearFocus();
     }
@@ -774,12 +921,20 @@ export class ChatController implements vscode.Disposable {
   // Prompting
   // ---------------------------------------------------------------------
 
-  /** Send a prompt to `sessionId` (default: the focused session) and wait for the turn to end. */
-  async prompt(text: string, chips: ContextChip[], sessionId?: string): Promise<void> {
+  /**
+   * Send a prompt to `sessionId` (default: the session of `view`, else the
+   * focused session) and wait for the turn to end. `view` is the webview the
+   * prompt came from, so `/clear` can replace the session in that very view.
+   */
+  async prompt(text: string, chips: ContextChip[], sessionId?: string, view?: ViewHandle): Promise<void> {
     await this.ensureStarted();
     const agent = this.agent;
+    const binding = asBinding(view);
+    if (binding && !binding.follows && binding.displayed === null) await this.assignSession(binding);
+    const viewSessionId = binding?.sessionId ?? null;
     const session =
       (sessionId ? this.sessions.get(sessionId) : undefined) ??
+      (viewSessionId ? this.sessions.get(viewSessionId) : undefined) ??
       (this.focusedId ? this.sessions.get(this.focusedId) : undefined);
     if (!agent || !session || agent.status !== "ready") {
       this.notice(null, "warning", "No active session. Sign in or restart the agent, then try again.");
@@ -794,7 +949,7 @@ export class ChatController implements vscode.Disposable {
     if (!trimmed && chips.length === 0) return;
 
     const parsed = parseSlash(trimmed);
-    if (parsed && (await this.runSlash(session, parsed, chips))) return;
+    if (parsed && (await this.runSlash(session, parsed, chips, binding))) return;
 
     const embeddedContext = this.agentInfo?.agentCapabilities.promptCapabilities?.embeddedContext === true;
     const blocks = await buildPromptBlocks(trimmed, chips, readWorkspaceText, { embeddedContext });
@@ -933,12 +1088,19 @@ export class ChatController implements vscode.Disposable {
       await this.deps.diff.reconcileToolCallEnded(call.toolCallId, call.status, diffs);
       return;
     }
-    await this.maybeOpenDiffs(session, call.toolCallId, diffs);
+    // Without a permission request the edit goes through anyway; only `always` opens a tab for it.
+    if (this.autoOpenDiffs() === "always") await this.maybeOpenDiffs(session, call.toolCallId, diffs);
+  }
+
+  /** `kiroAcp.autoOpenDiffs`; the legacy booleans map to `always` / `never`. */
+  private autoOpenDiffs(): AutoOpenDiffs {
+    const value = vscode.workspace.getConfiguration("kiroAcp").get<unknown>("autoOpenDiffs", "whenPermissionRequired");
+    if (value === true || value === "always") return "always";
+    if (value === false || value === "never") return "never";
+    return "whenPermissionRequired";
   }
 
   private async maybeOpenDiffs(session: ChatSession, toolCallId: string, diffs: ToolDiffContent[]): Promise<void> {
-    const auto = vscode.workspace.getConfiguration("kiroAcp").get<boolean>("autoOpenDiffs", true);
-    if (!auto) return;
     const status = session.transcript.toolCalls[toolCallId]?.status;
     if (status === "completed" || status === "failed" || status === "cancelled") return;
     for (let index = 0; index < diffs.length; index++) {
@@ -981,12 +1143,11 @@ export class ChatController implements vscode.Disposable {
         session.touch();
         this.postTo(session.id, { type: "permission", request });
         const entry = this.deps.permissions.getEntry(request.requestId);
-        if (entry && entry.diffs.length > 0) {
+        if (entry && entry.diffs.length > 0 && this.autoOpenDiffs() !== "never") {
           void this.maybeOpenDiffs(session, request.toolCallId, entry.diffs);
         }
-        if (this.views.size === 0) {
-          void vscode.commands.executeCommand("kiroAcp.focus");
-        }
+        // Nobody can answer: open a view on *this* session (not a fresh tab hiding it).
+        if (this.views.size === 0) this.onNeedsView?.(session.id);
       }
     }
     this.scheduleSessions();
@@ -1010,7 +1171,12 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     if (binding) {
-      if (!binding.follows && binding.displayed === null) await this.ensureViewSession(binding);
+      // Only messages that act on a session may assign one, and never while
+      // the agent is down: `restart` / `ready` own the process lifecycle, and
+      // "Show log" after a failed start must not spawn the CLI again.
+      if (NEEDS_SESSION.has(message.type) && !binding.follows && binding.displayed === null && !this.agentDown()) {
+        await this.assignSession(binding);
+      }
       this.focusView(binding);
     }
     const sessionId = binding ? binding.sessionId : this.focusedId;
@@ -1018,7 +1184,7 @@ export class ChatController implements vscode.Disposable {
 
     switch (message.type) {
       case "prompt":
-        await this.prompt(message.text, message.chips, sessionId ?? undefined);
+        await this.prompt(message.text, message.chips, sessionId ?? undefined, binding);
         return;
       case "cancel":
         await this.cancel(sessionId ?? undefined);
@@ -1165,7 +1331,12 @@ export class ChatController implements vscode.Disposable {
    * Returns true when the command was handled locally. `forward` commands
    * (advertised by the agent) return false so the text goes out as a prompt.
    */
-  private async runSlash(session: ChatSession, parsed: ParsedSlash, chips: ContextChip[]): Promise<boolean> {
+  private async runSlash(
+    session: ChatSession,
+    parsed: ParsedSlash,
+    chips: ContextChip[],
+    sender?: ViewBinding,
+  ): Promise<boolean> {
     const raw = `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`;
     const context = this.slashContext(session.transcript);
     const action = routeSlash(parsed, context);
@@ -1175,11 +1346,18 @@ export class ChatController implements vscode.Disposable {
       case "forward":
         return false;
       case "new_session": {
-        // `/clear`: a new session in the view that displays this one.
-        const view = [...this.views].find((v) => !v.follows && v.displayed === sessionId);
+        // `/clear`: a new session in the view the command came from (else the
+        // focused view, else any view) when it displays this session.
+        const displays = (v: ViewBinding | null | undefined): ViewBinding | undefined =>
+          v && !v.follows && v.displayed === sessionId ? v : undefined;
+        const view =
+          displays(sender) ?? displays(this.focusedView) ?? [...this.views].find((v) => displays(v) !== undefined);
         await this.newSession(view);
         return true;
       }
+      case "capabilities":
+        this.localExchange(session, raw, this.describeCapabilities(session));
+        return true;
       case "cancel":
         await this.cancel(sessionId);
         return true;
@@ -1262,6 +1440,67 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
+  /** `/capabilities`: everything the agent advertised, raw enough to paste into a bug report. */
+  private describeCapabilities(session: ChatSession): string {
+    const info = this.agentInfo;
+    const lines: string[] = [];
+    if (!info) {
+      lines.push("The agent is not connected; nothing has been advertised yet.");
+    } else {
+      const name = info.agentInfo
+        ? `${info.agentInfo.title ?? info.agentInfo.name} ${info.agentInfo.version ?? ""}`.trim()
+        : "unknown agent";
+      lines.push(`**Agent:** ${name} (protocol ${info.protocolVersion})`);
+      const caps = info.agentCapabilities as Record<string, unknown>;
+      const prompt = caps.promptCapabilities as Record<string, unknown> | null | undefined;
+      const keysOf = (value: unknown): string =>
+        value && typeof value === "object" ? Object.keys(value as object).join(", ") || "(empty)" : "none";
+      const promptSummary = prompt
+        ? Object.entries(prompt)
+            .map(([k, v]) => `${k}=${safeJson(v)}`)
+            .join(", ") || "(empty)"
+        : "none";
+      lines.push(
+        "",
+        "**Agent capabilities:**",
+        `- loadSession: ${String(caps.loadSession ?? false)}`,
+        `- promptCapabilities: ${promptSummary}`,
+        `- sessionCapabilities: ${keysOf(caps.sessionCapabilities)}`,
+        `- mcpCapabilities: ${keysOf(caps.mcpCapabilities)}`,
+        `- authMethods: ${info.authMethods.length > 0 ? info.authMethods.map((m) => m.id).join(", ") : "none"}`,
+        "",
+        `**Extension methods (${info.kiroExtensionMethods.length}):**`,
+        "```json",
+        JSON.stringify(info.kiroExtensionMethods, null, 2),
+        "```",
+      );
+    }
+    const modes = session.transcript.modes;
+    lines.push(
+      "",
+      modes
+        ? `**Modes** (current: \`${modes.currentModeId}\`): ` +
+            modes.availableModes.map((m) => `\`${m.id}\`${m.name !== m.id ? ` (${m.name})` : ""}`).join(", ")
+        : "**Modes:** none advertised",
+    );
+    const options = session.transcript.configOptions;
+    lines.push("", options.length > 0 ? "**Config options:**" : "**Config options:** none advertised");
+    for (const opt of options) {
+      const allowed =
+        opt.type === "boolean"
+          ? "true, false"
+          : (opt.options ?? []).map((v) => `\`${v.value}\``).join(", ") || "(none)";
+      lines.push(
+        `- \`${opt.id}\`${opt.category ? ` [${opt.category}]` : ""}: current \`${String(opt.currentValue)}\` — allowed: ${allowed}`,
+      );
+    }
+    const commands = session.transcript.commands;
+    if (commands.length > 0) {
+      lines.push("", `**Agent commands:** ${commands.map((c) => `\`/${c.name}\``).join(", ")}`);
+    }
+    return lines.join("\n");
+  }
+
   // ---------------------------------------------------------------------
   // Notices
   // ---------------------------------------------------------------------
@@ -1322,7 +1561,12 @@ async function readWorkspaceText(absPath: string): Promise<string> {
 async function openFile(absPath: string, line?: number): Promise<void> {
   try {
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absPath));
-    const editor = await vscode.window.showTextDocument(doc, { preview: true });
+    // Beside the chat tab, without stealing its focus: the chat stays visible.
+    const editor = await vscode.window.showTextDocument(doc, {
+      preview: true,
+      viewColumn: vscode.ViewColumn.Beside,
+      preserveFocus: true,
+    });
     if (line && line > 0) {
       const pos = new vscode.Position(Math.min(line - 1, doc.lineCount - 1), 0);
       editor.selection = new vscode.Selection(pos, pos);

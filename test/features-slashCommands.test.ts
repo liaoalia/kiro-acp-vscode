@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import {
   builtinCommands,
   describeOptions,
+  findExtension,
   formatExtensionResult,
   mergeCommands,
   parseSlash,
   routeSlash,
+  unavailableCommands,
   type SlashContext,
 } from "../src/features/pure/slashCommands.js";
 
@@ -69,6 +71,7 @@ test("session commands are client-side", () => {
     );
   }
   const helpV3 = routeSlash(parseSlash("/help")!, v3);
+  assert.equal(helpV3.kind, "help");
   if (helpV3.kind === "help") {
     assert.deepEqual(helpV3.unavailable.map((u) => u.name), ["compact"]);
   }
@@ -83,6 +86,47 @@ test("extension-backed commands are gated on the advertised method list", () => 
   const compact = routeSlash(parseSlash("/compact")!, v3);
   assert.equal(compact.kind, "unavailable");
   assert.equal(routeSlash(parseSlash("/usage")!, bare).kind, "unavailable");
+});
+
+test("extension-backed commands match advertised methods by pattern, not by exact name", () => {
+  const renamed: SlashContext = {
+    ...bare,
+    extensionMethods: ["_kiro/Quota/get", "_kiro/session/summarize", "_kiro/other/Context", "_kiro/contextual/thing"],
+  };
+  assert.deepEqual(routeSlash(parseSlash("/usage")!, renamed), {
+    kind: "extension",
+    method: "_kiro/Quota/get",
+    label: "usage",
+  });
+  assert.deepEqual(routeSlash(parseSlash("/compact")!, renamed), {
+    kind: "extension",
+    method: "_kiro/session/summarize",
+    label: "compact",
+  });
+  // `context` must end the name (or be `session/context`); `_kiro/contextual/thing` does not qualify.
+  assert.deepEqual(routeSlash(parseSlash("/context")!, renamed), {
+    kind: "extension",
+    method: "_kiro/other/Context",
+    label: "context",
+  });
+  assert.equal(findExtension({ ...bare, extensionMethods: ["_kiro/contextual/thing"] }, "context"), undefined);
+  assert.equal(findExtension({ ...bare, extensionMethods: ["_kiro/account/getCredits"] }, "usage"), "_kiro/account/getCredits");
+  assert.deepEqual(
+    builtinCommands(renamed).map((c) => c.name),
+    ["clear", "help", "capabilities", "usage", "context", "compact", "cancel", "restart"],
+  );
+  assert.deepEqual(unavailableCommands(renamed).map((u) => u.name), ["effort", "model"]);
+  const help = routeSlash(parseSlash("/help")!, bare);
+  assert.equal(help.kind, "help");
+  if (help.kind === "help") {
+    assert.match(help.unavailable.find((u) => u.name === "usage")!.reason, /usage extension method/);
+  }
+});
+
+test("/capabilities and /caps are answered locally by the controller", () => {
+  assert.deepEqual(routeSlash(parseSlash("/capabilities")!, bare), { kind: "capabilities" });
+  assert.deepEqual(routeSlash(parseSlash("/caps extra")!, v3), { kind: "capabilities" });
+  assert.ok(builtinCommands(bare).some((c) => c.name === "capabilities"));
 });
 
 test("/model and /effort map to config options, listing values when the argument is missing or wrong", () => {
@@ -118,10 +162,22 @@ test("agent-advertised and unknown commands are forwarded to the agent", () => {
 
 test("builtinCommands and mergeCommands reflect capabilities and keep agent commands first", () => {
   const names = builtinCommands(v3).map((c) => c.name);
-  assert.deepEqual(names, ["clear", "help", "mode", "plan", "model", "effort", "usage", "context", "cancel", "restart"]);
+  assert.deepEqual(names, [
+    "clear",
+    "help",
+    "capabilities",
+    "mode",
+    "plan",
+    "model",
+    "effort",
+    "usage",
+    "context",
+    "cancel",
+    "restart",
+  ]);
   assert.deepEqual(
     builtinCommands(bare).map((c) => c.name),
-    ["clear", "help", "cancel", "restart"],
+    ["clear", "help", "capabilities", "cancel", "restart"],
   );
   const merged = mergeCommands([{ name: "clear", description: "agent's own clear" }, ...v3.agentCommands], v3);
   assert.equal(merged[0].description, "agent's own clear");

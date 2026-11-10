@@ -27,12 +27,17 @@ network access happens inside `kiro-cli`, which inherits your environment
 - **Several chat tabs**: the Kiro button in an editor's title bar (or
   `Kiro: New Chat Tab`) opens another tab with its own session;
   `Kiro: Focus Chat` and the status-bar item reveal the last active one.
-- **Several sessions per tab**: the panel on the left lists every live
-  session of the agent process with its status (⟳ working, ○ idle, **!**
+- **Several sessions per tab**: each tab is a group; the panel on the right
+  lists the tab's own sessions with their status (⟳ working, ○ idle, **!**
   waiting for your input, × error). Click to switch, hover for the close
   button, "New session" at the top. The chevron at the bottom collapses the
   panel to icons only; `kiroAcp.sessionPanelCollapsed` sets the default.
-  In the narrow sidebar layout the list becomes a dropdown in the header.
+  Closing a tab ends its sessions. In the narrow sidebar layout the list
+  becomes a dropdown in the header.
+- **Work in progress is visible**: a "Kiro is working… · Running: <tool>"
+  strip under the transcript, running cards with a blue edge and spinner,
+  finished cards dimmed with ✓, failed ones red, a blinking caret while the
+  answer streams, and "Working…" / "Needs input" in the header.
 - Sessions live as long as the `kiro-cli acp` process; restarting the agent
   ends them (session history/replay is out of scope for now).
 
@@ -48,7 +53,8 @@ commands sent as text, so the extension routes them itself:
 | `/mode <id>`, `/agent <id>` | Switch the session mode (`session/set_mode`); no argument lists the modes |
 | `/plan [text]` | Switch to the planner mode (when the agent has one) and send the text |
 | `/model <id>`, `/effort <level>` | Change the advertised config option; no argument lists the values |
-| `/usage`, `/context`, `/compact` | Call `_kiro/account/getUsage`, `_kiro/session/context`, `_kiro/session/compact` when the agent advertises them; the result is shown in the chat |
+| `/usage`, `/context`, `/compact` | Call the matching advertised extension method (e.g. `_kiro/account/getUsage`, `_kiro/session/context`, `_kiro/session/compact`; matched by name pattern) and show the result in the chat |
+| `/capabilities`, `/caps` | Show what the connected agent advertises: extension methods, capabilities, modes, options, commands |
 | `/cancel`, `/restart` | Cancel the turn / restart `kiro-cli` |
 | anything else | Sent to the agent as a prompt (agent-advertised commands and custom prompts) |
 
@@ -106,7 +112,7 @@ into a compact header.
 | `kiroAcp.chatLocation` | `editor` | `editor`: the chat opens as a tab in the editor area (`Kiro: Focus Chat`, permission requests, `Send Selection`). `sidebar`: it opens in the **Kiro** view of the secondary side bar. Both can be open at once. |
 | `kiroAcp.showSettingsByDefault` | `false` | Show the mode / model / option pickers without pressing the ⚙ button in the chat header. |
 | `kiroAcp.attachActiveFile` | `true` | Attach the active editor file to each prompt as a removable chip. |
-| `kiroAcp.autoOpenDiffs` | `true` | Open the diff editor automatically when a tool call proposes a file change. |
+| `kiroAcp.autoOpenDiffs` | `whenPermissionRequired` | `whenPermissionRequired`: open the diff editor (in the editor group beside the chat) only when Kiro asks for permission for that change; `always`: on every proposed change (noisy in Autopilot mode); `never`: only via the card's Open diff button. |
 | `kiroAcp.terminal.outputByteLimit` | `1048576` | Bytes of terminal output retained for the agent when it does not specify a limit. |
 | `kiroAcp.logProtocol` | `false` | Log every JSON-RPC message to the **Kiro ACP** output channel. |
 

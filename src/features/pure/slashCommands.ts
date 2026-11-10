@@ -43,15 +43,40 @@ export type SlashAction =
   | { kind: "show_options"; configId?: string }
   /** Switch to the planner mode (when one exists) and optionally send the trailing text. */
   | { kind: "plan"; text: string; modeId: string | null }
+  /** `/capabilities`: the controller lists what the agent advertised (methods, capabilities, modes, options). */
+  | { kind: "capabilities" }
   /** The agent advertised this command: send the text through as a prompt. */
   | { kind: "forward" }
   | { kind: "unavailable"; name: string; reason: string };
 
+/**
+ * Documented Kiro extension method names. The real CLI did not advertise
+ * these exact names, so {@link findExtension} matches advertised methods by
+ * pattern instead; the documented names still match their pattern.
+ */
 const EXT = {
   usage: "_kiro/account/getUsage",
   compact: "_kiro/session/compact",
   context: "_kiro/session/context",
 } as const;
+
+type ExtCommand = keyof typeof EXT;
+
+const EXT_PATTERNS: Record<ExtCommand, RegExp> = {
+  usage: /usage|quota|credit/i,
+  context: /session\/context|context$/i,
+  compact: /compact|summari[sz]e/i,
+};
+
+/** The advertised extension method serving `name` (first match wins), if any. */
+export function findExtension(ctx: SlashContext, name: ExtCommand): string | undefined {
+  const pattern = EXT_PATTERNS[name];
+  return ctx.extensionMethods.find((m) => pattern.test(m));
+}
+
+function extUnavailableReason(name: ExtCommand): string {
+  return `the agent did not advertise a ${name} extension method (such as ${EXT[name]})`;
+}
 
 export function parseSlash(text: string): ParsedSlash | null {
   const m = /^\/([A-Za-z][\w-]*)\s*([\s\S]*)$/.exec(text.trim());
@@ -115,11 +140,14 @@ export function routeSlash(parsed: ParsedSlash, ctx: SlashContext): SlashAction 
     case "usage":
     case "compact":
     case "context": {
-      const method = EXT[name];
-      if (ctx.extensionMethods.includes(method)) return { kind: "extension", method, label: name };
+      const method = findExtension(ctx, name);
+      if (method) return { kind: "extension", method, label: name };
       if (hasAgentCommand(ctx, name)) return { kind: "forward" };
-      return { kind: "unavailable", name, reason: `the agent did not advertise ${method}` };
+      return { kind: "unavailable", name, reason: extUnavailableReason(name) };
     }
+    case "capabilities":
+    case "caps":
+      return { kind: "capabilities" };
     case "model":
       return configCommand(ctx, name, "model", args);
     case "effort":
@@ -151,14 +179,15 @@ export function builtinCommands(ctx: SlashContext): CommandView[] {
   const list: CommandView[] = [
     { name: "clear", description: "Start a new session" },
     { name: "help", description: "List available commands" },
+    { name: "capabilities", description: "Show what the connected agent advertises" },
   ];
   if (ctx.modes || findOption(ctx, "mode")) list.push({ name: "mode", description: "Switch the agent mode", hint: "mode id" });
   if (plannerMode(ctx)) list.push({ name: "plan", description: "Switch to planner mode", hint: "what to plan" });
   if (findOption(ctx, "model")) list.push({ name: "model", description: "Change the model", hint: "model id" });
   if (findOption(ctx, "effortLevel")) list.push({ name: "effort", description: "Change the effort level", hint: "level" });
-  if (ctx.extensionMethods.includes(EXT.usage)) list.push({ name: "usage", description: "Show account usage" });
-  if (ctx.extensionMethods.includes(EXT.context)) list.push({ name: "context", description: "Show the session context" });
-  if (ctx.extensionMethods.includes(EXT.compact)) list.push({ name: "compact", description: "Compact the conversation" });
+  if (findExtension(ctx, "usage")) list.push({ name: "usage", description: "Show account usage" });
+  if (findExtension(ctx, "context")) list.push({ name: "context", description: "Show the session context" });
+  if (findExtension(ctx, "compact")) list.push({ name: "compact", description: "Compact the conversation" });
   list.push({ name: "cancel", description: "Cancel the current turn" }, { name: "restart", description: "Restart the agent process" });
   return list;
 }
@@ -166,14 +195,14 @@ export function builtinCommands(ctx: SlashContext): CommandView[] {
 /** Known commands this agent cannot serve (shown in /help so users know why). */
 export function unavailableCommands(ctx: SlashContext): UnavailableCommand[] {
   const out: UnavailableCommand[] = [];
-  const ext = (name: string, method: string) => {
-    if (!ctx.extensionMethods.includes(method) && !hasAgentCommand(ctx, name)) {
-      out.push({ name, reason: `the agent did not advertise ${method}` });
+  const ext = (name: ExtCommand) => {
+    if (!findExtension(ctx, name) && !hasAgentCommand(ctx, name)) {
+      out.push({ name, reason: extUnavailableReason(name) });
     }
   };
-  ext("usage", EXT.usage);
-  ext("context", EXT.context);
-  ext("compact", EXT.compact);
+  ext("usage");
+  ext("context");
+  ext("compact");
   if (!findOption(ctx, "effortLevel") && !hasAgentCommand(ctx, "effort")) {
     out.push({ name: "effort", reason: "the agent did not advertise an effortLevel option" });
   }

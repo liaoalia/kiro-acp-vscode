@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -43,6 +43,11 @@
       {
         "command": "kiroAcp.newSession",
         "title": "Kiro: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "kiroAcp.newSessionInSidebar",
+        "title": "Kiro: New Session in Sidebar",
         "icon": "$(add)"
       },
       {
@@ -115,7 +120,7 @@
           "group": "navigation@0"
         },
         {
-          "command": "kiroAcp.newSession",
+          "command": "kiroAcp.newSessionInSidebar",
           "when": "view == kiroAcp.chat",
           "group": "navigation@1"
         },
@@ -175,6 +180,10 @@
       ],
       "commandPalette": [
         {
+          "command": "kiroAcp.newSessionInSidebar",
+          "when": "false"
+        },
+        {
           "command": "kiroAcp.acceptDiff",
           "when": "kiroAcp.diffPending"
         },
@@ -214,9 +223,19 @@
           "description": "Attach the active editor file to each prompt as a resource link (shown as a removable chip)."
         },
         "kiroAcp.autoOpenDiffs": {
-          "type": "boolean",
-          "default": true,
-          "description": "Open the native diff editor automatically when a tool call proposes a file change."
+          "type": "string",
+          "enum": [
+            "always",
+            "whenPermissionRequired",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Open a diff editor for every file change the agent proposes, even when it is applied without asking.",
+            "Open a diff editor only when a file change waits for your permission (default).",
+            "Never open diff editors automatically; use the links in the chat."
+          ],
+          "default": "whenPermissionRequired",
+          "description": "When to open the native diff editor for file changes proposed by the agent. In autonomous modes tool calls complete without a permission request; opening a tab for each would hide the chat."
         },
         "kiroAcp.terminal.outputByteLimit": {
           "type": "number",

@@ -41,6 +41,12 @@ interface DiffEntry {
 
 export interface OpenDiffOptions {
   preview?: boolean;
+  /**
+   * Where the diff editor opens. Defaults to the group beside the active one
+   * (the chat tab stays visible) without stealing focus from the chat.
+   */
+  viewColumn?: vscode.ViewColumn;
+  preserveFocus?: boolean;
 }
 
 const encoder = new TextEncoder();
@@ -202,7 +208,11 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
         makeUri(ORIGINAL_SCHEME, key, diff.path),
         makeUri(PROPOSED_SCHEME, key, diff.path),
         title,
-        { preview: options.preview ?? false },
+        {
+          preview: options.preview ?? false,
+          viewColumn: options.viewColumn ?? vscode.ViewColumn.Beside,
+          preserveFocus: options.preserveFocus ?? true,
+        },
       ),
     ).then(() => undefined);
     this.opening.set(key, open);
@@ -455,12 +465,10 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
       return;
     }
     this.finalizeEpoch.set(toolCallId, (this.finalizeEpoch.get(toolCallId) ?? 0) + 1);
-    // Let any in-flight vscode.diff for this call finish so its tab exists and
-    // can be closed below (entries may still be missing while it runs).
-    const prefix = `/${encodeURIComponent(toolCallId)}/`;
-    await Promise.allSettled(
-      [...this.opening.entries()].filter(([key]) => key.startsWith(prefix)).map(([, open]) => open),
-    );
+    // Snapshot the entries NOW, before any await: an open that starts after the
+    // epoch bump belongs to a later use of this tool-call id (a new turn or
+    // session) and must not be captured or closed by this finalize. An open
+    // still before its first await bails out on the epoch change by itself.
     const entries = this.entriesFor(toolCallId);
     if (accepted) {
       for (const entry of entries) {
@@ -482,6 +490,9 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
       entry.closing = true;
     }
     this.state.remove(toolCallId);
+    // Let the captured entries' own in-flight vscode.diff calls finish so their
+    // tabs exist and can be closed below.
+    await Promise.allSettled(entries.map((e) => this.opening.get(e.key) ?? Promise.resolve()));
     await this.closeEditors(entries);
     for (const entry of entries) {
       if (this.entries.get(entry.key) === entry) {

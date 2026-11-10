@@ -3,7 +3,9 @@
  *
  * Thin: it builds the HTML, forwards `FromWebview` messages to the
  * controller (on behalf of its own view handle) and lets the controller
- * post `ToWebview` messages back. The sidebar starts on the focused session.
+ * post `ToWebview` messages back. The sidebar is the `sidebar` session
+ * group: it starts on the focused session when that one may belong to it
+ * and then keeps its own sessions (DECISIONS D19/D20).
  */
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
@@ -13,10 +15,13 @@ import type { FromWebview, ToWebview } from "./protocol.js";
 import { getWebviewHtml } from "./webviewHtml.js";
 
 export const CHAT_VIEW_ID = "kiroAcp.chat";
+export const SIDEBAR_GROUP = "sidebar";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | null = null;
   private handle: ViewHandle | null = null;
+  /** Session to display once the view resolves (`showSession()` before the first reveal). */
+  private pendingSessionId: string | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -44,8 +49,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const poster = (message: ToWebview): void => {
       void webview.postMessage(message);
     };
-    const handle = this.controller.attachView(poster, { prefer: "focused" });
+    const handle = this.controller.attachView(poster, { prefer: "focused", groupId: SIDEBAR_GROUP });
     this.handle = handle;
+    if (this.pendingSessionId) {
+      handle.setSession(this.pendingSessionId);
+      this.pendingSessionId = null;
+    }
 
     const subscriptions: vscode.Disposable[] = [
       webview.onDidReceiveMessage((message: FromWebview) => {
@@ -77,6 +86,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     } else {
       void vscode.commands.executeCommand(`${CHAT_VIEW_ID}.focus`);
     }
+  }
+
+  /** Reveal the sidebar displaying `sessionId` (adopting it into the sidebar group). */
+  showSession(sessionId: string): void {
+    if (this.handle) this.handle.setSession(sessionId);
+    else this.pendingSessionId = sessionId;
+    this.reveal();
+  }
+
+  /** A new session in the sidebar (its title-bar `+` button), whatever view has focus. */
+  newSession(): Promise<string | null> {
+    if (!this.handle) {
+      // Not resolved yet: revealing it assigns a session of its own.
+      this.reveal();
+      return Promise.resolve(null);
+    }
+    return this.controller.newSession(this.handle);
   }
 
   focusInput(): void {

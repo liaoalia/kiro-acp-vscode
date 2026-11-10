@@ -1,8 +1,9 @@
 /**
- * DOM rendering of `UiState`. Small sections (header, banners, notices, plan
- * bar, pickers, chips) are rebuilt wholesale; the transcript is reconciled by
- * key and a message/tool card is only re-rendered when its view object
- * changed (the reducer guarantees a new object on every change).
+ * DOM rendering of `UiState`. Small sections (banners, notices, plan bar,
+ * pickers, chips) are rebuilt wholesale; the header and the session panel are
+ * updated in place from memoised inputs; the transcript is reconciled by key
+ * and a message/tool card is only re-rendered when its view object changed
+ * (the reducer guarantees a new object on every change).
  *
  * Interactive elements carry `data-action` and are handled by delegation in
  * `main.ts`, except pickers whose `<select>` elements get direct listeners.
@@ -27,6 +28,7 @@ import {
   h,
   icon,
   mascot,
+  reconcileChildren,
   safeJson,
   sessionStatusIcon,
   setChildren,
@@ -51,6 +53,10 @@ export interface LocalUi {
   /** Whether the wide-layout session panel is collapsed to icons. */
   sessionPanelCollapsed: boolean;
 }
+
+/** Separators for memo keys built from several strings. */
+const SEP = "\u0001";
+const ROW_SEP = "\u0002";
 
 // ---------------------------------------------------------------------------
 // Sessions (shared by header and panel)
@@ -91,6 +97,11 @@ function fullTime(updatedAt: number): string {
   return Number.isFinite(d.getTime()) ? d.toLocaleString() : "";
 }
 
+/** Identity of a session list as the header/select sees it: id, title and status of every row. */
+function sessionOptionsKey(sessions: SessionSummary[]): string {
+  return sessions.map((s) => `${s.id}${SEP}${s.title ?? ""}${SEP}${s.status}`).join(ROW_SEP);
+}
+
 // ---------------------------------------------------------------------------
 // Header / banners
 // ---------------------------------------------------------------------------
@@ -114,11 +125,39 @@ export function statusText(c: ConnectionView): string {
   }
 }
 
+/** What the displayed session is doing, when that matters more than the connection status. */
+export type Activity = "needs_input" | "working" | null;
+
+export function activityOf(state: UiState): Activity {
+  if (state.permissions.length > 0) return "needs_input";
+  if (state.turnActive) return "working";
+  return null;
+}
+
+/** Text of the header status pill: activity of the displayed session, else the connection. */
+export function pillText(state: UiState): string {
+  switch (activityOf(state)) {
+    case "needs_input":
+      return "Needs input";
+    case "working":
+      return "Working…";
+    default:
+      return statusText(state.connection);
+  }
+}
+
 /** Text for the `aria-live` region. */
 export function statusAnnouncement(state: UiState): string {
   const base = `Kiro: ${statusText(state.connection)}.`;
   if (state.connection.status !== "ready") return base;
-  return state.turnActive ? `${base} Working on your request.` : `${base} Ready for input.`;
+  switch (activityOf(state)) {
+    case "needs_input":
+      return `${base} Waiting for your input.`;
+    case "working":
+      return `${base} Working on your request.`;
+    default:
+      return `${base} Ready for input.`;
+  }
 }
 
 /** True when the agent advertises anything the settings panel can show. */
@@ -155,104 +194,121 @@ export function currentModeName(state: UiState): string | undefined {
 }
 
 /**
- * Header: the `.brand` block doubles as the compact status pill (narrow) and
- * the title + muted status text (wide); the stylesheet switches the look.
- * Text labels (`.btn-text`) and the Cancel button are hidden in the wide
- * layout, where Cancel lives in the composer's stop button instead.
+ * Persistent header skeleton: `[brand] [session select] [spacer] [actions]`.
+ * Each slot is refilled only when the string key of its own inputs changes,
+ * so e.g. a `sessions` update with new `updatedAt` values touches nothing and
+ * a `turn` change never replaces the compact `<select>` (which may be open).
  */
-interface HeaderMemo {
-  connection: ConnectionView;
-  turnActive: boolean;
-  hasPlan: boolean;
-  modes: UiState["modes"];
-  configOptions: UiState["configOptions"];
-  models: UiState["models"];
-  showSettings: boolean;
-  sessions: SessionSummary[];
-  sessionId: string | null;
+interface HeaderDom {
+  el: HTMLElement;
+  brand: HTMLElement;
+  brandKey: string;
+  sessionSlot: HTMLElement;
+  /** The `.hdr-session` wrapper, its `<select>` and the badge host; `null` when there are no sessions. */
+  session: { wrap: HTMLElement; select: HTMLSelectElement; badge: HTMLElement } | null;
+  selectKey: string;
+  pendingKey: string;
+  actions: HTMLElement;
+  actionsKey: string;
 }
-let headerMemo: HeaderMemo | null = null;
+let headerDom: HeaderDom | null = null;
 
-/** Compact-layout session switcher: a `<select>` with a status glyph per option. */
-function renderSessionSelect(state: UiState): HTMLElement | null {
-  if (state.sessions.length === 0) return null;
-  const sel = h("select", { class: "hdr-session-select", "aria-label": "Session" });
-  for (const s of state.sessions) {
-    const title = s.title?.trim() || "New session";
-    sel.appendChild(
-      h(
-        "option",
-        { value: s.id, selected: s.id === state.sessionId, title: `${SESSION_STATUS_LABEL[s.status] ?? s.status}: ${title}` },
-        `${SESSION_STATUS_GLYPH[s.status] ?? ""} ${title}`,
-      ),
-    );
-  }
-  if (state.sessionId === null || !state.sessions.some((s) => s.id === state.sessionId)) {
-    // Displayed session is not in the list (e.g. none yet): show a placeholder.
-    sel.insertBefore(h("option", { value: "", selected: true, disabled: true }, "Sessions"), sel.firstChild);
-  }
-  sel.addEventListener("change", () => {
-    if (sel.value && sel.value !== state.sessionId) post({ type: "selectSession", sessionId: sel.value });
-  });
-  const pending = needsInputCount(state);
-  return h(
-    "span",
-    { class: "hdr-session", title: pending > 0 ? `${pending} session${pending === 1 ? "" : "s"} need${pending === 1 ? "s" : ""} your input` : undefined },
-    sel,
-    pending > 0 ? h("span", { class: "count-badge hdr-badge", "aria-label": `${pending} sessions need input` }, String(pending)) : null,
-  );
+function ensureHeaderDom(el: HTMLElement): HeaderDom {
+  if (headerDom && headerDom.el === el) return headerDom;
+  const brand = h("div", { class: "brand" });
+  const sessionSlot = h("span", { class: "hdr-session-slot" });
+  const actions = h("span", { class: "hdr-actions" });
+  setChildren(el, [brand, sessionSlot, h("span", { class: "spacer" }), actions]);
+  headerDom = { el, brand, brandKey: "", sessionSlot, session: null, selectKey: "", pendingKey: "", actions, actionsKey: "" };
+  return headerDom;
 }
 
-export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): void {
-  const hasPlan = state.plan.length > 0;
-  if (
-    headerMemo &&
-    headerMemo.connection === state.connection &&
-    headerMemo.turnActive === state.turnActive &&
-    headerMemo.hasPlan === hasPlan &&
-    headerMemo.modes === state.modes &&
-    headerMemo.configOptions === state.configOptions &&
-    headerMemo.models === state.models &&
-    headerMemo.showSettings === local.showSettings &&
-    headerMemo.sessions === state.sessions &&
-    headerMemo.sessionId === state.sessionId
-  ) {
-    return;
-  }
-  headerMemo = {
-    connection: state.connection,
-    turnActive: state.turnActive,
-    hasPlan,
-    modes: state.modes,
-    configOptions: state.configOptions,
-    models: state.models,
-    showSettings: local.showSettings,
-    sessions: state.sessions,
-    sessionId: state.sessionId,
-  };
-
+function renderBrand(dom: HeaderDom, state: UiState): void {
   const c = state.connection;
-  const text = statusText(c);
+  const text = pillText(state);
   const title = displayedSessionTitle(state);
-  setChildren(el, [
+  const activity = activityOf(state);
+  const key = [text, c.status, c.message ?? "", activity ?? "", title].join(SEP);
+  if (key === dom.brandKey) return;
+  dom.brandKey = key;
+  setChildren(dom.brand, [
+    h("span", { class: "brand-name", title }, icon("kiro", "icon brand-icon"), h("span", { class: "brand-text" }, title)),
     h(
       "div",
-      { class: "brand" },
-      h(
-        "span",
-        { class: "brand-name", title },
-        icon("kiro", "icon brand-icon"),
-        h("span", { class: "brand-text" }, title),
-      ),
-      h(
-        "div",
-        { class: `status-pill status-${c.status}`, title: c.message ? `${text}: ${c.message}` : text },
-        h("span", { class: "dot", "aria-hidden": "true" }),
-        h("span", { class: "status-text" }, text),
-      ),
+      {
+        class: `status-pill status-${c.status}${activity ? ` status-${activity}` : ""}`,
+        title: c.message && !activity ? `${text}: ${c.message}` : text,
+      },
+      h("span", { class: "dot", "aria-hidden": "true" }),
+      h("span", { class: "status-text" }, text),
     ),
-    renderSessionSelect(state),
-    h("span", { class: "spacer" }),
+  ]);
+}
+
+/**
+ * Compact-layout session switcher: a `<select>` with a status glyph per
+ * option. The element is kept while its options (id, title, status) are
+ * unchanged; only the selection and the "needs input" badge are updated.
+ */
+function renderSessionSelect(dom: HeaderDom, state: UiState): void {
+  const hasCurrent = state.sessionId !== null && state.sessions.some((s) => s.id === state.sessionId);
+  const key = state.sessions.length === 0 ? "" : `${hasCurrent ? "1" : "0"}${ROW_SEP}${sessionOptionsKey(state.sessions)}`;
+  if (key !== dom.selectKey) {
+    dom.selectKey = key;
+    if (state.sessions.length === 0) {
+      dom.session = null;
+      clear(dom.sessionSlot);
+    } else {
+      const select = h("select", { class: "hdr-session-select", "aria-label": "Session" });
+      if (!hasCurrent) {
+        // Displayed session is not in the list (e.g. none yet): show a placeholder.
+        select.appendChild(h("option", { value: "", disabled: true }, "Sessions"));
+      }
+      for (const s of state.sessions) {
+        const title = s.title?.trim() || "New session";
+        select.appendChild(
+          h(
+            "option",
+            { value: s.id, title: `${SESSION_STATUS_LABEL[s.status] ?? s.status}: ${title}` },
+            `${SESSION_STATUS_GLYPH[s.status] ?? ""} ${title}`,
+          ),
+        );
+      }
+      select.addEventListener("change", () => {
+        if (select.value && select.value !== currentSessionId) post({ type: "selectSession", sessionId: select.value });
+      });
+      const badge = h("span", { class: "hdr-badge-host" });
+      const wrap = h("span", { class: "hdr-session" }, select, badge);
+      dom.session = { wrap, select, badge };
+      dom.pendingKey = "";
+      setChildren(dom.sessionSlot, [wrap]);
+    }
+  }
+  currentSessionId = state.sessionId;
+  const session = dom.session;
+  if (!session) return;
+  const value = hasCurrent ? (state.sessionId as string) : "";
+  if (session.select.value !== value) session.select.value = value;
+  const pending = needsInputCount(state);
+  const pendingKey = String(pending);
+  if (pendingKey !== dom.pendingKey) {
+    dom.pendingKey = pendingKey;
+    session.wrap.title = pending > 0 ? `${pending} session${pending === 1 ? "" : "s"} need${pending === 1 ? "s" : ""} your input` : "";
+    setChildren(session.badge, [
+      pending > 0 ? h("span", { class: "count-badge hdr-badge", "aria-label": `${pending} sessions need input` }, String(pending)) : null,
+    ]);
+  }
+}
+/** Displayed session id as last rendered; read by the select's change handler. */
+let currentSessionId: string | null = null;
+
+function renderHeaderActions(dom: HeaderDom, state: UiState, local: LocalUi): void {
+  const hasPlan = state.plan.length > 0;
+  const settings = hasSettings(state);
+  const key = [state.turnActive, settings, local.showSettings, hasPlan].join(SEP);
+  if (key === dom.actionsKey) return;
+  dom.actionsKey = key;
+  setChildren(dom.actions, [
     state.turnActive
       ? actionButton("cancel", [icon("stop"), h("span", { class: "btn-text" }, "Cancel")], {
           cls: "btn btn-secondary btn-sm hdr-cancel",
@@ -265,7 +321,7 @@ export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): v
       title: "Start a new session",
       ariaLabel: "Start a new session",
     }),
-    hasSettings(state)
+    settings
       ? actionButton("toggle-settings", [icon("gear")], {
           cls: `btn btn-ghost btn-sm btn-icon hdr-btn${local.showSettings ? " is-active" : ""}`,
           title: local.showSettings ? "Hide session settings" : "Show session settings (mode, model, options)",
@@ -273,7 +329,7 @@ export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): v
           pressed: local.showSettings,
         })
       : null,
-    state.plan.length > 0
+    hasPlan
       ? actionButton("open-plan", [icon("plan")], {
           cls: "btn btn-ghost btn-sm btn-icon hdr-btn hdr-plan",
           title: "Open the plan",
@@ -284,11 +340,26 @@ export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): v
 }
 
 /**
+ * Header: the `.brand` block doubles as the compact status pill (narrow) and
+ * the title + muted status text (wide); the stylesheet switches the look.
+ * The pill shows the displayed session's activity ("Working…", "Needs input")
+ * over the connection status. Text labels (`.btn-text`) and the Cancel button
+ * are hidden in the wide layout, where Cancel lives in the composer's stop
+ * button instead.
+ */
+export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): void {
+  const dom = ensureHeaderDom(el);
+  renderBrand(dom, state);
+  renderSessionSelect(dom, state);
+  renderHeaderActions(dom, state, local);
+}
+
+let emptyMemo: { others: boolean } | null = null;
+
+/**
  * Empty state: brand line at the top, mascot + tagline in the middle. Shown
  * only while the transcript has no items and no permission is pending.
  */
-let emptyMemo: { sessions: SessionSummary[]; sessionId: string | null } | null = null;
-
 export function renderEmpty(el: HTMLElement, state: UiState): void {
   const show = state.items.length === 0 && state.permissions.length === 0;
   if (!show) {
@@ -297,9 +368,9 @@ export function renderEmpty(el: HTMLElement, state: UiState): void {
     el.hidden = true;
     return;
   }
-  if (el.childElementCount === 0 || !emptyMemo || emptyMemo.sessions !== state.sessions || emptyMemo.sessionId !== state.sessionId) {
-    emptyMemo = { sessions: state.sessions, sessionId: state.sessionId };
-    const others = hasOtherSessions(state);
+  const others = hasOtherSessions(state);
+  if (el.childElementCount === 0 || !emptyMemo || emptyMemo.others !== others) {
+    emptyMemo = { others };
     setChildren(el, [
       h("div", { class: "empty-brand" }, icon("kiro", "icon brand-icon"), h("span", { class: "brand-text" }, "Kiro")),
       h(
@@ -311,7 +382,7 @@ export function renderEmpty(el: HTMLElement, state: UiState): void {
           ? h(
               "p",
               { class: "empty-hint" },
-              h("span", { class: "hint-wide" }, "Pick a session on the left or start a new one."),
+              h("span", { class: "hint-wide" }, "Pick a session on the right or start a new one."),
               h("span", { class: "hint-compact" }, "Pick a session above or start a new one."),
             )
           : null,
@@ -325,14 +396,43 @@ export function renderEmpty(el: HTMLElement, state: UiState): void {
 // Session panel (wide layout)
 // ---------------------------------------------------------------------------
 
-interface PanelMemo {
-  sessions: SessionSummary[];
-  sessionId: string | null;
-  collapsed: boolean;
-  /** Minute bucket of `now`, so relative times refresh on a timer without rebuilding on every render. */
-  minute: number;
+/**
+ * Persistent panel skeleton: `[new] [list] [toggle]`. Rows are cached per
+ * session id and rebuilt only when their own key changes; the list is
+ * reconciled in place so a focused row keeps focus.
+ */
+interface PanelDom {
+  el: HTMLElement;
+  list: HTMLElement;
+  toggle: HTMLButtonElement;
+  toggleKey: string;
+  rows: Map<string, { key: string; el: HTMLElement }>;
+  /** Key of the last render; equal keys skip everything. */
+  key: string;
 }
-let panelMemo: PanelMemo | null = null;
+let panelDom: PanelDom | null = null;
+
+function ensurePanelDom(el: HTMLElement): PanelDom {
+  if (panelDom && panelDom.el === el) return panelDom;
+  const list = h("div", { class: "sp-list", role: "listbox", "aria-label": "Sessions" });
+  const toggle = actionButton("toggle-session-panel", [], { cls: "sp-toggle" });
+  setChildren(el, [
+    actionButton("new-session", [icon("plus"), h("span", { class: "sp-label" }, "New session")], {
+      cls: "sp-new",
+      title: "Start a new session",
+      ariaLabel: "Start a new session",
+    }),
+    list,
+    toggle,
+  ]);
+  panelDom = { el, list, toggle, toggleKey: "", rows: new Map(), key: "" };
+  return panelDom;
+}
+
+/** Row identity: title, status, selection, layout and the minute bucket of `updatedAt` (plus the label it yields). */
+function sessionRowKey(s: SessionSummary, selected: boolean, collapsed: boolean, now: number): string {
+  return [s.title ?? "", s.status, selected, collapsed, Math.floor(s.updatedAt / 60_000), relativeTime(s.updatedAt, now)].join(SEP);
+}
 
 function renderSessionRow(s: SessionSummary, selected: boolean, collapsed: boolean, now: number): HTMLElement {
   const title = s.title?.trim() || "New session";
@@ -367,56 +467,55 @@ function renderSessionRow(s: SessionSummary, selected: boolean, collapsed: boole
 }
 
 /**
- * Left-hand session panel. Rebuilt only when the session list (by identity),
- * the displayed session, the collapsed flag or the minute changes.
+ * Right-hand session panel. Rows are memoised on (id, title, status, minute
+ * bucket of `updatedAt`), so a new `sessions` array with only sub-minute
+ * timestamp changes rebuilds nothing; the minute of `now` refreshes the
+ * relative times on the caller's timer.
  */
 export function renderSessionPanel(el: HTMLElement, state: UiState, local: LocalUi, now = Date.now()): void {
   const collapsed = local.sessionPanelCollapsed;
   el.classList.toggle("collapsed", collapsed);
-  const minute = Math.floor(now / 60_000);
-  if (
-    panelMemo &&
-    panelMemo.sessions === state.sessions &&
-    panelMemo.sessionId === state.sessionId &&
-    panelMemo.collapsed === collapsed &&
-    panelMemo.minute === minute
-  ) {
-    return;
-  }
-  panelMemo = { sessions: state.sessions, sessionId: state.sessionId, collapsed, minute };
+  const dom = ensurePanelDom(el);
 
+  const rowKeys = state.sessions.map((s) => `${s.id}${SEP}${sessionRowKey(s, s.id === state.sessionId, collapsed, now)}`);
   const pending = needsInputCount(state);
-  const list = h(
-    "div",
-    { class: "sp-list", role: "listbox", "aria-label": "Sessions" },
-    ...state.sessions.map((s) => renderSessionRow(s, s.id === state.sessionId, collapsed, now)),
-  );
-  const toggle = actionButton(
-    "toggle-session-panel",
-    [
+  const key = `${collapsed}${SEP}${pending}${ROW_SEP}${rowKeys.join(ROW_SEP)}`;
+  if (key === dom.key) return;
+  dom.key = key;
+
+  // Rows: reuse cached elements whose key is unchanged; drop the rest.
+  const seen = new Set<string>();
+  const rows: HTMLElement[] = [];
+  state.sessions.forEach((s, i) => {
+    if (seen.has(s.id)) return; // duplicate ids: render once
+    seen.add(s.id);
+    const rowKey = rowKeys[i];
+    let cached = dom.rows.get(s.id);
+    if (!cached || cached.key !== rowKey) {
+      cached = { key: rowKey, el: renderSessionRow(s, s.id === state.sessionId, collapsed, now) };
+      dom.rows.set(s.id, cached);
+    }
+    rows.push(cached.el);
+  });
+  for (const id of Array.from(dom.rows.keys())) if (!seen.has(id)) dom.rows.delete(id);
+  reconcileChildren(dom.list, rows);
+
+  // Toggle: same button element (keeps focus after a click); contents refreshed.
+  const toggleKey = `${collapsed}${SEP}${pending}`;
+  if (toggleKey !== dom.toggleKey) {
+    dom.toggleKey = toggleKey;
+    const toggle = dom.toggle;
+    setChildren(toggle, [
       icon("chevron", "icon sp-chevron"),
       h("span", { class: "sp-label" }, "Collapse"),
       collapsed && pending > 0
         ? h("span", { class: "count-badge sp-badge", "aria-label": `${pending} sessions need input` }, String(pending))
         : null,
-    ],
-    {
-      cls: "sp-toggle",
-      title: collapsed ? (pending > 0 ? `Expand sessions (${pending} need input)` : "Expand sessions") : "Collapse sessions",
-      ariaLabel: collapsed ? "Expand the session panel" : "Collapse the session panel",
-    },
-  );
-  toggle.setAttribute("aria-expanded", String(!collapsed));
-
-  setChildren(el, [
-    actionButton("new-session", [icon("plus"), h("span", { class: "sp-label" }, "New session")], {
-      cls: "sp-new",
-      title: "Start a new session",
-      ariaLabel: "Start a new session",
-    }),
-    list,
-    toggle,
-  ]);
+    ]);
+    toggle.title = collapsed ? (pending > 0 ? `Expand sessions (${pending} need input)` : "Expand sessions") : "Collapse sessions";
+    toggle.setAttribute("aria-label", collapsed ? "Expand the session panel" : "Collapse the session panel");
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
 }
 
 export function renderBanners(el: HTMLElement, state: UiState): void {
@@ -624,6 +723,63 @@ export function renderChips(el: HTMLElement, chips: ContextChip[]): void {
 }
 
 // ---------------------------------------------------------------------------
+// Working strip
+// ---------------------------------------------------------------------------
+
+/**
+ * Current step for the working strip: the most recent tool call that is still
+ * pending/running (by transcript order), else "writing" while an agent message
+ * is the last item, else "thinking".
+ */
+export function workingStep(state: UiState): string {
+  for (let i = state.items.length - 1; i >= 0; i--) {
+    const it = state.items[i];
+    if (it.type !== "tool") continue;
+    const call = state.toolCalls[it.toolCallId];
+    if (!call || (call.status !== "pending" && call.status !== "in_progress")) continue;
+    return permissionForTool(state, call.toolCallId) ? `Waiting for your approval: ${call.title}` : `Running: ${call.title}`;
+  }
+  const last = state.items[state.items.length - 1];
+  if (last && last.type === "message" && last.message.role === "agent") return "writing";
+  return "thinking";
+}
+
+let workingMemo: { lead: string; step: string } | null = null;
+
+/**
+ * "Kiro is working… · <step>" strip at the bottom of the transcript while a
+ * turn is active. Built once; only its text nodes change afterwards.
+ */
+export function renderWorkingStrip(el: HTMLElement, state: UiState): void {
+  if (!state.turnActive) {
+    el.hidden = true;
+    return;
+  }
+  const lead = activityOf(state) === "needs_input" ? "Kiro needs your input" : "Kiro is working…";
+  const step = workingStep(state);
+  if (el.childElementCount === 0) {
+    setChildren(el, [
+      h("span", { class: "working-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
+      h("span", { class: "working-text" }),
+      h("span", { class: "working-sep", "aria-hidden": "true" }, "·"),
+      h("span", { class: "working-step" }),
+    ]);
+    workingMemo = null;
+  }
+  if (!workingMemo || workingMemo.lead !== lead || workingMemo.step !== step) {
+    workingMemo = { lead, step };
+    const text = el.querySelector<HTMLElement>(".working-text");
+    const stepEl = el.querySelector<HTMLElement>(".working-step");
+    if (text) text.textContent = lead;
+    if (stepEl) {
+      stepEl.textContent = step;
+      stepEl.title = step;
+    }
+  }
+  el.hidden = false;
+}
+
+// ---------------------------------------------------------------------------
 // Transcript
 // ---------------------------------------------------------------------------
 
@@ -682,6 +838,17 @@ function renderMessage(el: HTMLElement, message: MessageView): void {
     }
   }
   flush();
+}
+
+/** Where the streaming caret goes: inside the last inline block of the last markdown chunk. */
+const CARET_INLINE_HOST = /^(P|H[1-6]|LI)$/;
+function caretHost(messageEl: HTMLElement): Element {
+  const body = messageEl.querySelector<HTMLElement>(".msg-body") ?? messageEl;
+  const md = body.lastElementChild;
+  if (!md || !md.classList.contains("md")) return body;
+  let block = md.lastElementChild;
+  while (block && block.tagName === "BLOCKQUOTE" && block.lastElementChild) block = block.lastElementChild;
+  return block && CARET_INLINE_HOST.test(block.tagName) ? block : md;
 }
 
 function defaultOpen(call: ToolCallView, perm: PermissionView | undefined): boolean {
@@ -860,6 +1027,8 @@ function scrollTerminals(el: HTMLElement): void {
 
 export class TranscriptRenderer {
   private readonly entries = new Map<string, Entry>();
+  /** Blinking caret appended to the agent message that is currently streaming. */
+  private readonly caret = h("span", { class: "caret", "aria-hidden": "true" }, "▍");
 
   constructor(
     private readonly container: HTMLElement,
@@ -940,9 +1109,15 @@ export class TranscriptRenderer {
       }
     }
 
-    if (lastAgent && state.turnActive) {
-      const last = this.container.lastElementChild;
-      if (last === lastAgent) lastAgent.classList.add("streaming");
+    // Streaming caret: only on an agent message that is the last item of an active turn.
+    const streaming = lastAgent && state.turnActive && this.container.lastElementChild === lastAgent ? lastAgent : null;
+    if (streaming) {
+      streaming.classList.add("streaming");
+      const host = caretHost(streaming);
+      // A re-rendered message cleared its body, so the caret may need re-appending.
+      if (this.caret.parentElement !== host || host.lastElementChild !== this.caret) host.appendChild(this.caret);
+    } else {
+      this.caret.remove();
     }
   }
 }
