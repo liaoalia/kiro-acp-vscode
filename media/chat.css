@@ -1,0 +1,1007 @@
+/* Kiro ACP Chat webview. Theme colours come exclusively from VS Code variables
+   so the view follows light, dark and high-contrast themes. */
+
+:root {
+  --kiro-border: var(--vscode-widget-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.35)));
+  --kiro-radius: 6px;
+  --kiro-mono: var(--vscode-editor-font-family, monospace);
+  --kiro-mono-size: var(--vscode-editor-font-size, 12px);
+  --kiro-dim: var(--vscode-descriptionForeground);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  font-weight: var(--vscode-font-weight, normal);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Buttons
+--------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, var(--vscode-badge-background));
+}
+.btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
+}
+.btn-primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+.btn-primary:hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+.btn-ghost {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border-color: transparent;
+}
+.btn-ghost:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+.btn-sm {
+  padding: 2px 7px;
+}
+.btn-xs {
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 16px;
+}
+.btn-icon {
+  padding: 4px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn:focus-visible,
+.link-btn:focus-visible,
+.tool-head:focus-visible,
+.composer-input:focus-visible,
+select:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  text-align: left;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-btn:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+}
+.link-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+  text-decoration: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Header
+--------------------------------------------------------------------------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--kiro-border);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 9px 2px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+}
+.status-pill .status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.status-pill .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--kiro-dim);
+}
+.status-ready .dot {
+  background: var(--vscode-charts-green);
+}
+.status-starting .dot,
+.status-auth_required .dot {
+  background: var(--vscode-charts-yellow);
+}
+.status-error .dot {
+  background: var(--vscode-errorForeground);
+}
+
+@media (max-width: 300px) {
+  .header .btn-text {
+    display: none;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Banners & notices
+--------------------------------------------------------------------------- */
+
+.banners {
+  flex: 0 0 auto;
+}
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--kiro-border);
+  border-left: 3px solid var(--vscode-focusBorder);
+  background: var(--vscode-sideBarSectionHeader-background, transparent);
+}
+.banner-error {
+  border-left-color: var(--vscode-errorForeground);
+}
+.banner-icon {
+  color: var(--vscode-errorForeground);
+}
+.banner-text {
+  flex: 1 1 160px;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notices {
+  padding: 8px 0 0;
+}
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border-radius: 4px;
+  border: 1px solid var(--kiro-border);
+  background: var(--vscode-editorWidget-background, var(--vscode-quickInput-background));
+  font-size: 12px;
+}
+.notice-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.notice-warning {
+  border-color: var(--vscode-charts-yellow);
+}
+.notice-error {
+  border-color: var(--vscode-errorForeground);
+  color: var(--vscode-errorForeground);
+}
+.notice-close {
+  margin: -2px -4px -2px 0;
+}
+
+/* ---------------------------------------------------------------------------
+   Transcript
+--------------------------------------------------------------------------- */
+
+.transcript-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 10px 10px;
+}
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+}
+
+.jump {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--kiro-border);
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  box-shadow: 0 2px 6px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+  white-space: nowrap;
+}
+
+/* Messages */
+
+.msg {
+  min-width: 0;
+  max-width: 100%;
+}
+.msg-user {
+  align-self: flex-end;
+  max-width: 92%;
+  padding: 6px 10px;
+  border-radius: var(--kiro-radius);
+  border: 1px solid var(--kiro-border);
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+}
+.user-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-agent {
+  align-self: stretch;
+  padding: 0 2px;
+}
+.msg-body > .chip {
+  margin: 2px 4px 2px 0;
+}
+
+.msg-thought {
+  align-self: stretch;
+  border-left: 2px solid var(--kiro-border);
+  padding-left: 8px;
+  color: var(--kiro-dim);
+}
+.thought-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+  user-select: none;
+}
+.thought-summary::-webkit-details-marker {
+  display: none;
+}
+.thought-summary::before {
+  content: "\25B8";
+  font-size: 10px;
+  width: 8px;
+}
+.msg-thought[open] > .thought-summary::before {
+  content: "\25BE";
+}
+.msg-thought .msg-body {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.msg-agent.streaming .md:last-child > :last-child::after {
+  content: "\258D";
+  margin-left: 1px;
+  color: var(--kiro-dim);
+  animation: kiro-blink 1s steps(2, start) infinite;
+}
+
+/* Markdown */
+
+.md {
+  line-height: 1.5;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md blockquote,
+.md table {
+  margin: 0 0 0.7em;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: 1em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.md h1 {
+  font-size: 1.3em;
+}
+.md h2 {
+  font-size: 1.2em;
+}
+.md h3 {
+  font-size: 1.1em;
+}
+.md h4,
+.md h5,
+.md h6 {
+  font-size: 1em;
+}
+.md ul,
+.md ol {
+  padding-left: 1.5em;
+}
+.md li + li {
+  margin-top: 0.2em;
+}
+.md a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+}
+.md a:hover {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+}
+.md code {
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+  background: var(--vscode-textCodeBlock-background);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.md pre {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 0 0 4px 4px;
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+  line-height: 1.45;
+}
+.md pre code {
+  padding: 0;
+  background: none;
+  white-space: pre;
+}
+.md blockquote {
+  padding: 2px 10px;
+  border-left: 3px solid var(--vscode-textBlockQuote-border, var(--kiro-border));
+  background: var(--vscode-textBlockQuote-background, transparent);
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.md th,
+.md td {
+  border: 1px solid var(--kiro-border);
+  padding: 3px 7px;
+  text-align: left;
+}
+.md th {
+  background: var(--vscode-textCodeBlock-background);
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--kiro-border);
+  margin: 0.8em 0;
+}
+.md input[type="checkbox"] {
+  margin-right: 4px;
+}
+
+.codeblock {
+  margin: 0 0 0.7em;
+  border: 1px solid var(--kiro-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.code-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1px 4px 1px 8px;
+  font-size: 11px;
+  color: var(--kiro-dim);
+  background: var(--vscode-textCodeBlock-background);
+  border-bottom: 1px solid var(--kiro-border);
+}
+.code-lang {
+  font-family: var(--kiro-mono);
+}
+.copy-btn {
+  color: var(--kiro-dim);
+}
+
+/* Chips (composer and resource segments) */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px 4px 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+  vertical-align: middle;
+}
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-implicit {
+  opacity: 0.7;
+}
+.chip-remove {
+  padding: 0 2px;
+  color: inherit;
+}
+.chip-resource,
+.chip-image {
+  color: var(--vscode-foreground);
+  background: var(--vscode-textCodeBlock-background);
+  padding-right: 6px;
+}
+
+/* ---------------------------------------------------------------------------
+   Tool cards
+--------------------------------------------------------------------------- */
+
+.tool {
+  border: 1px solid var(--kiro-border);
+  border-radius: var(--kiro-radius);
+  background: var(--vscode-editorWidget-background, transparent);
+  min-width: 0;
+}
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--kiro-radius);
+  background: transparent;
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.tool.open > .tool-head {
+  border-radius: var(--kiro-radius) var(--kiro-radius) 0 0;
+}
+.tool-head:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.tool-placeholder {
+  cursor: default;
+  color: var(--kiro-dim);
+}
+.tool-icon {
+  color: var(--kiro-dim);
+}
+.tool-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chevron {
+  color: var(--kiro-dim);
+  transition: transform 120ms ease;
+}
+.tool.open .chevron {
+  transform: rotate(90deg);
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  font-size: 11px;
+  color: var(--kiro-dim);
+}
+.status-completed {
+  color: var(--vscode-charts-green);
+}
+.status-failed {
+  color: var(--vscode-errorForeground);
+}
+.status-cancelled {
+  color: var(--vscode-charts-yellow);
+}
+.tool-failed {
+  border-color: var(--vscode-errorForeground);
+}
+
+.spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--kiro-dim);
+  border-top-color: transparent;
+  animation: kiro-spin 0.8s linear infinite;
+}
+
+.tool-body {
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--kiro-border);
+  font-size: 12px;
+}
+.tool-body > * + * {
+  margin-top: 6px;
+}
+
+.tool-fail {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--vscode-errorForeground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-text,
+.term-output {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background);
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.term-output {
+  white-space: pre;
+  word-break: normal;
+}
+
+.tool-diff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.diff-path {
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.diff-counts {
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+}
+.diff-add {
+  color: var(--vscode-charts-green);
+}
+.diff-del {
+  color: var(--vscode-charts-red, var(--vscode-errorForeground));
+}
+
+.term-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.exit-code {
+  font-family: var(--kiro-mono);
+  font-size: 11px;
+}
+.exit-code.ok {
+  color: var(--vscode-charts-green);
+}
+.exit-code.bad {
+  color: var(--vscode-errorForeground);
+}
+
+.tool-locs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+.tool-locs .link-btn {
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+}
+
+.tool-raw summary {
+  cursor: pointer;
+  color: var(--kiro-dim);
+}
+.tool-raw .tool-text {
+  margin-top: 4px;
+}
+
+/* Permission card */
+
+.perm {
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-charts-yellow);
+  background: transparent;
+  background: color-mix(in srgb, var(--vscode-charts-yellow) 10%, transparent);
+}
+.perm > * + * {
+  margin-top: 6px;
+}
+.perm-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.perm-icon {
+  color: var(--vscode-charts-yellow);
+  margin-top: 1px;
+}
+.perm-consent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--kiro-dim);
+}
+.perm-res {
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.perm-diff {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.perm-hint {
+  color: var(--kiro-dim);
+  font-size: 11px;
+}
+.perm-always {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+.perm-always .link-btn {
+  font-size: 11px;
+  color: var(--kiro-dim);
+}
+.perm-always .link-btn:hover {
+  color: var(--vscode-textLink-foreground);
+}
+
+/* ---------------------------------------------------------------------------
+   Plan bar & pickers
+--------------------------------------------------------------------------- */
+
+.planbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--kiro-border);
+  font-size: 12px;
+  color: var(--kiro-dim);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.plan-text {
+  flex: 0 0 auto;
+  color: var(--vscode-foreground);
+}
+.plan-current {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pickers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--kiro-border);
+  flex: 0 0 auto;
+}
+.picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--kiro-dim);
+}
+.picker-name {
+  white-space: nowrap;
+}
+.picker-select {
+  max-width: 150px;
+  padding: 1px 2px;
+  border-radius: 3px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--kiro-border));
+}
+.picker-check input {
+  margin: 0;
+  accent-color: var(--vscode-button-background);
+}
+
+/* ---------------------------------------------------------------------------
+   Composer
+--------------------------------------------------------------------------- */
+
+.composer {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 6px 10px 10px;
+  border-top: 1px solid var(--kiro-border);
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 5px;
+}
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 4px 4px 4px 8px;
+  border-radius: var(--kiro-radius);
+  border: 1px solid var(--vscode-input-border, var(--kiro-border));
+  background: var(--vscode-input-background);
+}
+.composer-row:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+.composer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 24px;
+  max-height: 200px;
+  padding: 3px 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  font: inherit;
+  line-height: 1.4;
+}
+.composer-input::placeholder {
+  color: var(--vscode-input-placeholderForeground, var(--kiro-dim));
+}
+.composer-input:focus-visible {
+  outline: none;
+}
+.send-btn {
+  flex: 0 0 auto;
+}
+
+.popup {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: calc(100% - 2px);
+  z-index: 10;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 3px;
+  border-radius: var(--kiro-radius);
+  border: 1px solid var(--kiro-border);
+  background: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
+  color: var(--vscode-quickInput-foreground, var(--vscode-foreground));
+  box-shadow: 0 -2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+}
+.popup-option {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 7px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.popup-option .icon {
+  align-self: center;
+  color: var(--kiro-dim);
+}
+.popup-option:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.popup-option.active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+  outline: 1px solid var(--vscode-list-focusOutline, transparent);
+  outline-offset: -1px;
+}
+.popup-option.active .opt-dim,
+.popup-option.active .icon {
+  color: inherit;
+  opacity: 0.8;
+}
+.opt-main {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.opt-hint {
+  color: var(--kiro-dim);
+  font-family: var(--kiro-mono);
+  font-size: 11px;
+}
+.opt-dim {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--kiro-dim);
+  font-size: 11px;
+}
+.popup-empty {
+  padding: 5px 7px;
+  font-size: 12px;
+  color: var(--kiro-dim);
+}
+
+/* ---------------------------------------------------------------------------
+   Motion
+--------------------------------------------------------------------------- */
+
+@keyframes kiro-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes kiro-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+    border-style: dashed;
+    border-top-color: var(--kiro-dim);
+  }
+  .msg-agent.streaming .md:last-child > :last-child::after {
+    animation: none;
+  }
+  .chevron {
+    transition: none;
+  }
+}
