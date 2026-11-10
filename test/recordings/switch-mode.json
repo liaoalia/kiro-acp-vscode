@@ -1,0 +1,27 @@
+{
+  "name": "switch-mode",
+  "description": "Planner hand-off: a switch_mode tool call that requests permission; approving switches the mode to vibe.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "plan", "entries": [
+      { "content": "Add a greeting function", "priority": "high", "status": "pending" },
+      { "content": "Write a unit test", "priority": "medium", "status": "pending" }
+    ] } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Here is my plan. Shall I implement it?" } } },
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "call-switch", "title": "Approve plan and start implementation", "kind": "switch_mode", "status": "pending" } },
+    { "kind": "permission",
+      "toolCall": { "toolCallId": "call-switch", "title": "Approve plan and start implementation", "kind": "switch_mode", "status": "pending" },
+      "options": [
+        { "optionId": "accept", "name": "Approve", "kind": "allow_once" },
+        { "optionId": "reject", "name": "Reject", "kind": "reject_once" }
+      ],
+      "allow": [
+        { "kind": "update", "update": { "sessionUpdate": "current_mode_update", "currentModeId": "vibe" } },
+        { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "Starting implementation." } } }
+      ],
+      "reject": [
+        { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "Plan rejected; staying in plan mode." } } }
+      ]
+    },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

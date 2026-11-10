@@ -1,0 +1,11 @@
+{
+  "name": "chat",
+  "description": "A short streamed answer.",
+  "steps": [
+    { "kind": "stderr", "text": "fake-agent: chat scenario" },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "The answer " } } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "is " } } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "42." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

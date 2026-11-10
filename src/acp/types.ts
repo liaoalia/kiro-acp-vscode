@@ -33,6 +33,8 @@ export interface AgentProcessOptions {
   /** Environment for the child. Pass `process.env` so proxy variables flow through. */
   env: NodeJS.ProcessEnv;
   logger: ProtocolLogger;
+  /** Reported to the agent as `clientInfo.version`. Defaults to "0.0.0". */
+  clientVersion?: string;
 }
 
 // ---------------------------------------------------------------------------

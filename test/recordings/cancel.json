@@ -1,0 +1,11 @@
+{
+  "name": "cancel",
+  "description": "Streams slowly (40 chunks, 50 ms apart) so that session/cancel can interrupt the turn.",
+  "steps": [
+    { "kind": "repeat", "times": 40, "steps": [
+      { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "tick {{i}} " } } },
+      { "kind": "delay", "ms": 50 }
+    ] },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

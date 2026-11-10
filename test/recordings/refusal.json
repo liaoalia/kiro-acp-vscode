@@ -1,0 +1,8 @@
+{
+  "name": "refusal",
+  "description": "The agent refuses and ends the turn with stopReason refusal.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "I can't help with that request." } } },
+    { "kind": "stop", "stopReason": "refusal" }
+  ]
+}

@@ -3,7 +3,7 @@
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
   "engines": {
@@ -39,17 +39,56 @@
       ]
     },
     "commands": [
-      { "command": "kiroAcp.newSession", "title": "Kiro: New Session", "icon": "$(add)" },
-      { "command": "kiroAcp.cancel", "title": "Kiro: Cancel Current Turn", "icon": "$(debug-stop)" },
-      { "command": "kiroAcp.restart", "title": "Kiro: Restart Agent Process" },
-      { "command": "kiroAcp.sendSelection", "title": "Kiro: Send Selection to Kiro Chat" },
-      { "command": "kiroAcp.openPlan", "title": "Kiro: Open Plan" },
-      { "command": "kiroAcp.showLog", "title": "Kiro: Show Protocol Log" },
-      { "command": "kiroAcp.acceptDiff", "title": "Kiro: Accept Proposed Change", "icon": "$(check)" },
-      { "command": "kiroAcp.rejectDiff", "title": "Kiro: Reject Proposed Change", "icon": "$(close)" },
-      { "command": "kiroAcp.approvePlan", "title": "Kiro: Approve Plan", "icon": "$(check)" },
-      { "command": "kiroAcp.rejectPlan", "title": "Kiro: Reject Plan", "icon": "$(close)" },
-      { "command": "kiroAcp.focus", "title": "Kiro: Focus Chat" }
+      {
+        "command": "kiroAcp.newSession",
+        "title": "Kiro: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "kiroAcp.cancel",
+        "title": "Kiro: Cancel Current Turn",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "kiroAcp.restart",
+        "title": "Kiro: Restart Agent Process"
+      },
+      {
+        "command": "kiroAcp.sendSelection",
+        "title": "Kiro: Send Selection to Kiro Chat"
+      },
+      {
+        "command": "kiroAcp.openPlan",
+        "title": "Kiro: Open Plan"
+      },
+      {
+        "command": "kiroAcp.showLog",
+        "title": "Kiro: Show Protocol Log"
+      },
+      {
+        "command": "kiroAcp.acceptDiff",
+        "title": "Kiro: Accept Proposed Change",
+        "icon": "$(check)"
+      },
+      {
+        "command": "kiroAcp.rejectDiff",
+        "title": "Kiro: Reject Proposed Change",
+        "icon": "$(close)"
+      },
+      {
+        "command": "kiroAcp.approvePlan",
+        "title": "Kiro: Approve Plan",
+        "icon": "$(check)"
+      },
+      {
+        "command": "kiroAcp.rejectPlan",
+        "title": "Kiro: Reject Plan",
+        "icon": "$(close)"
+      },
+      {
+        "command": "kiroAcp.focus",
+        "title": "Kiro: Focus Chat"
+      }
     ],
     "keybindings": [
       {
@@ -61,26 +100,78 @@
     ],
     "menus": {
       "view/title": [
-        { "command": "kiroAcp.newSession", "when": "view == kiroAcp.chat", "group": "navigation@1" },
-        { "command": "kiroAcp.cancel", "when": "view == kiroAcp.chat && kiroAcp.turnActive", "group": "navigation@2" },
-        { "command": "kiroAcp.openPlan", "when": "view == kiroAcp.chat", "group": "1_more@1" },
-        { "command": "kiroAcp.restart", "when": "view == kiroAcp.chat", "group": "1_more@2" },
-        { "command": "kiroAcp.showLog", "when": "view == kiroAcp.chat", "group": "1_more@3" }
+        {
+          "command": "kiroAcp.newSession",
+          "when": "view == kiroAcp.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kiroAcp.cancel",
+          "when": "view == kiroAcp.chat && kiroAcp.turnActive",
+          "group": "navigation@2"
+        },
+        {
+          "command": "kiroAcp.openPlan",
+          "when": "view == kiroAcp.chat",
+          "group": "1_more@1"
+        },
+        {
+          "command": "kiroAcp.restart",
+          "when": "view == kiroAcp.chat",
+          "group": "1_more@2"
+        },
+        {
+          "command": "kiroAcp.showLog",
+          "when": "view == kiroAcp.chat",
+          "group": "1_more@3"
+        }
       ],
       "editor/title": [
-        { "command": "kiroAcp.acceptDiff", "when": "resourceScheme == kiro-proposed && kiroAcp.diffPending", "group": "navigation@1" },
-        { "command": "kiroAcp.rejectDiff", "when": "resourceScheme == kiro-proposed && kiroAcp.diffPending", "group": "navigation@2" },
-        { "command": "kiroAcp.approvePlan", "when": "resourceScheme == kiro-plan && kiroAcp.planApprovalPending", "group": "navigation@1" },
-        { "command": "kiroAcp.rejectPlan", "when": "resourceScheme == kiro-plan && kiroAcp.planApprovalPending", "group": "navigation@2" }
+        {
+          "command": "kiroAcp.acceptDiff",
+          "when": "resourceScheme == kiro-proposed && kiroAcp.diffPending",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kiroAcp.rejectDiff",
+          "when": "resourceScheme == kiro-proposed && kiroAcp.diffPending",
+          "group": "navigation@2"
+        },
+        {
+          "command": "kiroAcp.approvePlan",
+          "when": "resourceScheme == kiro-plan && kiroAcp.planApprovalPending",
+          "group": "navigation@1"
+        },
+        {
+          "command": "kiroAcp.rejectPlan",
+          "when": "resourceScheme == kiro-plan && kiroAcp.planApprovalPending",
+          "group": "navigation@2"
+        }
       ],
       "editor/context": [
-        { "command": "kiroAcp.sendSelection", "when": "editorHasSelection", "group": "kiro@1" }
+        {
+          "command": "kiroAcp.sendSelection",
+          "when": "editorHasSelection",
+          "group": "kiro@1"
+        }
       ],
       "commandPalette": [
-        { "command": "kiroAcp.acceptDiff", "when": "kiroAcp.diffPending" },
-        { "command": "kiroAcp.rejectDiff", "when": "kiroAcp.diffPending" },
-        { "command": "kiroAcp.approvePlan", "when": "kiroAcp.planApprovalPending" },
-        { "command": "kiroAcp.rejectPlan", "when": "kiroAcp.planApprovalPending" }
+        {
+          "command": "kiroAcp.acceptDiff",
+          "when": "kiroAcp.diffPending"
+        },
+        {
+          "command": "kiroAcp.rejectDiff",
+          "when": "kiroAcp.diffPending"
+        },
+        {
+          "command": "kiroAcp.approvePlan",
+          "when": "kiroAcp.planApprovalPending"
+        },
+        {
+          "command": "kiroAcp.rejectPlan",
+          "when": "kiroAcp.planApprovalPending"
+        }
       ]
     },
     "configuration": {
@@ -93,7 +184,9 @@
         },
         "kiroAcp.cliArgs": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Extra arguments appended after `acp`, for example [\"--agent-engine=v3\"]."
         },
@@ -125,7 +218,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.webview.json",
     "compile-tests": "tsc -p tsconfig.test.json",
-    "test": "npm run typecheck && npm run compile-tests && node --test out/test/",
+    "test": "npm run typecheck && npm run compile-tests && node --test \"out/test/**/*.test.js\"",
     "package": "npm run typecheck && npm run build && vsce package --no-dependencies",
     "vscode:prepublish": "npm run build"
   },
@@ -140,5 +233,9 @@
     "@agentclientprotocol/sdk": "2.5.0",
     "dompurify": "^3.4.17",
     "marked": "^18.2.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/liaoalia/kiro-acp-vscode.git"
   }
 }

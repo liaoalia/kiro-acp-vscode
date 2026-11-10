@@ -1,0 +1,8 @@
+{
+  "name": "crash",
+  "description": "The agent process exits with code 3 in the middle of a turn.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "about to crash" } } },
+    { "kind": "exit", "code": 3 }
+  ]
+}

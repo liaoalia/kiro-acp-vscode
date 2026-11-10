@@ -1,0 +1,57 @@
+{
+  "name": "tour",
+  "description": "Exercises every client-side feature once: streamed text, thought, read tool + fs/read_text_file, plan, terminal tool, diff edit with permission + fs/write_text_file, extension notifications.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Hello! " } } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "I am the fake Kiro agent. " } } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Let me look around." } } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_thought_chunk", "content": { "type": "text", "text": "Planning the tour of {{cwd}}." } } },
+    { "kind": "notify", "method": "_kiro/mcp/status", "params": { "servers": [] } },
+    { "kind": "update", "update": { "sessionUpdate": "kiro_custom_update", "payload": 1 } },
+    { "kind": "client_request", "method": "_kiro/openExternalUrl", "params": { "url": "https://example.invalid/oauth" }, "optional": true },
+
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "call-read", "title": "Read README.md", "kind": "read", "status": "in_progress", "locations": [ { "path": "{{cwd}}/README.md", "line": 1 } ], "rawInput": { "path": "{{cwd}}/README.md" } } },
+    { "kind": "client_request", "method": "fs/read_text_file", "params": { "sessionId": "{{sessionId}}", "path": "{{cwd}}/README.md", "limit": 20 }, "optional": true },
+    { "kind": "update", "update": { "sessionUpdate": "tool_call_update", "toolCallId": "call-read", "status": "completed", "content": [ { "type": "content", "content": { "type": "text", "text": "Read README.md" } } ] } },
+
+    { "kind": "update", "update": { "sessionUpdate": "plan", "entries": [
+      { "content": "Inspect the workspace", "priority": "high", "status": "pending" },
+      { "content": "Run a command", "priority": "medium", "status": "pending" },
+      { "content": "Create hello.txt", "priority": "low", "status": "pending" }
+    ] } },
+    { "kind": "delay", "ms": 10 },
+    { "kind": "update", "update": { "sessionUpdate": "plan", "entries": [
+      { "content": "Inspect the workspace", "priority": "high", "status": "completed" },
+      { "content": "Run a command", "priority": "medium", "status": "in_progress" },
+      { "content": "Create hello.txt", "priority": "low", "status": "pending" }
+    ] } },
+
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "call-exec", "title": "Run echo hello", "kind": "execute", "status": "in_progress", "rawInput": { "command": "echo hello" } } },
+    { "kind": "client_request", "method": "terminal/create", "params": { "sessionId": "{{sessionId}}", "command": "echo", "args": [ "hello" ], "cwd": "{{cwd}}" }, "save": { "terminalId": "terminalId" } },
+    { "kind": "update", "update": { "sessionUpdate": "tool_call_update", "toolCallId": "call-exec", "content": [ { "type": "terminal", "terminalId": "{{terminalId}}" } ] } },
+    { "kind": "client_request", "method": "terminal/output", "params": { "sessionId": "{{sessionId}}", "terminalId": "{{terminalId}}" }, "expect": { "truncated": false } },
+    { "kind": "client_request", "method": "terminal/wait_for_exit", "params": { "sessionId": "{{sessionId}}", "terminalId": "{{terminalId}}" } },
+    { "kind": "client_request", "method": "terminal/release", "params": { "sessionId": "{{sessionId}}", "terminalId": "{{terminalId}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "tool_call_update", "toolCallId": "call-exec", "status": "completed", "rawOutput": { "exitCode": 0 } } },
+
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "call-edit", "title": "Create hello.txt", "kind": "edit", "status": "pending", "locations": [ { "path": "{{cwd}}/hello.txt" } ], "content": [ { "type": "diff", "path": "{{cwd}}/hello.txt", "oldText": null, "newText": "hello from kiro\n" } ] } },
+    { "kind": "permission",
+      "toolCall": { "toolCallId": "call-edit", "title": "Create hello.txt", "kind": "edit", "status": "pending", "content": [ { "type": "diff", "path": "{{cwd}}/hello.txt", "oldText": null, "newText": "hello from kiro\n" } ] },
+      "options": [
+        { "optionId": "accept", "name": "Allow", "kind": "allow_once" },
+        { "optionId": "always-accept", "name": "Always allow", "kind": "allow_always" },
+        { "optionId": "reject", "name": "Deny", "kind": "reject_once" },
+        { "optionId": "always-reject", "name": "Always deny", "kind": "reject_always" }
+      ],
+      "meta": { "kiro": { "consent": { "capability": "fs_write", "resource": "{{cwd}}/hello.txt", "persistableConsent": true } } },
+      "allow": [
+        { "kind": "update", "update": { "sessionUpdate": "tool_call_update", "toolCallId": "call-edit", "status": "in_progress" } },
+        { "kind": "client_request", "method": "fs/write_text_file", "params": { "sessionId": "{{sessionId}}", "path": "{{cwd}}/hello.txt", "content": "hello from kiro\n" } }
+      ],
+      "reject": []
+    },
+
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "All done." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

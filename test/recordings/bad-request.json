@@ -1,0 +1,9 @@
+{
+  "name": "bad-request",
+  "description": "The agent sends an unknown client request and expects a -32601 (method not found) error back.",
+  "steps": [
+    { "kind": "client_request", "method": "_kiro/unknown/thing", "params": { "foo": 1 }, "expectError": { "code": -32601 } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "unknown request rejected with -32601" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}
