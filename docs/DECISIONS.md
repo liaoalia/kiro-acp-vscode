@@ -93,3 +93,15 @@ replayed user chunks (`_meta.kiro.replay: true`) must be rendered.
 `dist/` and `*.vsix` stay out of git. GitHub Actions builds and tests on
 Linux/Windows/macOS, uploads the VSIX as a build artifact on every push to
 `main`, and attaches it to a GitHub Release for `v*` tags.
+
+## D15. Diff editor lifecycle is defensive by design
+Two VS Code behaviours were observed in the extension-host tests and shape
+`DiffManager`: (1) the `vscode.diff` command can resolve before its tab is
+listed in `window.tabGroups`, and (2) an agent may re-use a tool-call id in a
+later turn while the previous cleanup is still running. Therefore every open
+gets a generation segment in its URI, `openDiff` registers state before its
+first `await` and aborts if the call was finalized meanwhile, cleanup retries
+closing for a short grace period, a `tabGroups.onDidChangeTabs` listener closes
+any proposal tab whose entry is gone, and the controller never opens a diff for
+a tool call that has already ended. Do not simplify these away: the flake was
+~1 in 5 runs locally and consistent on Linux CI.
