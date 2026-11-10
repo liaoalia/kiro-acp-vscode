@@ -28,56 +28,57 @@
 - [x] package.json (secondary sidebar view container, commands, settings `kiroAcp.cliPath` / `kiroAcp.cliArgs`, keybinding), tsconfigs, esbuild bundling (extension CJS + webview IIFE)
 - [x] `src/acp/types.ts` – public API of the ACP layer (ClientServices, KiroAgent, events)
 - [x] `src/ui/protocol.ts` – extension ↔ webview message types
-- [ ] write docs/DECISIONS.md with the initial decisions
-- [ ] run `npm run typecheck` – must pass before task 2
+- [x] write docs/DECISIONS.md with the initial decisions
+- [x] run `npm run typecheck` – must pass before task 2
 
 ### Task 2: ACP layer – process, connection, session (milestone 1 protocol part)
-- [ ] `src/acp/process.ts`: resolve cliPath (PATH + platform default install dirs), spawn `kiro-cli acp <args>` with inherited env, stdio pipes, stderr to log, exit handling
-- [ ] `src/acp/connection.ts`: `client()` app with handlers for session/update, session/request_permission, fs/*, terminal/*, `_kiro/openExternalUrl`, fallback `*` → -32601; `initialize` with clientCapabilities (fs r/w, terminal, auth.terminal, `_meta.kiro.openExternalUrl`); capture agentCapabilities, authMethods, `_meta.kiro.extensionMethods`
-- [ ] `src/acp/session.ts`: newSession (cwd, mcpServers []), prompt (content blocks), cancel (notification + cancelled outcome for pending permissions), setMode, setConfigOption, setModel (if `models` advertised), per-session event emitter
-- [ ] `src/features/pure/transcript.ts`: pure reducer from SessionUpdate → UI transcript model (messages, tool calls incl. diff/terminal content, plan, modes, configOptions, available commands)
-- [ ] `test/fake-agent/agent.mjs` + `test/recordings/*.json`: fake agent speaking ACP over stdio via the SDK `agent()` API, scenario replay
-- [ ] write tests: initialize exchange, streaming chat, cancel → `cancelled`, permission round-trip, fs read/write round-trip, terminal round-trip, unknown method → error, transcript reducer
-- [ ] run tests – must pass before task 3
+➕ Note: connection + session live in `src/acp/client.ts` (one class) and `src/acp/stream.ts`; `session/update` is intercepted at the stream level because the SDK's typed router rejects unknown update kinds and reorders notifications vs. responses.
+- [x] `src/acp/process.ts`: resolve cliPath (PATH + platform default install dirs), spawn `kiro-cli acp <args>` with inherited env, stdio pipes, stderr to log, exit handling
+- [x] `src/acp/connection.ts`: `client()` app with handlers for session/update, session/request_permission, fs/*, terminal/*, `_kiro/openExternalUrl`, fallback `*` → -32601; `initialize` with clientCapabilities (fs r/w, terminal, auth.terminal, `_meta.kiro.openExternalUrl`); capture agentCapabilities, authMethods, `_meta.kiro.extensionMethods`
+- [x] `src/acp/session.ts`: newSession (cwd, mcpServers []), prompt (content blocks), cancel (notification + cancelled outcome for pending permissions), setMode, setConfigOption, setModel (if `models` advertised), per-session event emitter
+- [x] `src/features/pure/transcript.ts`: pure reducer from SessionUpdate → UI transcript model (messages, tool calls incl. diff/terminal content, plan, modes, configOptions, available commands)
+- [x] `test/fake-agent/agent.mjs` + `test/recordings/*.json`: fake agent speaking ACP over stdio via the SDK `agent()` API, scenario replay
+- [x] write tests: initialize exchange, streaming chat, cancel → `cancelled`, permission round-trip, fs read/write round-trip, terminal round-trip, unknown method → error, transcript reducer
+- [x] run tests – must pass before task 3
 
 ### Task 3: Chat webview (milestone 1 UI part)
-- [ ] `src/webview/main.ts` + `media/chat.css`: streaming markdown messages (marked + DOMPurify), tool call cards with status and content, cancel button, new session, mode/model/config pickers, auth banner with "Log in" button, context chips, `@` autocomplete popup
-- [ ] `src/ui/chatView.ts`: WebviewViewProvider with strict CSP + nonce, state snapshot on (re)load, bridges protocol messages to the ACP layer and features
-- [ ] `src/extension.ts`: activation, commands, context keys, output channel, settings
-- [ ] build with esbuild, typecheck webview tsconfig
-- [ ] run tests – must pass before task 4
+- [x] `src/webview/main.ts` + `media/chat.css`: streaming markdown messages (marked + DOMPurify), tool call cards with status and content, cancel button, new session, mode/model/config pickers, auth banner with "Log in" button, context chips, `@` autocomplete popup
+- [x] `src/ui/chatView.ts`: WebviewViewProvider with strict CSP + nonce, state snapshot on (re)load, bridges protocol messages to the ACP layer and features
+- [x] `src/extension.ts`: activation, commands, context keys, output channel, settings
+- [x] build with esbuild, typecheck webview tsconfig
+- [x] run tests – must pass before task 4
 
 ### Task 4: Permissions + client fs/terminal services (milestone 2)
-- [ ] `src/features/permissions.ts`: pending request registry, per-session per-tool-kind policy (allow once / always allow this session / reject), cancel-all on turn cancel, webview + command resolution paths
-- [ ] `src/features/fs.ts`: read from open (dirty) buffers first, else disk; `line`/`limit` slicing; writes via WorkspaceEdit (create or replace) then save; path must be absolute and inside workspace roots (else ask)
-- [ ] `src/features/terminal.ts`: spawn command in child_process, mirror output into a visible VS Code Pseudoterminal, retain output with byte limit, output/wait_for_exit/kill/release semantics
-- [ ] write tests for the pure parts (permission policy, output ring buffer, line slicing)
-- [ ] run tests – must pass before task 5
+- [x] `src/features/permissions.ts`: pending request registry, per-session per-tool-kind policy (allow once / always allow this session / reject), cancel-all on turn cancel, webview + command resolution paths
+- [x] `src/features/fs.ts`: read from open (dirty) buffers first, else disk; `line`/`limit` slicing; writes via WorkspaceEdit (create or replace) then save; path must be absolute and inside workspace roots (else ask)
+- [x] `src/features/terminal.ts`: spawn command in child_process, mirror output into a visible VS Code Pseudoterminal, retain output with byte limit, output/wait_for_exit/kill/release semantics
+- [x] write tests for the pure parts (permission policy, output ring buffer, line slicing)
+- [x] run tests – must pass before task 5
 
 ### Task 5: Diff review (milestone 3)
-- [ ] `src/features/diff.ts`: in-memory FileSystemProvider for `kiro-proposed:` (editable) and TextDocumentContentProvider for `kiro-original:`; open `vscode.diff` when a tool call carries `type: "diff"` content; Accept/Reject in editor title and chat card resolve the pending permission; edited proposed text is what gets written (substitution in fs/write_text_file + post-completion reconciliation)
-- [ ] context keys `kiroAcp.diffPending`; close diff editors on resolution
-- [ ] write tests for the pure diff bookkeeping
-- [ ] run tests – must pass before task 6
+- [x] `src/features/diff.ts`: in-memory FileSystemProvider for `kiro-proposed:` (editable) and TextDocumentContentProvider for `kiro-original:`; open `vscode.diff` when a tool call carries `type: "diff"` content; Accept/Reject in editor title and chat card resolve the pending permission; edited proposed text is what gets written (substitution in fs/write_text_file + post-completion reconciliation)
+- [x] context keys `kiroAcp.diffPending`; close diff editors on resolution
+- [x] write tests for the pure diff bookkeeping
+- [x] run tests – must pass before task 6
 
 ### Task 6: File and selection context (milestone 4)
-- [ ] `src/features/context.ts`: active editor chip (removable, default on), selection chip `file.ts:12-40`, `@` file search via `workspace.findFiles`, content block builders (resource_link for files; embedded resource for selection when `embeddedContext` is advertised, else text block)
-- [ ] command + keybinding `kiroAcp.sendSelection`
-- [ ] write tests for content block builders
-- [ ] run tests – must pass before task 7
+- [x] `src/features/context.ts`: active editor chip (removable, default on), selection chip `file.ts:12-40`, `@` file search via `workspace.findFiles`, content block builders (resource_link for files; embedded resource for selection when `embeddedContext` is advertised, else text block)
+- [x] command + keybinding `kiroAcp.sendSelection`
+- [x] write tests for content block builders
+- [x] run tests – must pass before task 7
 
 ### Task 7: Plan tab (milestone 5)
-- [ ] `src/features/plan.ts`: `kiro-plan:` read-only markdown document updated live from `plan` updates; `kiroAcp.openPlan` command; approve/reject buttons when a `switch_mode`-kind permission request is pending (ACP-standard plan hand-off); document in protocol-notes what Kiro really exposes
-- [ ] write tests for plan → markdown rendering
-- [ ] run tests – must pass before task 8
+- [x] `src/features/plan.ts`: `kiro-plan:` read-only markdown document updated live from `plan` updates; `kiroAcp.openPlan` command; approve/reject buttons when a `switch_mode`-kind permission request is pending (ACP-standard plan hand-off); document in protocol-notes what Kiro really exposes
+- [x] write tests for plan → markdown rendering
+- [x] run tests – must pass before task 8
 
 ### Task 8: Verify acceptance criteria
-- [ ] all 7 features wired end to end in the Extension Development Host against the fake agent
-- [ ] run full test suite, typecheck, build
+- [ ] all 7 features wired end to end in the Extension Development Host against the fake agent (➕ automated with @vscode/test-electron in test/e2e)
+- [x] run full test suite, typecheck, build (77 unit tests)
 - [ ] ⚠️ run against real `kiro-cli acp` (blocked until kiro-cli is installed + logged in); record the real `initialize` exchange in docs/protocol-notes.md
 
 ### Task 9: Packaging + docs (milestone 6)
-- [ ] `vsce package` produces a VSIX (`--no-dependencies`, bundled)
+- [x] `vsce package` produces a VSIX (`--no-dependencies`, bundled)
 - [ ] README: install (VSIX), settings, proxy setup, auth, troubleshooting, feature list with verification status
 - [ ] docs/protocol-notes.md and docs/DECISIONS.md complete
 

@@ -145,6 +145,23 @@ must be confirmed with the real CLI and recorded here.
 `_kiro.dev/compaction/status`, `_kiro.dev/clear/status`, `_session/terminate`.
 Unknown notifications are logged to the "Kiro ACP" output channel.
 
+## SDK notes (verified against SDK 2.5.0 source and the fake agent)
+
+- `ClientApp` installs a session-update router as the first handler for
+  `session/update`; it validates the notification against the stable v1
+  schema and an **unknown `sessionUpdate` kind is rejected with -32602 and
+  logged**, never reaching app handlers or the `"*"` fallback. Kiro adds
+  kinds over time, so the extension intercepts `session/update` (and every
+  `_`-prefixed notification) at the ndjson stream level before the SDK sees
+  them and forwards known kinds to the transcript reducer, unknown ones to the
+  log.
+- The SDK dispatches notifications through an async chain while responses
+  resolve synchronously; without the interception a `session/prompt` response
+  could overtake the last `agent_message_chunk`s. Intercepting keeps wire
+  order.
+- Requests the agent sends that the extension does not implement are answered
+  with `-32601` by the `"*"` fallback handler, as the Kiro docs require.
+
 ## Recorded exchange **[to be filled]**
 
 Paste the output of `node scripts/record-acp.mjs` here, redacting tokens.

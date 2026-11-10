@@ -122,10 +122,18 @@ that ships with the tests (it speaks ACP over stdio and replays recorded
 sessions):
 
 ```jsonc
-// settings.json of the development host
-"kiroAcp.cliPath": "node",
-"kiroAcp.cliArgs": ["<absolute path to repo>/test/fake-agent/agent.mjs", "--scenario", "tour"]
+// settings.json of the development host (Windows: use kiro-cli-fake.cmd)
+"kiroAcp.cliPath": "<absolute path to repo>/test/fake-agent/kiro-cli-fake",
+"kiroAcp.cliArgs": ["--scenario", "tour"]
 ```
+
+Scenarios: `tour`, `chat`, `cancel`, `permission-reject`, `switch-mode`,
+`refusal`, `bad-request`, `crash`; add `--engine v2` or `--auth-required` to
+see the CLI v2 surface or the sign-in banner. Typing `/scenario <name>` in the
+chat switches scenario per turn.
+
+`npm run test:e2e` runs the same features inside a real VS Code instance
+(downloaded into `.vscode-test/` on first run) against the fake agent.
 
 Layout: `src/acp/` (process, connection, sessions – no `vscode` imports),
 `src/features/` (diff, plan, context, fs, terminal, permissions),
