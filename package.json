@@ -107,6 +107,11 @@
           "light": "media/kiro-color-light.svg",
           "dark": "media/kiro-color.svg"
         }
+      },
+      {
+        "command": "kiroAcp.openPastSessionInSidebar",
+        "title": "Kiro: Open Past Session in Sidebar…",
+        "icon": "$(history)"
       }
     ],
     "keybindings": [
@@ -130,7 +135,7 @@
           "group": "navigation@1"
         },
         {
-          "command": "kiroAcp.openPastSession",
+          "command": "kiroAcp.openPastSessionInSidebar",
           "when": "view == kiroAcp.chat",
           "group": "navigation@2"
         },
@@ -208,6 +213,10 @@
         {
           "command": "kiroAcp.rejectPlan",
           "when": "kiroAcp.planApprovalPending"
+        },
+        {
+          "command": "kiroAcp.openPastSessionInSidebar",
+          "when": "false"
         }
       ]
     },

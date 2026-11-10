@@ -105,6 +105,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     return this.controller.newSession(this.handle);
   }
 
+  /** The past-session picker for the sidebar (its title-bar History button), whatever view has focus. */
+  browsePastSessions(): Promise<void> {
+    this.reveal();
+    if (!this.handle) {
+      // Not resolved yet: the reveal resolves it; ask again once it exists.
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          void (this.handle ? this.controller.browsePastSessions(this.handle) : Promise.resolve()).then(resolve);
+        }, 300);
+      });
+    }
+    return this.controller.browsePastSessions(this.handle);
+  }
+
   focusInput(): void {
     this.reveal();
     this.view?.webview.postMessage({ type: "focusInput" } satisfies ToWebview);

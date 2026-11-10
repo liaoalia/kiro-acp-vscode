@@ -95,6 +95,7 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     vscode.commands.registerCommand("kiroAcp.newSessionInSidebar", () => view.newSession()),
     // Picker of the agent's past sessions; the chosen one is restored into the focused view (D21).
     vscode.commands.registerCommand("kiroAcp.openPastSession", () => controller.browsePastSessions()),
+    vscode.commands.registerCommand("kiroAcp.openPastSessionInSidebar", () => view.browsePastSessions()),
     vscode.commands.registerCommand("kiroAcp.cancel", () => controller.cancel()),
     vscode.commands.registerCommand("kiroAcp.restart", () => controller.restart()),
     vscode.commands.registerCommand("kiroAcp.openPlan", () => plan.open()),
