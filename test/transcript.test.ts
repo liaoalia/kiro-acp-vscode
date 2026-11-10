@@ -280,6 +280,7 @@ test("snapshotToUiState composes transcript and host-owned fields", () => {
   const ui = snapshotToUiState(state, {
     connection: { status: "ready" },
     sessionId: "s1",
+    sessions: [{ id: "s1", title: "New session", status: "idle", updatedAt: 0 }],
     turnActive: false,
     permissions: [],
     models: null,

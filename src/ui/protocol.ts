@@ -164,6 +164,26 @@ export interface CommandView {
   hint?: string;
 }
 
+/** Per-session status shown in the session panel. */
+export type SessionStatus =
+  /** No turn running, nothing pending. */
+  | "idle"
+  /** A prompt turn is in progress. */
+  | "running"
+  /** Waiting for the user: a permission request is pending. */
+  | "needs_input"
+  /** The session is unusable (agent process died or an error ended it). */
+  | "error";
+
+export interface SessionSummary {
+  id: string;
+  /** First user message (truncated) or the title the agent reported; "New session" until then. */
+  title: string;
+  status: SessionStatus;
+  /** Epoch ms of the last activity, for ordering. */
+  updatedAt: number;
+}
+
 export interface TranscriptItemMessage {
   type: "message";
   message: MessageView;
@@ -177,7 +197,10 @@ export type TranscriptItem = TranscriptItemMessage | TranscriptItemTool;
 /** Full state snapshot; sent on webview (re)load and after a new session. */
 export interface UiState {
   connection: ConnectionView;
+  /** The session this webview currently displays; all other fields describe it. */
   sessionId: string | null;
+  /** Every live session of the agent process, most recent first. */
+  sessions: SessionSummary[];
   turnActive: boolean;
   items: TranscriptItem[];
   toolCalls: Record<string, ToolCallView>;
@@ -194,6 +217,8 @@ export interface UiState {
   prefs?: {
     /** Show the mode/model/config pickers without pressing the settings toggle. */
     showSettings: boolean;
+    /** Start with the session panel collapsed to icons. */
+    sessionPanelCollapsed?: boolean;
   };
 }
 
@@ -215,7 +240,13 @@ export interface FileSuggestion {
 export type ToWebview =
   | { type: "state"; state: UiState }
   | { type: "connection"; connection: ConnectionView }
+  /**
+   * The displayed session changed (or ended when null). A `state` snapshot
+   * for the new session always follows, so the webview just resets.
+   */
   | { type: "session"; sessionId: string | null }
+  /** The session list changed (new/closed session, status or title update). */
+  | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "turn"; active: boolean; stopReason?: string }
   | { type: "chunk"; messageId: string; role: MessageRole; segment: MessageSegment }
   | { type: "toolCall"; call: ToolCallView }
@@ -240,7 +271,12 @@ export type FromWebview =
   | { type: "ready" }
   | { type: "prompt"; text: string; chips: ContextChip[] }
   | { type: "cancel" }
+  /** Create a new session and display it in this webview. */
   | { type: "newSession" }
+  /** Display an existing session in this webview. */
+  | { type: "selectSession"; sessionId: string }
+  /** Close (forget) a session; if it is displayed, the webview shows the next one. */
+  | { type: "closeSession"; sessionId: string }
   | { type: "restart" }
   | { type: "login"; methodId: string }
   | { type: "permissionResponse"; requestId: string; optionId: string }

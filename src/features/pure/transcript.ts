@@ -489,7 +489,7 @@ export function withSessionSnapshot(
 
 export type UiStateExtras = Pick<
   UiState,
-  "connection" | "sessionId" | "turnActive" | "permissions" | "models" | "chips" | "notices"
+  "connection" | "sessionId" | "sessions" | "turnActive" | "permissions" | "models" | "chips" | "notices"
 >;
 
 /** Combine the transcript with host-owned fields into a full `UiState` snapshot. */
@@ -497,6 +497,7 @@ export function snapshotToUiState(state: TranscriptState, extras: UiStateExtras)
   return {
     connection: extras.connection,
     sessionId: extras.sessionId,
+    sessions: extras.sessions,
     turnActive: extras.turnActive,
     items: state.items,
     toolCalls: state.toolCalls,

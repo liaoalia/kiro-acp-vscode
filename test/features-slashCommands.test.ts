@@ -60,7 +60,18 @@ test("session commands are client-side", () => {
   assert.deepEqual(routeSlash(parseSlash("/new")!, bare), { kind: "new_session" });
   assert.deepEqual(routeSlash(parseSlash("/cancel")!, bare), { kind: "cancel" });
   assert.deepEqual(routeSlash(parseSlash("/restart")!, bare), { kind: "restart" });
-  assert.equal(routeSlash(parseSlash("/help")!, bare).kind, "help");
+  const help = routeSlash(parseSlash("/help")!, bare);
+  assert.equal(help.kind, "help");
+  if (help.kind === "help") {
+    assert.deepEqual(
+      help.unavailable.map((u) => u.name),
+      ["usage", "context", "compact", "effort", "model"],
+    );
+  }
+  const helpV3 = routeSlash(parseSlash("/help")!, v3);
+  if (helpV3.kind === "help") {
+    assert.deepEqual(helpV3.unavailable.map((u) => u.name), ["compact"]);
+  }
 });
 
 test("extension-backed commands are gated on the advertised method list", () => {

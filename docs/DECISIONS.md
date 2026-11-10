@@ -145,3 +145,16 @@ anything else gets an "Unknown command" reply. Built-ins are merged into the
 `/` popup after the agent's own commands. Results of extension calls are
 shown as a local agent message (JSON pretty-printed) because their payload
 shapes are not documented.
+
+## D19. One agent process, many sessions, many views
+ACP allows several sessions per process, so the extension keeps one
+`kiro-cli acp` process and a map of `ChatSession` states (transcript, turn,
+notices, opened diffs, title). Every webview (editor tab or sidebar) is a
+*view* with its own displayed session; incremental messages go only to views
+showing that session, while `connection`/`sessions`/`chips` go everywhere.
+The controller also tracks a *focused* session (last used) for commands,
+the plan document and the e2e API. New tabs prefer a fresh idle session; the
+sidebar follows the focused one. Closing a session cancels its turn and
+permissions; agent exit marks all sessions `error`. Session titles come from
+the first prompt (≤ 40 chars) until the agent reports one via
+`session_info_update`.

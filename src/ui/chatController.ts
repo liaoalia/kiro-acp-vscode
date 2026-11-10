@@ -1,6 +1,12 @@
 /**
- * Orchestrates one chat view: agent lifecycle, the active session, the
- * transcript model, permissions, diffs, plan and context chips.
+ * Orchestrates the chat: agent lifecycle, every live session (transcript,
+ * permissions, diffs, plan, notices) and the views that display them.
+ *
+ * One `KiroAgent` process hosts many sessions. Each attached view (sidebar,
+ * editor tab, test recorder) displays exactly one session at a time; the
+ * controller also tracks a *focused* session — the one most recently used
+ * through its API or from a view — which the plan document, the status bar
+ * commands and plain `attach()` views follow.
  *
  * The webview only ever sees `ToWebview` messages produced here; the agent
  * process only ever sees ACP requests issued through the `KiroAgent` facade.
@@ -50,6 +56,9 @@ import type {
   FromWebview,
   ModelView,
   NoticeView,
+  PermissionView,
+  SessionStatus,
+  SessionSummary,
   ToWebview,
   ToolCallView,
   ToolDiffContent,
@@ -67,30 +76,165 @@ export interface ChatControllerDeps {
   contextTracker: ContextTracker;
 }
 
+/**
+ * A webview attached through {@link ChatController.attachView}: it displays
+ * one session (or none yet) and can be re-pointed at another.
+ */
+export interface ViewHandle {
+  /** The session this view displays, or null when it has none yet. */
+  readonly sessionId: string | null;
+  /** Display `sessionId` (must be a live session) or nothing; posts `session` + `state`. */
+  setSession(sessionId: string | null): void;
+  /** Make this view the focused one (its session becomes the focused session). */
+  focus(): void;
+  /** `UiState` for the displayed session. */
+  snapshot(): UiState;
+  /** Detach the view. */
+  dispose(): void;
+}
+
+export interface AttachViewOptions {
+  /**
+   * Which session the view gets when it has none and the agent becomes ready:
+   * `fresh` (a new, unused session — editor tabs) or `focused` (the focused
+   * session — the sidebar). Default `focused`.
+   */
+  prefer?: "fresh" | "focused";
+}
+
 const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
+const TITLE_MAX = 40;
+const SESSIONS_DEBOUNCE_MS = 50;
+
+// ---------------------------------------------------------------------------
+// Per-session state
+// ---------------------------------------------------------------------------
+
+class ChatSession {
+  transcript: TranscriptState;
+  models: ModelView | null;
+  turnActive = false;
+  notices: NoticeView[] = [];
+  userMessageSeq = 0;
+  readonly knownPermissionIds = new Set<string>();
+  readonly openedDiffs = new Set<string>();
+  /** `session_info_update.title` from the agent, when present. */
+  agentTitle: string | null = null;
+  /** First prompt text sent to the agent (truncated), the fallback title. */
+  firstPrompt: string | null = null;
+  updatedAt = Date.now();
+
+  constructor(
+    public state: SessionState,
+    /** Creation order, breaks `updatedAt` ties. */
+    readonly seq: number,
+  ) {
+    this.transcript = withSessionSnapshot(createTranscript(), {
+      modes: state.modes,
+      configOptions: state.configOptions,
+      availableCommands: state.availableCommands,
+    });
+    this.models = toModelView(state.models);
+  }
+
+  get id(): string {
+    return this.state.sessionId;
+  }
+
+  touch(): void {
+    this.updatedAt = Date.now();
+  }
+
+  title(): string {
+    return this.agentTitle ?? this.firstPrompt ?? "New session";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Views
+// ---------------------------------------------------------------------------
+
+interface ViewOps {
+  focusedId(): string | null;
+  setSession(view: ViewBinding, sessionId: string | null): void;
+  focus(view: ViewBinding): void;
+  snapshot(sessionId: string | null): UiState;
+  detach(view: ViewBinding): void;
+}
+
+class ViewBinding implements ViewHandle {
+  /** Displayed session of a non-following view. */
+  displayed: string | null = null;
+
+  constructor(
+    readonly poster: (message: ToWebview) => void,
+    /** Plain `attach()` views follow the focused session. */
+    readonly follows: boolean,
+    /** Pending initial assignment; cleared once a session is displayed. */
+    public prefer: "fresh" | "focused" | null,
+    private readonly ops: ViewOps,
+  ) {}
+
+  get sessionId(): string | null {
+    return this.follows ? this.ops.focusedId() : this.displayed;
+  }
+
+  setSession(sessionId: string | null): void {
+    this.ops.setSession(this, sessionId);
+  }
+
+  focus(): void {
+    this.ops.focus(this);
+  }
+
+  snapshot(): UiState {
+    return this.ops.snapshot(this.sessionId);
+  }
+
+  dispose(): void {
+    this.ops.detach(this);
+  }
+}
+
+function asBinding(view: ViewHandle | undefined): ViewBinding | undefined {
+  return view instanceof ViewBinding ? view : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Controller
+// ---------------------------------------------------------------------------
 
 export class ChatController implements vscode.Disposable {
   private agent: KiroAgent | null = null;
   private agentInfo: AgentInfo | null = null;
   private connection: ConnectionView = { status: "stopped" };
-  private session: SessionState | null = null;
-  private transcript: TranscriptState = createTranscript();
-  private models: ModelView | null = null;
-  private turnActive = false;
-  private notices: NoticeView[] = [];
+  private readonly sessions = new Map<string, ChatSession>();
+  private focusedId: string | null = null;
+  /** The view most recently used by the user; `newSession()`/`selectSession()` without a view act on it. */
+  private focusedView: ViewBinding | null = null;
+  private sessionSeq = 0;
   private noticeSeq = 0;
-  private userMessageSeq = 0;
-  private readonly knownPermissionIds = new Set<string>();
-  private readonly openedDiffs = new Set<string>();
+  /** Notices not tied to a session (agent start failures); shown in every view. */
+  private globalNotices: NoticeView[] = [];
+  private readonly views = new Set<ViewBinding>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly unsubscribers: Array<() => void> = [];
-  private readonly posters = new Set<(message: ToWebview) => void>();
   private starting: Promise<void> | null = null;
+  private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
+  private lastSessionsJson = "";
+
+  private readonly viewOps: ViewOps = {
+    focusedId: () => this.focusedId,
+    setSession: (view, sessionId) => this.setViewSession(view, sessionId),
+    focus: (view) => this.focusView(view),
+    snapshot: (sessionId) => this.snapshot(sessionId),
+    detach: (view) => this.detachView(view),
+  };
 
   constructor(private readonly deps: ChatControllerDeps) {
     this.disposables.push(
       deps.permissions.onDidChange(() => this.syncPermissions()),
-      deps.contextTracker.onDidChange((chips) => this.post({ type: "chips", chips })),
+      deps.contextTracker.onDidChange((chips) => this.postAll({ type: "chips", chips })),
     );
   }
 
@@ -99,51 +243,108 @@ export class ChatController implements vscode.Disposable {
   // ---------------------------------------------------------------------
 
   /**
-   * Register a webview (sidebar view or editor tab). Several can be attached
-   * at once; every `ToWebview` message is fanned out to all of them. Returns
-   * the unsubscribe function.
+   * Register a webview that follows the focused session (tests, simple
+   * consumers). Attaching the same poster twice is a no-op. Returns the
+   * unsubscribe function.
    */
   attach(poster: (message: ToWebview) => void): () => void {
-    this.posters.add(poster);
-    return () => {
-      this.posters.delete(poster);
-    };
+    let view = [...this.views].find((v) => v.follows && v.poster === poster);
+    if (!view) {
+      view = new ViewBinding(poster, true, null, this.viewOps);
+      this.views.add(view);
+    }
+    const bound = view;
+    return () => this.detachView(bound);
   }
 
-  /** Remove one poster, or all of them when called without arguments. */
+  /**
+   * Register a webview with its own displayed session (sidebar, editor tab).
+   * The session is assigned by `setSession()` or, once the agent is ready, by
+   * {@link ensureViewSession} / the webview's `ready` message.
+   */
+  attachView(poster: (message: ToWebview) => void, options: AttachViewOptions = {}): ViewHandle {
+    const view = new ViewBinding(poster, false, options.prefer ?? "focused", this.viewOps);
+    this.views.add(view);
+    return view;
+  }
+
+  /** Remove the views using `poster`, or all of them when called without arguments. */
   detach(poster?: (message: ToWebview) => void): void {
-    if (poster) this.posters.delete(poster);
-    else this.posters.clear();
+    for (const view of [...this.views]) {
+      if (!poster || view.poster === poster) this.detachView(view);
+    }
+  }
+
+  private detachView(view: ViewBinding): void {
+    this.views.delete(view);
+    if (this.focusedView === view) this.focusedView = null;
   }
 
   /** True when at least one webview is attached. */
   get hasView(): boolean {
-    return this.posters.size > 0;
+    return this.views.size > 0;
   }
 
-  snapshot(): UiState {
-    const state = snapshotToUiState(this.transcript, {
+  /** The focused session (most recently used through the API or a view). */
+  get focusedSessionId(): string | null {
+    return this.focusedId;
+  }
+
+  /** Ids of every live session, most recent first. */
+  sessionIds(): string[] {
+    return this.sortedSessions().map((s) => s.id);
+  }
+
+  /**
+   * Full `UiState` for `sessionId`; `undefined` means the focused session,
+   * `null` an empty view with no session.
+   */
+  snapshot(sessionId?: string | null): UiState {
+    const id = sessionId === undefined ? this.focusedId : sessionId;
+    const session = id ? (this.sessions.get(id) ?? null) : null;
+    const transcript = session?.transcript ?? createTranscript();
+    const state = snapshotToUiState(transcript, {
       connection: this.connection,
-      sessionId: this.session?.sessionId ?? null,
-      turnActive: this.turnActive,
-      permissions: this.deps.permissions.pending(),
-      models: this.models,
+      sessionId: session?.id ?? null,
+      sessions: this.sessionSummaries(),
+      turnActive: session?.turnActive ?? false,
+      permissions: session ? this.pendingFor(session.id) : [],
+      models: session?.models ?? null,
       chips: this.deps.contextTracker.chips(),
-      notices: this.notices,
+      notices: [...this.globalNotices, ...(session?.notices ?? [])],
     });
     const toolCalls: Record<string, ToolCallView> = {};
-    for (const [id, call] of Object.entries(state.toolCalls)) {
-      toolCalls[id] = this.withTerminalOutput(call);
+    for (const [callId, call] of Object.entries(state.toolCalls)) {
+      toolCalls[callId] = this.withTerminalOutput(call);
     }
-    const showSettings = vscode.workspace.getConfiguration("kiroAcp").get<boolean>("showSettingsByDefault", false);
-    return { ...state, toolCalls, commands: this.commandsView(), prefs: { showSettings } };
+    const config = vscode.workspace.getConfiguration("kiroAcp");
+    const showSettings = config.get<boolean>("showSettingsByDefault", false);
+    const sessionPanelCollapsed = config.get<boolean>("sessionPanelCollapsed", false);
+    return {
+      ...state,
+      toolCalls,
+      commands: mergeCommands(transcript.commands, this.slashContext(transcript)),
+      prefs: { showSettings, sessionPanelCollapsed },
+    };
   }
 
-  private post(message: ToWebview): void {
+  /** Post to every attached view (connection, sessions, chips, ...). */
+  private postAll(message: ToWebview): void {
+    for (const view of this.views) this.postView(view, message);
+  }
+
+  /** Post to the views displaying `sessionId` (incremental session messages). */
+  private postTo(sessionId: string, message: ToWebview): void {
+    for (const view of this.views) {
+      if (view.sessionId === sessionId) this.postView(view, message);
+    }
+  }
+
+  private postView(view: ViewBinding, message: ToWebview): void {
     if (message.type === "toolCall") {
       message = { type: "toolCall", call: this.withTerminalOutput(message.call) };
     }
-    for (const poster of this.posters) poster(message);
+    view.poster(message);
   }
 
   /**
@@ -163,6 +364,151 @@ export class ChatController implements vscode.Disposable {
           : { ...c, output: snap.output, exitCode: snap.exitCode };
       }),
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // View ↔ session assignment
+  // ---------------------------------------------------------------------
+
+  private setViewSession(view: ViewBinding, sessionId: string | null): void {
+    if (view.follows) return;
+    const id = sessionId !== null && this.sessions.has(sessionId) ? sessionId : null;
+    if (id !== null) view.prefer = null;
+    view.displayed = id;
+    this.postView(view, { type: "session", sessionId: id });
+    this.postView(view, { type: "state", state: this.snapshot(id) });
+  }
+
+  private focusView(view: ViewBinding): void {
+    if (!view.follows) this.focusedView = view;
+    const id = view.sessionId;
+    if (id) this.focus(id);
+  }
+
+  /**
+   * Start the agent if needed and give `view` a session when it has none:
+   * a fresh one for `prefer: "fresh"` views, else the focused session.
+   */
+  async ensureViewSession(view?: ViewHandle): Promise<void> {
+    await this.ensureStarted();
+    const binding = asBinding(view);
+    if (binding) await this.assignSession(binding);
+  }
+
+  private async assignSession(view: ViewBinding): Promise<void> {
+    if (view.follows || view.displayed !== null || !this.views.has(view)) return;
+    if (!this.agent || this.agent.status !== "ready") return;
+    if (view.prefer === "fresh") {
+      const spare = this.spareSession();
+      const id = spare?.id ?? (await this.createSession())?.id ?? null;
+      if (id && view.displayed === null && this.views.has(view)) {
+        this.setViewSession(view, id);
+        this.focusView(view);
+      }
+      return;
+    }
+    const id = this.focusedId ?? (await this.createSession())?.id ?? null;
+    if (id && view.displayed === null && this.views.has(view)) {
+      this.setViewSession(view, id);
+      if (!this.focusedId) this.focus(id);
+    }
+  }
+
+  private async assignPendingViews(): Promise<void> {
+    for (const view of [...this.views]) {
+      if (!view.follows && view.displayed === null) await this.assignSession(view);
+    }
+  }
+
+  /** An idle, empty session no view displays (the auto-created first session, typically). */
+  private spareSession(): ChatSession | undefined {
+    const displayed = new Set<string>();
+    for (const view of this.views) {
+      if (!view.follows && view.displayed) displayed.add(view.displayed);
+    }
+    return this.sortedSessions().find(
+      (s) => !displayed.has(s.id) && !s.turnActive && s.transcript.items.length === 0,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Focus
+  // ---------------------------------------------------------------------
+
+  /** Make `sessionId` the focused session: plan document, context keys and following views switch. */
+  private focus(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || this.focusedId === sessionId) return;
+    this.focusedId = sessionId;
+    if (session.transcript.plan.length > 0) this.deps.plan.update(session.transcript.plan, sessionId);
+    else this.deps.plan.reset(sessionId);
+    void vscode.commands.executeCommand("setContext", TURN_ACTIVE_KEY, session.turnActive);
+    for (const view of this.views) {
+      if (!view.follows) continue;
+      this.postView(view, { type: "session", sessionId });
+      this.postView(view, { type: "state", state: this.snapshot(sessionId) });
+    }
+  }
+
+  private clearFocus(): void {
+    const hadFocus = this.focusedId !== null;
+    this.focusedId = null;
+    this.deps.plan.reset();
+    void vscode.commands.executeCommand("setContext", TURN_ACTIVE_KEY, false);
+    if (!hadFocus) return;
+    for (const view of this.views) {
+      if (!view.follows) continue;
+      this.postView(view, { type: "session", sessionId: null });
+      this.postView(view, { type: "state", state: this.snapshot(null) });
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Session summaries
+  // ---------------------------------------------------------------------
+
+  private agentDown(): boolean {
+    return !this.agent || this.agent.status === "stopped" || this.agent.status === "error";
+  }
+
+  private statusOf(session: ChatSession): SessionStatus {
+    if (this.agentDown()) return "error";
+    // A permission request only exists mid-turn; waiting for the user wins over "running".
+    if (this.pendingFor(session.id).length > 0) return "needs_input";
+    if (session.turnActive) return "running";
+    return "idle";
+  }
+
+  private sortedSessions(): ChatSession[] {
+    return [...this.sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt || b.seq - a.seq);
+  }
+
+  private sessionSummaries(): SessionSummary[] {
+    return this.sortedSessions().map((s) => ({
+      id: s.id,
+      title: s.title(),
+      status: this.statusOf(s),
+      updatedAt: s.updatedAt,
+    }));
+  }
+
+  /** Post `sessions` to every view, debounced and only when the list changed. */
+  private scheduleSessions(): void {
+    if (this.sessionsTimer) return;
+    this.sessionsTimer = setTimeout(() => {
+      this.sessionsTimer = undefined;
+      const sessions = this.sessionSummaries();
+      const json = JSON.stringify(sessions);
+      if (json === this.lastSessionsJson) return;
+      this.lastSessionsJson = json;
+      this.postAll({ type: "sessions", sessions });
+    }, SESSIONS_DEBOUNCE_MS);
+  }
+
+  private pendingFor(sessionId: string): PermissionView[] {
+    return this.deps.permissions
+      .pending()
+      .filter((p) => this.deps.permissions.getEntry(p.requestId)?.sessionId === sessionId);
   }
 
   // ---------------------------------------------------------------------
@@ -193,7 +539,7 @@ export class ChatController implements vscode.Disposable {
     return process.cwd();
   }
 
-  /** Start the agent process (idempotent) and open a session when none exists. */
+  /** Start the agent process (idempotent) and open a first session when none exists. */
   async ensureStarted(): Promise<void> {
     if (this.starting) return this.starting;
     if (this.agent && this.agent.status !== "stopped" && this.agent.status !== "error") return;
@@ -217,6 +563,8 @@ export class ChatController implements vscode.Disposable {
       { command, args, cwd: this.workspaceRoot(), env: process.env, logger, clientVersion: version },
       this.deps.services,
     );
+    // Sessions belong to the process; a new process starts without any.
+    this.endAllSessions();
     await this.teardownAgent();
     this.agent = agent;
     this.unsubscribers.push(
@@ -227,12 +575,16 @@ export class ChatController implements vscode.Disposable {
     try {
       this.agentInfo = await agent.start();
       this.setConnection(this.connectionFromAgent("ready"));
-      await this.openSession();
+      if (this.sessions.size === 0) {
+        const first = await this.createSession();
+        if (first) this.focus(first.id);
+      }
+      await this.assignPendingViews();
     } catch (error) {
       const message = errorMessage(error);
       logger.error(`agent start failed: ${message}`);
       this.setConnection({ status: "error", message });
-      this.notice("error", `Could not start Kiro CLI: ${message}`);
+      this.notice(null, "error", `Could not start Kiro CLI: ${message}`);
     }
   }
 
@@ -250,7 +602,7 @@ export class ChatController implements vscode.Disposable {
   }
 
   async restart(): Promise<void> {
-    this.endSession();
+    this.endAllSessions();
     await this.teardownAgent();
     this.setConnection({ status: "stopped" });
     await this.ensureStarted();
@@ -273,128 +625,193 @@ export class ChatController implements vscode.Disposable {
   private onConnectionChange(change: ConnectionStateChange): void {
     if (change.agent) this.agentInfo = change.agent;
     if (change.status === "stopped" || change.status === "error") {
-      this.endSession();
+      // The sessions stay visible (status `error`) until the agent restarts.
+      for (const session of this.sessions.values()) {
+        this.deps.permissions.cancelAll(session.id);
+        if (session.turnActive) this.setTurnActive(session, false, "error");
+      }
     }
     this.setConnection(this.connectionFromAgent(change.status, change.message));
     if (change.status === "error" && change.message) {
-      this.notice("error", change.message);
+      this.notice(null, "error", change.message);
     }
+    this.scheduleSessions();
   }
 
   private setConnection(view: ConnectionView): void {
     this.connection = view;
-    this.post({ type: "connection", connection: view });
+    this.postAll({ type: "connection", connection: view });
+    this.scheduleSessions();
   }
 
   // ---------------------------------------------------------------------
   // Session lifecycle
   // ---------------------------------------------------------------------
 
-  private async openSession(): Promise<void> {
+  private async createSession(): Promise<ChatSession | null> {
     const agent = this.agent;
-    if (!agent) return;
-    this.endSession();
+    if (!agent) return null;
     try {
-      const session = await agent.newSession(this.workspaceRoot());
-      this.session = session;
-      this.transcript = withSessionSnapshot(createTranscript(), {
-        modes: session.modes,
-        configOptions: session.configOptions,
-        availableCommands: session.availableCommands,
-      });
-      this.models = toModelView(session.models);
-      this.deps.plan.reset(session.sessionId);
-      this.post({ type: "session", sessionId: session.sessionId });
-      this.post({ type: "state", state: this.snapshot() });
-      this.deps.output.appendLine(`[info] session ${session.sessionId} opened`);
+      const state = await agent.newSession(this.workspaceRoot());
+      const session = new ChatSession(state, ++this.sessionSeq);
+      this.sessions.set(session.id, session);
+      this.deps.output.appendLine(`[info] session ${session.id} opened`);
+      this.scheduleSessions();
+      return session;
     } catch (error) {
       const message = errorMessage(error);
       if (this.agent?.status === "auth_required") {
         this.setConnection(this.connectionFromAgent("auth_required", "Sign in to Kiro to start a session."));
       } else {
-        this.notice("error", `Could not create a session: ${message}`);
+        this.notice(null, "error", `Could not create a session: ${message}`);
       }
+      return null;
     }
   }
 
-  private endSession(): void {
-    const sessionId = this.session?.sessionId;
-    if (sessionId) {
-      this.deps.permissions.cancelAll(sessionId);
-      this.deps.permissions.clearPolicies(sessionId);
+  /** Forget every session (agent restart). */
+  private endAllSessions(): void {
+    for (const session of this.sessions.values()) {
+      this.deps.permissions.cancelAll(session.id);
+      this.deps.permissions.clearPolicies(session.id);
     }
-    this.session = null;
-    this.transcript = createTranscript();
-    this.models = null;
-    this.notices = [];
-    this.openedDiffs.clear();
-    this.setTurnActive(false);
-    this.post({ type: "session", sessionId: null });
+    this.sessions.clear();
+    for (const view of this.views) {
+      if (view.follows || view.displayed === null) continue;
+      view.displayed = null;
+      this.postView(view, { type: "session", sessionId: null });
+      this.postView(view, { type: "state", state: this.snapshot(null) });
+    }
+    this.clearFocus();
+    this.scheduleSessions();
   }
 
-  async newSession(): Promise<void> {
+  /**
+   * Create a session (keeping the others), focus it and display it in
+   * `view` (or the focused view). Returns the new session id, or null when
+   * no session could be created.
+   */
+  async newSession(view?: ViewHandle): Promise<string | null> {
+    const binding = asBinding(view) ?? this.focusedView;
     if (!this.agent || this.agent.status !== "ready") {
       await this.ensureStarted();
-      return;
+      const id = this.focusedId;
+      if (id && binding && !binding.follows && binding.displayed !== id) this.setViewSession(binding, id);
+      return id;
     }
-    if (this.turnActive && this.session) {
-      await this.cancel();
-    }
-    await this.openSession();
+    const session = await this.createSession();
+    if (!session) return null;
+    if (binding && !binding.follows) this.setViewSession(binding, session.id);
+    this.focus(session.id);
+    return session.id;
   }
 
-  async cancel(): Promise<void> {
-    const sessionId = this.session?.sessionId;
-    if (!sessionId || !this.agent) return;
+  /** Display an existing session in `view` (or the focused view) and focus it. */
+  selectSession(sessionId: string, view?: ViewHandle): void {
+    if (!this.sessions.has(sessionId)) return;
+    const binding = asBinding(view) ?? this.focusedView;
+    if (binding && !binding.follows) this.setViewSession(binding, sessionId);
+    this.focus(sessionId);
+  }
+
+  /**
+   * Cancel, forget and drop a session. Views displaying it switch to the
+   * most recent remaining session (a new one is created when none is left).
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.turnActive && this.agent) {
+      try {
+        await this.agent.cancel(sessionId);
+      } catch (error) {
+        this.deps.output.appendLine(`[warn] cancel before close failed: ${errorMessage(error)}`);
+      }
+    }
     this.deps.permissions.cancelAll(sessionId);
+    this.deps.permissions.clearPolicies(sessionId);
+    this.sessions.delete(sessionId);
+    this.deps.output.appendLine(`[info] session ${sessionId} closed`);
+
+    const wasFocused = this.focusedId === sessionId;
+    const displaying = [...this.views].filter((v) => !v.follows && v.displayed === sessionId);
+    let fallback: string | null = this.sortedSessions()[0]?.id ?? null;
+    if (!fallback && (wasFocused || displaying.length > 0) && this.agent?.status === "ready") {
+      fallback = (await this.createSession())?.id ?? null;
+    }
+    for (const view of displaying) this.setViewSession(view, fallback);
+    if (wasFocused) {
+      this.focusedId = null;
+      if (fallback) this.focus(fallback);
+      else this.clearFocus();
+    }
+    this.scheduleSessions();
+  }
+
+  /** Cancel the running turn of `sessionId` (default: the focused session). */
+  async cancel(sessionId?: string): Promise<void> {
+    const id = sessionId ?? this.focusedId;
+    if (!id || !this.agent || !this.sessions.has(id)) return;
+    this.deps.permissions.cancelAll(id);
     try {
-      await this.agent.cancel(sessionId);
+      await this.agent.cancel(id);
     } catch (error) {
-      this.notice("warning", `Cancel failed: ${errorMessage(error)}`);
+      this.notice(this.sessions.get(id) ?? null, "warning", `Cancel failed: ${errorMessage(error)}`);
     }
   }
 
-  private setTurnActive(active: boolean, stopReason?: string): void {
-    this.turnActive = active;
-    void vscode.commands.executeCommand("setContext", TURN_ACTIVE_KEY, active);
-    this.post(stopReason ? { type: "turn", active, stopReason } : { type: "turn", active });
+  private setTurnActive(session: ChatSession, active: boolean, stopReason?: string): void {
+    session.turnActive = active;
+    session.touch();
+    if (this.focusedId === session.id) {
+      void vscode.commands.executeCommand("setContext", TURN_ACTIVE_KEY, active);
+    }
+    this.postTo(session.id, stopReason ? { type: "turn", active, stopReason } : { type: "turn", active });
+    this.scheduleSessions();
   }
 
   // ---------------------------------------------------------------------
   // Prompting
   // ---------------------------------------------------------------------
 
-  async prompt(text: string, chips: ContextChip[]): Promise<void> {
+  /** Send a prompt to `sessionId` (default: the focused session) and wait for the turn to end. */
+  async prompt(text: string, chips: ContextChip[], sessionId?: string): Promise<void> {
     await this.ensureStarted();
     const agent = this.agent;
-    const session = this.session;
-    if (!agent || !session) {
-      this.notice("warning", "No active session. Sign in or restart the agent, then try again.");
+    const session =
+      (sessionId ? this.sessions.get(sessionId) : undefined) ??
+      (this.focusedId ? this.sessions.get(this.focusedId) : undefined);
+    if (!agent || !session || agent.status !== "ready") {
+      this.notice(null, "warning", "No active session. Sign in or restart the agent, then try again.");
       return;
     }
-    if (this.turnActive) {
-      this.notice("info", "Wait for the current turn to finish or cancel it first.");
+    this.focus(session.id);
+    if (session.turnActive) {
+      this.notice(session, "info", "Wait for the current turn to finish or cancel it first.");
       return;
     }
     const trimmed = text.trim();
     if (!trimmed && chips.length === 0) return;
 
     const parsed = parseSlash(trimmed);
-    if (parsed && (await this.runSlash(parsed, chips))) return;
+    if (parsed && (await this.runSlash(session, parsed, chips))) return;
 
     const embeddedContext = this.agentInfo?.agentCapabilities.promptCapabilities?.embeddedContext === true;
     const blocks = await buildPromptBlocks(trimmed, chips, readWorkspaceText, { embeddedContext });
 
+    if (session.firstPrompt === null && trimmed) {
+      session.firstPrompt = truncateTitle(trimmed);
+    }
     // Show the user's message locally; echoed `user_message_chunk`s are ignored (see DECISIONS D13).
-    const messageId = `user-${++this.userMessageSeq}`;
+    const messageId = `user-${++session.userMessageSeq}`;
     const echo: acp.SessionUpdate = {
       sessionUpdate: "user_message_chunk",
       messageId,
       content: { type: "text", text: trimmed },
     };
-    this.applyLocalUpdate(echo);
+    this.applyLocalUpdate(session, echo);
     for (const chip of chips) {
-      this.applyLocalUpdate({
+      this.applyLocalUpdate(session, {
         sessionUpdate: "user_message_chunk",
         messageId,
         content: { type: "resource_link", uri: vscode.Uri.file(chip.path).toString(), name: chipLabel(chip) },
@@ -402,41 +819,42 @@ export class ChatController implements vscode.Disposable {
     }
     this.deps.contextTracker.clearExplicit();
 
-    this.setTurnActive(true);
+    this.setTurnActive(session, true);
     try {
-      const response = await agent.prompt(session.sessionId, blocks);
-      this.handleStopReason(response.stopReason);
+      const response = await agent.prompt(session.id, blocks);
+      this.handleStopReason(session, response.stopReason);
     } catch (error) {
       const message = errorMessage(error);
-      this.notice("error", `Prompt failed: ${message}`);
-      this.setTurnActive(false, "error");
+      this.notice(session, "error", `Prompt failed: ${message}`);
+      this.setTurnActive(session, false, "error");
       return;
     }
   }
 
-  private handleStopReason(stopReason: acp.StopReason): void {
-    this.setTurnActive(false, stopReason);
+  private handleStopReason(session: ChatSession, stopReason: acp.StopReason): void {
+    this.setTurnActive(session, false, stopReason);
     switch (stopReason) {
       case "refusal":
-        this.notice("warning", "Kiro declined to continue with this request.");
+        this.notice(session, "warning", "Kiro declined to continue with this request.");
         break;
       case "max_tokens":
-        this.notice("warning", "The response was cut off (token limit reached).");
+        this.notice(session, "warning", "The response was cut off (token limit reached).");
         break;
       case "max_turn_requests":
-        this.notice("warning", "The turn stopped after reaching the request limit.");
+        this.notice(session, "warning", "The turn stopped after reaching the request limit.");
         break;
       default:
         break;
     }
-    const sessionId = this.session?.sessionId;
-    if (sessionId) this.deps.permissions.cancelAll(sessionId);
+    this.deps.permissions.cancelAll(session.id);
   }
 
-  private applyLocalUpdate(update: acp.SessionUpdate): void {
-    const result = applyUpdate(this.transcript, update);
-    this.transcript = result.state;
-    for (const emit of result.emits) this.post(emit);
+  private applyLocalUpdate(session: ChatSession, update: acp.SessionUpdate): void {
+    const result = applyUpdate(session.transcript, update);
+    session.transcript = result.state;
+    session.touch();
+    for (const emit of result.emits) this.postTo(session.id, emit);
+    this.scheduleSessions();
   }
 
   // ---------------------------------------------------------------------
@@ -446,34 +864,49 @@ export class ChatController implements vscode.Disposable {
   private onSessionEvent(event: SessionEvent): void {
     switch (event.type) {
       case "update": {
-        if (event.sessionId !== this.session?.sessionId) return;
-        if (event.update.sessionUpdate === "user_message_chunk") return;
-        const result = applyUpdate(this.transcript, event.update);
-        this.transcript = result.state;
-        for (const emit of result.emits) {
-          this.post(emit.type === "commands" ? { type: "commands", commands: this.commandsView() } : emit);
-          if (emit.type === "toolCall") void this.onToolCallChanged(emit.call);
-          if (emit.type === "plan") this.deps.plan.update(emit.entries, event.sessionId);
+        const session = this.sessions.get(event.sessionId);
+        if (!session) return;
+        session.touch();
+        this.scheduleSessions();
+        const update = event.update;
+        if (update.sessionUpdate === "user_message_chunk") return;
+        if (update.sessionUpdate === "session_info_update") {
+          if (typeof update.title === "string") session.agentTitle = update.title.trim() || null;
+          else if (update.title === null) session.agentTitle = null;
+          return;
         }
-        if (event.update.sessionUpdate === "notice" && typeof event.update.title === "string") {
-          const sev = event.update.severity;
-          this.notice(sev === "error" || sev === "warning" ? sev : "info", event.update.title);
+        const result = applyUpdate(session.transcript, update);
+        session.transcript = result.state;
+        for (const emit of result.emits) {
+          this.postTo(
+            session.id,
+            emit.type === "commands" ? { type: "commands", commands: this.commandsView(session) } : emit,
+          );
+          if (emit.type === "toolCall") void this.onToolCallChanged(session, emit.call);
+          if (emit.type === "plan" && this.focusedId === session.id) {
+            this.deps.plan.update(emit.entries, session.id);
+          }
+        }
+        if (update.sessionUpdate === "notice" && typeof update.title === "string") {
+          const sev = update.severity;
+          this.notice(session, sev === "error" || sev === "warning" ? sev : "info", update.title);
         }
         return;
       }
       case "state": {
-        if (event.session.sessionId !== this.session?.sessionId) return;
-        this.session = event.session;
-        this.transcript = withSessionSnapshot(this.transcript, {
+        const session = this.sessions.get(event.session.sessionId);
+        if (!session) return;
+        session.state = event.session;
+        session.transcript = withSessionSnapshot(session.transcript, {
           modes: event.session.modes,
           configOptions: event.session.configOptions,
           availableCommands: event.session.availableCommands,
         });
-        this.models = toModelView(event.session.models);
-        this.post({ type: "modes", modes: this.transcript.modes });
-        this.post({ type: "configOptions", options: this.transcript.configOptions });
-        this.post({ type: "models", models: this.models });
-        this.post({ type: "commands", commands: this.commandsView() });
+        session.models = toModelView(event.session.models);
+        this.postTo(session.id, { type: "modes", modes: session.transcript.modes });
+        this.postTo(session.id, { type: "configOptions", options: session.transcript.configOptions });
+        this.postTo(session.id, { type: "models", models: session.models });
+        this.postTo(session.id, { type: "commands", commands: this.commandsView(session) });
         return;
       }
       case "turn_started":
@@ -489,29 +922,29 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private async onToolCallChanged(call: ToolCallView): Promise<void> {
+  private async onToolCallChanged(session: ChatSession, call: ToolCallView): Promise<void> {
     const diffs = call.content.filter((c): c is ToolDiffContent => c.type === "diff");
     if (diffs.length === 0) return;
     if (call.status === "completed" || call.status === "failed" || call.status === "cancelled") {
       // Forget the "already opened" marks so a later tool call re-using the id opens again.
-      for (const key of this.openedDiffs) {
-        if (key.startsWith(`${call.toolCallId}#`)) this.openedDiffs.delete(key);
+      for (const key of session.openedDiffs) {
+        if (key.startsWith(`${call.toolCallId}#`)) session.openedDiffs.delete(key);
       }
       await this.deps.diff.reconcileToolCallEnded(call.toolCallId, call.status, diffs);
       return;
     }
-    await this.maybeOpenDiffs(call.toolCallId, diffs);
+    await this.maybeOpenDiffs(session, call.toolCallId, diffs);
   }
 
-  private async maybeOpenDiffs(toolCallId: string, diffs: ToolDiffContent[]): Promise<void> {
+  private async maybeOpenDiffs(session: ChatSession, toolCallId: string, diffs: ToolDiffContent[]): Promise<void> {
     const auto = vscode.workspace.getConfiguration("kiroAcp").get<boolean>("autoOpenDiffs", true);
     if (!auto) return;
-    const status = this.transcript.toolCalls[toolCallId]?.status;
+    const status = session.transcript.toolCalls[toolCallId]?.status;
     if (status === "completed" || status === "failed" || status === "cancelled") return;
     for (let index = 0; index < diffs.length; index++) {
       const key = `${toolCallId}#${index}`;
-      if (this.openedDiffs.has(key)) continue;
-      this.openedDiffs.add(key);
+      if (session.openedDiffs.has(key)) continue;
+      session.openedDiffs.add(key);
       try {
         await this.deps.diff.openDiff(toolCallId, index, diffs[index], { preview: false });
       } catch (error) {
@@ -525,46 +958,79 @@ export class ChatController implements vscode.Disposable {
   // ---------------------------------------------------------------------
 
   private syncPermissions(): void {
-    const pending = this.deps.permissions.pending();
-    const current = new Set(pending.map((p) => p.requestId));
-    for (const id of this.knownPermissionIds) {
-      if (!current.has(id)) {
-        this.knownPermissionIds.delete(id);
-        this.post({ type: "permissionResolved", requestId: id });
-      }
-    }
-    for (const request of pending) {
-      if (this.knownPermissionIds.has(request.requestId)) continue;
-      this.knownPermissionIds.add(request.requestId);
-      this.post({ type: "permission", request });
+    const bySession = new Map<string, PermissionView[]>();
+    for (const request of this.deps.permissions.pending()) {
       const entry = this.deps.permissions.getEntry(request.requestId);
-      if (entry && entry.diffs.length > 0) {
-        void this.maybeOpenDiffs(request.toolCallId, entry.diffs);
+      if (!entry) continue;
+      const list = bySession.get(entry.sessionId) ?? [];
+      list.push(request);
+      bySession.set(entry.sessionId, list);
+    }
+    for (const session of this.sessions.values()) {
+      const pending = bySession.get(session.id) ?? [];
+      const current = new Set(pending.map((p) => p.requestId));
+      for (const id of session.knownPermissionIds) {
+        if (!current.has(id)) {
+          session.knownPermissionIds.delete(id);
+          this.postTo(session.id, { type: "permissionResolved", requestId: id });
+        }
       }
-      if (this.posters.size === 0) {
-        void vscode.commands.executeCommand("kiroAcp.focus");
+      for (const request of pending) {
+        if (session.knownPermissionIds.has(request.requestId)) continue;
+        session.knownPermissionIds.add(request.requestId);
+        session.touch();
+        this.postTo(session.id, { type: "permission", request });
+        const entry = this.deps.permissions.getEntry(request.requestId);
+        if (entry && entry.diffs.length > 0) {
+          void this.maybeOpenDiffs(session, request.toolCallId, entry.diffs);
+        }
+        if (this.views.size === 0) {
+          void vscode.commands.executeCommand("kiroAcp.focus");
+        }
       }
     }
+    this.scheduleSessions();
   }
 
   // ---------------------------------------------------------------------
   // Messages from the webview
   // ---------------------------------------------------------------------
 
-  async handle(message: FromWebview): Promise<void> {
+  /**
+   * Handle a webview message on behalf of `view` (its displayed session) or,
+   * without a view, the focused session. A message from a view focuses its
+   * session.
+   */
+  async handle(message: FromWebview, view?: ViewHandle): Promise<void> {
+    const binding = asBinding(view);
+    if (message.type === "ready") {
+      if (binding) this.postView(binding, { type: "state", state: binding.snapshot() });
+      else for (const v of this.views) this.postView(v, { type: "state", state: v.snapshot() });
+      void this.ensureViewSession(binding);
+      return;
+    }
+    if (binding) {
+      if (!binding.follows && binding.displayed === null) await this.ensureViewSession(binding);
+      this.focusView(binding);
+    }
+    const sessionId = binding ? binding.sessionId : this.focusedId;
+    const session = sessionId ? this.sessions.get(sessionId) : undefined;
+
     switch (message.type) {
-      case "ready":
-        this.post({ type: "state", state: this.snapshot() });
-        void this.ensureStarted();
-        return;
       case "prompt":
-        await this.prompt(message.text, message.chips);
+        await this.prompt(message.text, message.chips, sessionId ?? undefined);
         return;
       case "cancel":
-        await this.cancel();
+        await this.cancel(sessionId ?? undefined);
         return;
       case "newSession":
-        await this.newSession();
+        await this.newSession(binding);
+        return;
+      case "selectSession":
+        this.selectSession(message.sessionId, binding);
+        return;
+      case "closeSession":
+        await this.closeSession(message.sessionId);
         return;
       case "restart":
         await this.restart();
@@ -576,26 +1042,24 @@ export class ChatController implements vscode.Disposable {
         try {
           this.deps.permissions.resolve(message.requestId, message.optionId);
         } catch (error) {
-          this.notice("warning", errorMessage(error));
+          this.notice(session ?? null, "warning", errorMessage(error));
         }
         return;
       case "permissionAlways":
         this.deps.permissions.setPolicy(message.requestId, message.decision);
         return;
       case "setMode":
-        await this.withSession((agent, sessionId) => agent.setMode(sessionId, message.modeId));
+        await this.withSession(session, (agent, id) => agent.setMode(id, message.modeId));
         return;
       case "setConfigOption":
-        await this.withSession((agent, sessionId) =>
-          agent.setConfigOption(sessionId, message.configId, message.value),
-        );
+        await this.withSession(session, (agent, id) => agent.setConfigOption(id, message.configId, message.value));
         return;
       case "setModel":
-        await this.withSession((agent, sessionId) => agent.setModel(sessionId, message.modelId));
+        await this.withSession(session, (agent, id) => agent.setModel(id, message.modelId));
         return;
       case "queryFiles": {
         const items = await searchFiles(message.query);
-        this.post({ type: "fileSuggestions", query: message.query, items });
+        this.postAll({ type: "fileSuggestions", query: message.query, items });
         return;
       }
       case "removeChip":
@@ -605,7 +1069,7 @@ export class ChatController implements vscode.Disposable {
         await openFile(message.path, message.line);
         return;
       case "openDiff": {
-        const call = this.transcript.toolCalls[message.toolCallId];
+        const call = session?.transcript.toolCalls[message.toolCallId];
         const diff = call?.content[message.index];
         if (diff && diff.type === "diff") {
           await this.deps.diff.openDiff(message.toolCallId, message.index, diff, { preview: false });
@@ -614,7 +1078,7 @@ export class ChatController implements vscode.Disposable {
       }
       case "showTerminal":
         if (!this.deps.terminal.showTerminal(message.terminalId)) {
-          this.notice("info", "That terminal is no longer available.");
+          this.notice(session ?? null, "info", "That terminal is no longer available.");
         }
         return;
       case "openPlan":
@@ -628,14 +1092,16 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private async withSession(op: (agent: KiroAgent, sessionId: string) => Promise<unknown>): Promise<void> {
+  private async withSession(
+    session: ChatSession | undefined,
+    op: (agent: KiroAgent, sessionId: string) => Promise<unknown>,
+  ): Promise<void> {
     const agent = this.agent;
-    const sessionId = this.session?.sessionId;
-    if (!agent || !sessionId) return;
+    if (!agent || !session) return;
     try {
-      await op(agent, sessionId);
+      await op(agent, session.id);
     } catch (error) {
-      this.notice("warning", errorMessage(error));
+      this.notice(session, "warning", errorMessage(error));
     }
   }
 
@@ -646,7 +1112,7 @@ export class ChatController implements vscode.Disposable {
       await agent.authenticate(methodId);
       await this.restart();
     } catch (error) {
-      this.notice("error", `Sign-in failed: ${errorMessage(error)}`);
+      this.notice(null, "error", `Sign-in failed: ${errorMessage(error)}`);
     }
   }
 
@@ -657,7 +1123,7 @@ export class ChatController implements vscode.Disposable {
   addSelectionChip(): boolean {
     const chip = this.deps.contextTracker.addSelectionChip();
     if (!chip) return false;
-    this.post({ type: "focusInput" });
+    this.postAll({ type: "focusInput" });
     return true;
   }
 
@@ -665,115 +1131,129 @@ export class ChatController implements vscode.Disposable {
   // Slash commands (client-side routing, see DECISIONS D18)
   // ---------------------------------------------------------------------
 
-  private slashContext(): SlashContext {
+  private slashContext(transcript: TranscriptState): SlashContext {
     return {
       extensionMethods: this.agentInfo?.kiroExtensionMethods ?? [],
-      modes: this.transcript.modes,
-      configOptions: this.transcript.configOptions,
-      agentCommands: this.transcript.commands,
+      modes: transcript.modes,
+      configOptions: transcript.configOptions,
+      agentCommands: transcript.commands,
     };
   }
 
   /** Agent-advertised commands plus the client built-ins (for the `/` popup). */
-  private commandsView() {
-    return mergeCommands(this.transcript.commands, this.slashContext());
+  private commandsView(session: ChatSession) {
+    return mergeCommands(session.transcript.commands, this.slashContext(session.transcript));
   }
 
   /** Show the user's command and a local reply in the transcript. */
-  private localExchange(userText: string, replyText: string): void {
-    this.applyLocalUpdate({
+  private localExchange(session: ChatSession, userText: string, replyText: string): void {
+    this.applyLocalUpdate(session, {
       sessionUpdate: "user_message_chunk",
-      messageId: `user-${++this.userMessageSeq}`,
+      messageId: `user-${++session.userMessageSeq}`,
       content: { type: "text", text: userText },
     });
-    this.applyLocalUpdate({
+    this.applyLocalUpdate(session, {
       sessionUpdate: "agent_message_chunk",
-      messageId: `local-${this.userMessageSeq}`,
+      messageId: `local-${session.userMessageSeq}`,
       content: { type: "text", text: replyText },
     });
     // Close the local message so the agent's next chunk starts a new one.
-    this.transcript = { ...this.transcript, openMessage: null };
+    session.transcript = { ...session.transcript, openMessage: null };
   }
 
   /**
    * Returns true when the command was handled locally. `forward` commands
    * (advertised by the agent) return false so the text goes out as a prompt.
    */
-  private async runSlash(parsed: ParsedSlash, chips: ContextChip[]): Promise<boolean> {
+  private async runSlash(session: ChatSession, parsed: ParsedSlash, chips: ContextChip[]): Promise<boolean> {
     const raw = `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`;
-    const action = routeSlash(parsed, this.slashContext());
+    const context = this.slashContext(session.transcript);
+    const action = routeSlash(parsed, context);
     const agent = this.agent;
-    const sessionId = this.session?.sessionId;
+    const sessionId = session.id;
     switch (action.kind) {
       case "forward":
         return false;
-      case "new_session":
-        await this.newSession();
+      case "new_session": {
+        // `/clear`: a new session in the view that displays this one.
+        const view = [...this.views].find((v) => !v.follows && v.displayed === sessionId);
+        await this.newSession(view);
         return true;
+      }
       case "cancel":
-        await this.cancel();
+        await this.cancel(sessionId);
         return true;
       case "restart":
         await this.restart();
         return true;
       case "help":
         this.localExchange(
+          session,
           raw,
-          "Available commands:\n" + action.commands.map((c) => `- \`/${c.name}\`${c.hint ? ` *${c.hint}*` : ""} — ${c.description}`).join("\n"),
+          "Available commands:\n" +
+            action.commands.map((c) => `- \`/${c.name}\`${c.hint ? ` *${c.hint}*` : ""} — ${c.description}`).join("\n") +
+            (action.unavailable.length > 0
+              ? "\n\nNot available with this agent:\n" +
+                action.unavailable.map((u) => `- \`/${u.name}\` — ${u.reason}`).join("\n")
+              : ""),
         );
         return true;
       case "show_options":
-        this.localExchange(raw, describeOptions(this.slashContext(), action.configId));
+        this.localExchange(session, raw, describeOptions(context, action.configId));
         return true;
       case "unavailable":
-        this.localExchange(raw, `\`/${action.name}\` is not available: ${action.reason}.`);
+        this.localExchange(session, raw, `\`/${action.name}\` is not available: ${action.reason}.`);
         return true;
       case "set_mode":
-        if (!agent || !sessionId) return true;
+        if (!agent) return true;
         try {
           await agent.setMode(sessionId, action.modeId);
-          this.localExchange(raw, `Mode set to \`${action.modeId}\`.`);
+          this.localExchange(session, raw, `Mode set to \`${action.modeId}\`.`);
         } catch (error) {
-          this.localExchange(raw, `Could not set the mode: ${errorMessage(error)}`);
+          this.localExchange(session, raw, `Could not set the mode: ${errorMessage(error)}`);
         }
         return true;
       case "set_config":
-        if (!agent || !sessionId) return true;
+        if (!agent) return true;
         try {
           await agent.setConfigOption(sessionId, action.configId, action.value);
-          this.localExchange(raw, `\`${action.configId}\` set to \`${action.value}\`.`);
+          this.localExchange(session, raw, `\`${action.configId}\` set to \`${action.value}\`.`);
         } catch (error) {
-          this.localExchange(raw, `Could not change \`${action.configId}\`: ${errorMessage(error)}`);
+          this.localExchange(session, raw, `Could not change \`${action.configId}\`: ${errorMessage(error)}`);
         }
         return true;
       case "extension": {
-        if (!agent || !sessionId) return true;
+        if (!agent) return true;
         try {
           const result = await agent.callExtension(action.method, { sessionId });
-          this.localExchange(raw, formatExtensionResult(result));
+          this.localExchange(session, raw, formatExtensionResult(result));
         } catch (error) {
-          this.localExchange(raw, `\`/${action.label}\` failed: ${errorMessage(error)}`);
+          this.localExchange(session, raw, `\`/${action.label}\` failed: ${errorMessage(error)}`);
         }
         return true;
       }
       case "plan": {
-        if (!agent || !sessionId) return true;
+        if (!agent) return true;
         if (action.modeId === null) {
-          this.localExchange(raw, "The agent did not advertise a planner mode. Ask it to plan in plain words instead.");
+          this.localExchange(
+            session,
+            raw,
+            "The agent did not advertise a planner mode. Ask it to plan in plain words instead.",
+          );
           return true;
         }
-        if (this.transcript.modes?.currentModeId !== action.modeId) {
+        if (session.transcript.modes?.currentModeId !== action.modeId) {
           try {
             await agent.setMode(sessionId, action.modeId);
           } catch (error) {
-            this.localExchange(raw, `Could not switch to planner mode: ${errorMessage(error)}`);
+            this.localExchange(session, raw, `Could not switch to planner mode: ${errorMessage(error)}`);
             return true;
           }
         }
         if (action.text) {
-          await this.prompt(action.text, chips);
+          await this.prompt(action.text, chips, sessionId);
         } else {
-          this.localExchange(raw, `Planner mode \`${action.modeId}\` is active. Describe what to plan.`);
+          this.localExchange(session, raw, `Planner mode \`${action.modeId}\` is active. Describe what to plan.`);
         }
         return true;
       }
@@ -786,17 +1266,25 @@ export class ChatController implements vscode.Disposable {
   // Notices
   // ---------------------------------------------------------------------
 
-  private notice(severity: NoticeView["severity"], text: string): void {
+  /** A notice for one session (its views) or, with `null`, for every view. */
+  private notice(session: ChatSession | null, severity: NoticeView["severity"], text: string): void {
     const notice: NoticeView = { id: `n-${++this.noticeSeq}`, severity, text };
-    this.notices = [...this.notices.slice(-9), notice];
-    this.post({ type: "notice", notice });
+    if (session) {
+      session.notices = [...session.notices.slice(-9), notice];
+      this.postTo(session.id, { type: "notice", notice });
+    } else {
+      this.globalNotices = [...this.globalNotices.slice(-9), notice];
+      this.postAll({ type: "notice", notice });
+    }
     if (severity === "error") this.deps.output.appendLine(`[error] ${text}`);
   }
 
   dispose(): void {
+    if (this.sessionsTimer) clearTimeout(this.sessionsTimer);
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
     void this.agent?.stop();
     this.agent = null;
+    this.views.clear();
     for (const d of this.disposables.splice(0)) d.dispose();
   }
 }
@@ -814,6 +1302,13 @@ function chipLabel(chip: ContextChip): string {
   return chip.kind === "selection" && chip.startLine !== undefined
     ? `${chip.label}:${chip.startLine}-${chip.endLine ?? chip.startLine}`
     : chip.label;
+}
+
+/** First line of the prompt, whitespace collapsed, cut to ~40 characters. */
+function truncateTitle(text: string): string {
+  const line = text.split(/\r?\n/, 1)[0]?.replace(/\s+/g, " ").trim() ?? "";
+  if (line.length <= TITLE_MAX) return line;
+  return `${line.slice(0, TITLE_MAX - 1).trimEnd()}…`;
 }
 
 async function readWorkspaceText(absPath: string): Promise<string> {

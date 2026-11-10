@@ -168,7 +168,19 @@ Paste the output of `node scripts/record-acp.mjs` here, redacting tokens.
 
 ## Spec vs. real behaviour differences
 
-None recorded yet (no real `kiro-cli` exchange captured).
+Observed on 2026-11-10 through the extension (Kiro CLI 3.x, V3 harness, an
+organisation-managed account; raw exchange not yet captured):
+
+- `agentCapabilities._meta.kiro.extensionMethods` included
+  `_kiro/session/context` and `_kiro/session/compact` but **not**
+  `_kiro/account/getUsage` (the migration guide lists it as an example).
+  Kiro's own `/usage` in the terminal says usage is managed by the account
+  administrator for organisation accounts, so the omission is account-driven.
+  The extension's `/help` therefore lists `/usage` under "not available".
+- `session/new` returned `modes` (including a planner mode, so `/plan` is
+  offered) and `configOptions` with ids/categories for **model** (Auto),
+  **mode** (Default/Autonomous), **Memory reflection**, **Autopilot** and
+  **Content Collection**; no `effortLevel` option was advertised.
 
 ## Verification
 

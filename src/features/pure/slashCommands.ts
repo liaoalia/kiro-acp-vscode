@@ -24,11 +24,17 @@ export interface ParsedSlash {
   args: string;
 }
 
+/** A known command the connected agent does not support, with the reason. */
+export interface UnavailableCommand {
+  name: string;
+  reason: string;
+}
+
 export type SlashAction =
   | { kind: "new_session" }
   | { kind: "cancel" }
   | { kind: "restart" }
-  | { kind: "help"; commands: CommandView[] }
+  | { kind: "help"; commands: CommandView[]; unavailable: UnavailableCommand[] }
   /** Call an advertised Kiro extension method and show its result. */
   | { kind: "extension"; method: string; label: string }
   | { kind: "set_mode"; modeId: string }
@@ -105,7 +111,7 @@ export function routeSlash(parsed: ParsedSlash, ctx: SlashContext): SlashAction 
       return { kind: "restart" };
     case "help":
     case "?":
-      return { kind: "help", commands: builtinCommands(ctx) };
+      return { kind: "help", commands: builtinCommands(ctx), unavailable: unavailableCommands(ctx) };
     case "usage":
     case "compact":
     case "context": {
@@ -155,6 +161,26 @@ export function builtinCommands(ctx: SlashContext): CommandView[] {
   if (ctx.extensionMethods.includes(EXT.compact)) list.push({ name: "compact", description: "Compact the conversation" });
   list.push({ name: "cancel", description: "Cancel the current turn" }, { name: "restart", description: "Restart the agent process" });
   return list;
+}
+
+/** Known commands this agent cannot serve (shown in /help so users know why). */
+export function unavailableCommands(ctx: SlashContext): UnavailableCommand[] {
+  const out: UnavailableCommand[] = [];
+  const ext = (name: string, method: string) => {
+    if (!ctx.extensionMethods.includes(method) && !hasAgentCommand(ctx, name)) {
+      out.push({ name, reason: `the agent did not advertise ${method}` });
+    }
+  };
+  ext("usage", EXT.usage);
+  ext("context", EXT.context);
+  ext("compact", EXT.compact);
+  if (!findOption(ctx, "effortLevel") && !hasAgentCommand(ctx, "effort")) {
+    out.push({ name: "effort", reason: "the agent did not advertise an effortLevel option" });
+  }
+  if (!findOption(ctx, "model") && !hasAgentCommand(ctx, "model")) {
+    out.push({ name: "model", reason: "the agent did not advertise a model option" });
+  }
+  return out;
 }
 
 /** Agent-advertised commands first, then built-ins the agent did not already name. */

@@ -50,6 +50,42 @@ body {
   flex: 1 1 auto;
 }
 
+/* Below the header: [session panel | main column]. The panel only exists in
+   the wide layout; narrow views get a session <select> in the header. */
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.main-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+.session-panel {
+  display: none;
+}
+
+/* Small numeric badge ("2 sessions need input") shared by header and panel. */
+.count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  color: var(--vscode-editor-background, #1f1f1f);
+  background: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-charts-yellow));
+  pointer-events: none;
+}
+
 /* Centered content column (full width when narrow, capped when wide). */
 .column {
   width: 100%;
@@ -195,8 +231,17 @@ summary:focus-visible {
   display: none;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   font-weight: 600;
   letter-spacing: 0.01em;
+}
+/* Session title in the wide layout: one line, ellipsised. */
+.brand-text {
+  min-width: 0;
+  max-width: 48vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .brand-icon {
   color: var(--kiro-accent);
@@ -241,9 +286,39 @@ summary:focus-visible {
   background: var(--vscode-errorForeground);
 }
 
+/* Compact session switcher (narrow layout only). */
+.hdr-session {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.hdr-session-select {
+  max-width: 160px;
+  min-width: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  background: var(--vscode-dropdown-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-dropdown-border, var(--kiro-border));
+}
+.hdr-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+}
+
 @media (max-width: 300px) {
   .header .btn-text {
     display: none;
+  }
+  .hdr-session-select {
+    max-width: 110px;
   }
 }
 
@@ -389,6 +464,14 @@ summary:focus-visible {
   font-family: var(--kiro-mono);
   font-size: var(--kiro-mono-size);
   color: var(--kiro-dim);
+}
+.empty-hint {
+  margin: -8px 0 0;
+  font-size: 12px;
+  color: var(--kiro-dim);
+}
+.empty-hint .hint-wide {
+  display: none;
 }
 
 .jump {
@@ -1222,6 +1305,11 @@ summary:focus-visible {
     opacity: 0;
   }
 }
+@keyframes kiro-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .spinner {
     animation: none;
@@ -1380,10 +1468,279 @@ summary:focus-visible {
     left: 0;
     right: 0;
   }
+
+  /* Session switcher moves from the header into the left panel. */
+  .hdr-session {
+    display: none;
+  }
+  .empty-hint .hint-wide {
+    display: inline;
+  }
+  .empty-hint .hint-compact {
+    display: none;
+  }
+
+  /* -------------------------------------------------------------------------
+     Session panel: full height between the header and the bottom of the tab.
+     240px expanded, 44px collapsed (icons only).
+  ------------------------------------------------------------------------- */
+  .session-panel {
+    --kiro-panel-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    width: 240px;
+    min-height: 0;
+    overflow: hidden;
+    border-right: 1px solid var(--kiro-border);
+    background: var(--kiro-panel-bg);
+    transition: width 180ms ease;
+  }
+  .session-panel.collapsed {
+    width: 44px;
+  }
+
+  .sp-new {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    height: 28px;
+    margin: 8px 8px 4px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: 1px dashed var(--kiro-border);
+    background: transparent;
+    color: var(--vscode-foreground);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .sp-new:hover {
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+    border-style: solid;
+  }
+  .sp-new .icon {
+    color: var(--kiro-accent);
+  }
+  .sp-new:focus-visible,
+  .sp-toggle:focus-visible,
+  .sp-close:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+  }
+
+  .sp-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 2px 8px;
+  }
+  .sp-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    height: 28px;
+    padding: 0 4px 0 8px;
+    border-radius: 5px;
+    color: var(--vscode-foreground);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    user-select: none;
+  }
+  .sp-row:hover {
+    background: var(--vscode-list-hoverBackground);
+  }
+  .sp-row:focus-visible {
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: -1px;
+  }
+  .sp-row[aria-selected="true"] {
+    background: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+  }
+  .sp-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+  }
+  .sp-time {
+    flex: 0 0 auto;
+    min-width: 22px;
+    text-align: right;
+    font-size: 10px;
+    color: var(--kiro-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .sp-row[aria-selected="true"] .sp-time {
+    color: inherit;
+    opacity: 0.75;
+  }
+  /* The close button takes the time's place on hover/focus; it keeps a zero
+     width (not display:none) so it stays reachable with Tab. */
+  .sp-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 0;
+    height: 20px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    opacity: 0;
+    overflow: hidden;
+    cursor: pointer;
+    transition: opacity 100ms ease;
+  }
+  .sp-row:hover .sp-close,
+  .sp-row:focus-within .sp-close {
+    width: 20px;
+    opacity: 0.8;
+  }
+  .sp-row:hover .sp-time,
+  .sp-row:focus-within .sp-time {
+    display: none;
+  }
+  .sp-close:hover,
+  .sp-close:focus-visible {
+    opacity: 1;
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  }
+
+  /* Status icons */
+  .sp-status {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    line-height: 0;
+  }
+  .sp-status svg {
+    width: 14px;
+    height: 14px;
+  }
+  .sp-status-running {
+    color: var(--vscode-progressBar-background, var(--kiro-accent));
+  }
+  .sp-status-running svg {
+    animation: kiro-spin 1s linear infinite;
+  }
+  .sp-status-idle {
+    color: var(--kiro-dim);
+  }
+  .sp-status-needs_input {
+    color: var(--vscode-notificationsWarningIcon-foreground, var(--vscode-charts-yellow));
+    animation: kiro-pulse 2s ease-in-out infinite;
+  }
+  /* The "!" is cut out of the disc in the background colour. */
+  .sp-status-needs_input .mark {
+    stroke: var(--kiro-panel-bg);
+    fill: var(--kiro-panel-bg);
+  }
+  .sp-row[aria-selected="true"] .sp-status-needs_input .mark {
+    stroke: var(--vscode-list-activeSelectionBackground);
+    fill: var(--vscode-list-activeSelectionBackground);
+  }
+  .sp-status-error {
+    color: var(--vscode-errorForeground);
+  }
+
+  /* Collapse / expand toggle at the bottom */
+  .sp-toggle {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    height: 28px;
+    margin: 4px 8px 8px;
+    padding: 0 8px;
+    border-radius: 5px;
+    border: none;
+    background: transparent;
+    color: var(--kiro-dim);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .sp-toggle:hover {
+    color: var(--vscode-foreground);
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  }
+  .sp-chevron {
+    transform: rotate(180deg);
+    transition: transform 180ms ease;
+  }
+  .sp-badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+  }
+
+  /* Collapsed: icons only, centred in a 28px square */
+  .session-panel.collapsed .sp-label,
+  .session-panel.collapsed .sp-title,
+  .session-panel.collapsed .sp-time,
+  .session-panel.collapsed .sp-close {
+    display: none;
+  }
+  .session-panel.collapsed .sp-new,
+  .session-panel.collapsed .sp-row,
+  .session-panel.collapsed .sp-toggle {
+    justify-content: center;
+    gap: 0;
+    padding: 0;
+    width: 28px;
+  }
+  .session-panel.collapsed .sp-chevron {
+    transform: rotate(0deg);
+  }
+  .session-panel.collapsed .sp-toggle {
+    overflow: visible;
+  }
+  .session-panel.collapsed .sp-badge {
+    top: -4px;
+    right: -6px;
+  }
 }
 
 /* Settings card: wrap the pickers instead of overflowing the column */
 .pickers {
   flex-wrap: wrap;
   row-gap: 8px;
+}
+
+/* Session panel motion: after the wide block so these win at equal specificity. */
+@media (prefers-reduced-motion: reduce) {
+  .session-panel,
+  .sp-chevron,
+  .sp-close {
+    transition: none;
+  }
+  .sp-status-running svg,
+  .sp-status-needs_input {
+    animation: none;
+  }
+  /* Static full ring instead of a spinning arc. */
+  .sp-status-running .ring {
+    stroke-dasharray: none;
+  }
 }

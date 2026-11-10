@@ -16,6 +16,7 @@ declare function acquireVsCodeApi(): {
 interface PersistedState {
   draft?: string;
   showSettings?: boolean;
+  sessionPanelCollapsed?: boolean;
 }
 
 const api = acquireVsCodeApi();
@@ -58,4 +59,14 @@ export function loadShowSettings(): boolean | undefined {
 
 export function saveShowSettings(showSettings: boolean): void {
   writeState({ showSettings });
+}
+
+/** `undefined` when the user never toggled the session panel in this webview. */
+export function loadSessionPanelCollapsed(): boolean | undefined {
+  const s = readState();
+  return typeof s.sessionPanelCollapsed === "boolean" ? s.sessionPanelCollapsed : undefined;
+}
+
+export function saveSessionPanelCollapsed(sessionPanelCollapsed: boolean): void {
+  writeState({ sessionPanelCollapsed });
 }

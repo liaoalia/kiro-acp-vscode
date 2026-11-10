@@ -2,7 +2,7 @@
  * Tiny DOM helpers and inline SVG icons. No framework: the renderer builds
  * elements directly and relies on event delegation via `data-action`.
  */
-import type { ToolKind, ToolStatus } from "../ui/protocol";
+import type { SessionStatus, ToolKind, ToolStatus } from "../ui/protocol";
 
 export type Child = Node | string | number | null | undefined | false;
 
@@ -219,6 +219,57 @@ export function statusBadge(status: ToolStatus): HTMLSpanElement {
       break;
   }
   return badge;
+}
+
+// ---------------------------------------------------------------------------
+// Session status (session panel / header select)
+// ---------------------------------------------------------------------------
+
+export const SESSION_STATUS_LABEL: Record<SessionStatus, string> = {
+  idle: "Idle",
+  running: "Running",
+  needs_input: "Needs your input",
+  error: "Error",
+};
+
+/** Text glyphs for places that cannot hold SVG (the compact `<select>`). */
+export const SESSION_STATUS_GLYPH: Record<SessionStatus, string> = {
+  idle: "○", // ○
+  running: "◐", // ◐
+  needs_input: "!",
+  error: "×", // ×
+};
+
+const SESSION_STATUS_SVG: Record<SessionStatus, string> = {
+  // Open ring with a gap; rotated by CSS (static ring under reduced motion).
+  running:
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">' +
+    '<circle class="ring" cx="8" cy="8" r="5.5" stroke-dasharray="25 10"/></svg>',
+  // Hollow circle with a small pause mark.
+  idle:
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">' +
+    '<circle cx="8" cy="8" r="5.5"/><path d="M6.6 5.8v4.4M9.4 5.8v4.4"/></svg>',
+  // Filled disc with an exclamation mark cut out (the mark takes the panel colour via CSS).
+  needs_input:
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" fill="currentColor" stroke="none">' +
+    '<circle cx="8" cy="8" r="6.2"/><path class="mark" d="M8 4.6v4" fill="none" stroke-width="1.8" stroke-linecap="round"/>' +
+    '<circle class="mark" cx="8" cy="11.1" r="0.9" stroke-width="0" fill="currentColor"/></svg>',
+  // Cross.
+  error:
+    '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">' +
+    '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>',
+};
+
+/** Inline status icon for a session; coloured and animated by `.sp-status-<status>` in CSS. */
+export function sessionStatusIcon(status: SessionStatus): HTMLSpanElement {
+  const known: SessionStatus = status in SESSION_STATUS_SVG ? status : "idle";
+  const span = h("span", {
+    class: `sp-status sp-status-${known}`,
+    role: "img",
+    "aria-label": SESSION_STATUS_LABEL[known],
+  });
+  span.innerHTML = SESSION_STATUS_SVG[known];
+  return span;
 }
 
 /** Shortens an absolute path to its last two segments for display. */

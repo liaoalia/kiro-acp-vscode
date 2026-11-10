@@ -20,8 +20,9 @@ test("F8.1 kiroAcp.focus opens the chat as an editor tab by default", async ({ a
   await waitFor(() => panelTabs().length === 1 || undefined, 15_000, "the Kiro Chat editor tab");
   assertEqual(panelTabs()[0]?.label, "Kiro Chat", "tab label");
 
-  // Focusing again reveals the same tab instead of opening a second one.
-  await vscode.commands.executeCommand("kiroAcp.openInEditor");
+  // Focusing again reveals the same tab instead of opening a second one
+  // (`kiroAcp.openInEditor` is the "new tab" command, covered by F10.5).
+  await vscode.commands.executeCommand("kiroAcp.focus");
   await new Promise((r) => setTimeout(r, 300));
   assertEqual(panelTabs().length, 1, "still one chat tab");
   assert(api.controller.hasView, "the panel webview is attached to the controller");

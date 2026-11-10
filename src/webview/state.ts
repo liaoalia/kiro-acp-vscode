@@ -19,6 +19,7 @@ export function initialState(): UiState {
   return {
     connection: { status: "stopped" },
     sessionId: null,
+    sessions: [],
     turnActive: false,
     items: [],
     toolCalls: {},
@@ -40,6 +41,7 @@ function normalizeSnapshot(s: Partial<UiState> | null | undefined): UiState {
   return {
     connection: s.connection ?? base.connection,
     sessionId: s.sessionId ?? null,
+    sessions: Array.isArray(s.sessions) ? s.sessions.slice() : [],
     turnActive: Boolean(s.turnActive),
     items: Array.isArray(s.items) ? s.items.slice() : [],
     toolCalls: s.toolCalls ? { ...s.toolCalls } : {},
@@ -51,6 +53,8 @@ function normalizeSnapshot(s: Partial<UiState> | null | undefined): UiState {
     commands: Array.isArray(s.commands) ? s.commands.slice() : [],
     chips: Array.isArray(s.chips) ? s.chips.slice() : [],
     notices: Array.isArray(s.notices) ? s.notices.slice() : [],
+    // Host display defaults; applied once by main.ts until the user toggles.
+    prefs: s.prefs && typeof s.prefs === "object" ? { ...s.prefs } : undefined,
   };
 }
 
@@ -80,6 +84,7 @@ function clearedSession(state: UiState, sessionId: string | null): UiState {
   return {
     ...state,
     sessionId,
+    // `sessions` is agent-wide and survives a session switch.
     turnActive: false,
     items: [],
     toolCalls: {},
@@ -107,6 +112,10 @@ export function reduce(state: UiState, msg: ToWebview): UiState {
         return clearedSession(state, msg.sessionId);
       }
       return state;
+
+    case "sessions":
+      // Always a fresh array so the panel renderer can rebuild on identity change.
+      return { ...state, sessions: Array.isArray(msg.sessions) ? msg.sessions.slice() : [] };
 
     case "turn":
       return state.turnActive === msg.active ? state : { ...state, turnActive: msg.active };

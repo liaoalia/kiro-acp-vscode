@@ -14,6 +14,7 @@ import { CHAT_VIEW_ID, ChatViewProvider } from "./ui/chatView.js";
 /** Exposed via `vscode.extensions.getExtension("liaoalia.kiro-acp").exports` for integration tests. */
 export interface KiroAcpApi {
   controller: ChatController;
+  panel: ChatPanelManager;
   permissions: PermissionManager;
   diff: DiffManager;
   plan: PlanDocument;
@@ -62,7 +63,7 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
   const statusItem = vscode.window.createStatusBarItem("kiroAcp.status", vscode.StatusBarAlignment.Right, 100);
   statusItem.name = "Kiro Chat";
   statusItem.text = "$(comment-discussion) Kiro";
-  statusItem.tooltip = "Open Kiro Chat";
+  statusItem.tooltip = "Open Kiro Chat (the editor-title button opens a new tab)";
   statusItem.command = "kiroAcp.focus";
   statusItem.show();
 
@@ -81,7 +82,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
       webviewOptions: { retainContextWhenHidden: true },
     }),
     vscode.commands.registerCommand("kiroAcp.focus", () => focusChat()),
-    vscode.commands.registerCommand("kiroAcp.openInEditor", () => panel.open()),
+    vscode.commands.registerCommand("kiroAcp.openInEditor", () => panel.openNew()),
+    // Acts on the focused view (the chat tab / sidebar the user last used).
     vscode.commands.registerCommand("kiroAcp.newSession", () => controller.newSession()),
     vscode.commands.registerCommand("kiroAcp.cancel", () => controller.cancel()),
     vscode.commands.registerCommand("kiroAcp.restart", () => controller.restart()),
@@ -106,7 +108,7 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     }),
   );
 
-  return { controller, permissions, diff, plan, terminal, contextTracker, output };
+  return { controller, panel, permissions, diff, plan, terminal, contextTracker, output };
 }
 
 export function deactivate(): void {

@@ -22,6 +22,20 @@ network access happens inside `kiro-cli`, which inherits your environment
 | 6 | Client-side file system and terminal: reads are served from open (unsaved) buffers, writes go through `WorkspaceEdit` so they are undoable, agent commands run in a visible VS Code terminal | automatic |
 | 7 | Permissions: allow once / always allow for this session / reject, per tool kind, using only the options the agent offers | chat permission card |
 
+## Tabs and sessions
+
+- **Several chat tabs**: the Kiro button in an editor's title bar (or
+  `Kiro: New Chat Tab`) opens another tab with its own session;
+  `Kiro: Focus Chat` and the status-bar item reveal the last active one.
+- **Several sessions per tab**: the panel on the left lists every live
+  session of the agent process with its status (⟳ working, ○ idle, **!**
+  waiting for your input, × error). Click to switch, hover for the close
+  button, "New session" at the top. The chevron at the bottom collapses the
+  panel to icons only; `kiroAcp.sessionPanelCollapsed` sets the default.
+  In the narrow sidebar layout the list becomes a dropdown in the header.
+- Sessions live as long as the `kiro-cli acp` process; restarting the agent
+  ends them (session history/replay is out of scope for now).
+
 ## Slash commands
 
 Type `/` in the chat to see the list. Kiro CLI V3 does not execute slash

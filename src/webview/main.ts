@@ -18,11 +18,18 @@ import {
   renderNotices,
   renderPickers,
   renderPlanBar,
+  renderSessionPanel,
   statusAnnouncement,
   type LocalUi,
 } from "./render";
 import { clearsSession, initialState, reduce } from "./state";
-import { loadShowSettings, post, saveShowSettings } from "./vscodeApi";
+import {
+  loadSessionPanelCollapsed,
+  loadShowSettings,
+  post,
+  saveSessionPanelCollapsed,
+  saveShowSettings,
+} from "./vscodeApi";
 
 const app = document.getElementById("app");
 if (!app) throw new Error("#app missing");
@@ -33,8 +40,10 @@ const local: LocalUi = {
   toolOpen: new Map(),
   localChips: [],
   showSettings: loadShowSettings() ?? false,
+  sessionPanelCollapsed: loadSessionPanelCollapsed() ?? false,
 };
 let settingsPrefApplied = loadShowSettings() !== undefined;
+let panelPrefApplied = loadSessionPanelCollapsed() !== undefined;
 
 // ---------------------------------------------------------------------------
 // Skeleton
@@ -64,6 +73,8 @@ planBar.hidden = true;
 const pickers = h("div", { class: "pickers", role: "toolbar", "aria-label": "Session options" });
 pickers.hidden = true;
 const live = h("div", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" });
+// Wide-layout session panel; hidden by the stylesheet below 640px.
+const sessionPanel = h("aside", { class: "session-panel", "aria-label": "Sessions" });
 
 const composer = new Composer({
   getChips: () => effectiveChips(state, local),
@@ -82,9 +93,18 @@ const composer = new Composer({
 
 app.append(
   header,
-  h("div", { class: "column banners-col" }, banners),
-  h("div", { class: "transcript-wrap" }, transcript, jump),
-  h("div", { class: "column bottom-col" }, planBar, pickers, composer.el),
+  h(
+    "div",
+    { class: "body" },
+    sessionPanel,
+    h(
+      "div",
+      { class: "main-col" },
+      h("div", { class: "column banners-col" }, banners),
+      h("div", { class: "transcript-wrap" }, transcript, jump),
+      h("div", { class: "column bottom-col" }, planBar, pickers, composer.el),
+    ),
+  ),
   live,
 );
 
@@ -131,21 +151,46 @@ window.addEventListener("resize", () => {
 
 let rafHandle = 0;
 let lastAnnouncement = "";
+let fullRenderPending = false;
 
-function scheduleRender(): void {
+/** `"sessions"` re-renders only the session panel and header (cheap path for `sessions` messages). */
+function scheduleRender(scope: "all" | "sessions" = "all"): void {
+  if (scope === "all") fullRenderPending = true;
   if (rafHandle) return;
   rafHandle = requestAnimationFrame(() => {
     rafHandle = 0;
-    render();
+    if (fullRenderPending) {
+      fullRenderPending = false;
+      render();
+    } else {
+      renderSessions();
+    }
   });
 }
 
-function render(): void {
-  // The host default applies once, until the user toggles (then the local choice is persisted).
+/** Host defaults apply once, until the user toggles (then the local choice is persisted). */
+function applyPrefs(): void {
   if (!settingsPrefApplied && state.prefs) {
     local.showSettings = state.prefs.showSettings;
     settingsPrefApplied = true;
   }
+  if (!panelPrefApplied && state.prefs) {
+    local.sessionPanelCollapsed = state.prefs.sessionPanelCollapsed ?? false;
+    panelPrefApplied = true;
+  }
+}
+
+function renderSessions(): void {
+  applyPrefs();
+  renderSessionPanel(sessionPanel, state, local);
+  renderHeader(header, state, local);
+  // The empty-state hint mentions other sessions.
+  renderEmpty(empty, state);
+}
+
+function render(): void {
+  applyPrefs();
+  renderSessionPanel(sessionPanel, state, local);
   renderHeader(header, state, local);
   renderBanners(banners, state);
   renderNotices(notices, state, local);
@@ -193,6 +238,10 @@ function handle(msg: ToWebview): void {
     case "session":
       if (clearsSession(state, msg)) resetLocal();
       break;
+    case "sessions":
+      state = reduce(state, msg);
+      scheduleRender("sessions");
+      return;
     case "chips": {
       const ids = new Set(msg.chips.map((c) => c.id));
       local.localChips = local.localChips.filter((c) => !ids.has(c.id));
@@ -233,6 +282,20 @@ app.addEventListener("click", (event) => {
     case "new-session":
       post({ type: "newSession" });
       break;
+    case "select-session":
+      if (d.sessionId && d.sessionId !== state.sessionId) post({ type: "selectSession", sessionId: d.sessionId });
+      break;
+    case "close-session":
+      // Nested in the row: never let the row's select fire for this click.
+      event.stopPropagation();
+      if (d.sessionId) post({ type: "closeSession", sessionId: d.sessionId });
+      break;
+    case "toggle-session-panel":
+      local.sessionPanelCollapsed = !local.sessionPanelCollapsed;
+      panelPrefApplied = true;
+      saveSessionPanelCollapsed(local.sessionPanelCollapsed);
+      scheduleRender("sessions");
+      return;
     case "cancel":
       post({ type: "cancel" });
       break;
@@ -321,6 +384,43 @@ app.addEventListener("click", (event) => {
       break;
   }
 });
+
+// Keyboard support for the session list: Enter/Space select, arrows move, Delete closes.
+sessionPanel.addEventListener("keydown", (event) => {
+  const row = (event.target as HTMLElement | null)?.closest<HTMLElement>(".sp-row");
+  if (!row || event.target !== row) return;
+  switch (event.key) {
+    case "Enter":
+    case " ":
+      event.preventDefault();
+      row.click();
+      break;
+    case "ArrowDown":
+    case "ArrowUp": {
+      event.preventDefault();
+      const rows = Array.from(sessionPanel.querySelectorAll<HTMLElement>(".sp-row"));
+      const i = rows.indexOf(row);
+      const next = rows[event.key === "ArrowDown" ? i + 1 : i - 1];
+      next?.focus();
+      break;
+    }
+    case "Delete":
+    case "Backspace": {
+      const id = row.dataset.sessionId;
+      if (!id) break;
+      event.preventDefault();
+      post({ type: "closeSession", sessionId: id });
+      break;
+    }
+    default:
+      break;
+  }
+});
+
+// Relative times in the panel ("5m") drift; refresh them once a minute.
+window.setInterval(() => {
+  if (state.sessions.length > 0) scheduleRender("sessions");
+}, 60_000);
 
 // ---------------------------------------------------------------------------
 // Boot
