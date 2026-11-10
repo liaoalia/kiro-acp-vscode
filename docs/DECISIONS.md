@@ -57,10 +57,32 @@ see the file. The edit stays in the editor's undo stack.
 
 ## D9. Terminals
 Agent terminals are real child processes started by the extension
-(`child_process.spawn` with `shell: true` so compound commands work), mirrored
-into a VS Code `Pseudoterminal` the user can see. Output is retained up to
-`outputByteLimit` (default 1 MiB), truncating from the start on a character
-boundary. `release` kills a still-running process; the terminal tab stays open.
+(`child_process.spawn` with `shell: true` so compound commands work). Output
+is retained up to `outputByteLimit` (default 1 MiB), truncating from the start
+on a character boundary, and served to the agent (`terminal/output`,
+`wait_for_exit`) and to the chat card per `terminalId`. `release` kills a
+still-running process; the retained output survives for the card.
+
+How that output is mirrored into VS Code is a setting, `kiroAcp.terminal.mode`,
+read on every `terminal/create` (`src/features/pure/terminalPresentation.ts`):
+
+- `shared` (default): one `Pseudoterminal` per ACP session, named
+  `Kiro · <short session id>`, created lazily and revealed (`preserveFocus`)
+  only on the session's first command; later commands never re-show it. Each
+  command writes a bold/dim header `$ <command line>   [<cwd>]`, its output,
+  and a dim `[exit code N]` footer. Commands still run concurrently with their
+  own ids and buffers; a command started while another is running has its
+  lines prefixed with `[term-N]`. Keystrokes go to the most recently started
+  running child. Closing the tab kills the session's running commands; the
+  next command recreates the terminal. The chat card's "Show terminal" reveals
+  the session terminal. Rationale: a working session used to leave dozens of
+  `Kiro: <command>` tabs.
+- `perCommand`: the previous behaviour, one `Kiro: <command>` terminal per
+  command, shown on creation; the tab stays open after release.
+- `hidden`: no VS Code terminal; output is only in the chat card and
+  `showTerminal` reports that there is nothing to show.
+
+`disposeAll()` kills every child and closes the shared terminals.
 
 ## D10. Selection context encoding
 ACP has no line-range field. A selection is sent as an embedded `resource`
@@ -84,10 +106,12 @@ Vanilla TypeScript, no UI framework, to keep the dependency surface small.
 ## D13. User messages are echoed locally
 The chat shows the user's prompt (text plus one resource chip per attached
 file/selection) immediately from the extension side with a local
-`messageId` (`user-N`). Incoming `user_message_chunk` updates are ignored for
-the live session so an agent that echoes the prompt does not produce a
-duplicate. Session replay (`session/load`) is out of scope; when it is added,
-replayed user chunks (`_meta.kiro.replay: true`) must be rendered.
+`messageId` (`user-N`). *Live* `user_message_chunk` updates are ignored so an
+agent that echoes the prompt does not produce a duplicate. The rule applies
+to live updates only: user chunks replayed by `session/load` (`replay: true`
+on the `SessionEvent`, i.e. in flight during the load or marked
+`_meta.kiro.replay: true`) are rendered, and the first of them becomes the
+fallback title of the restored session (see D21).
 
 ## D14. Compiled artifacts are not committed
 `dist/` and `*.vsix` stay out of git. GitHub Actions builds and tests on
@@ -182,3 +206,27 @@ moves into it (it does not join the session's old `sidebar` / `default`
 group, so closing the tab later ends only the sessions it showed). A session
 created for a tab that was closed while `session/new` was in flight is closed
 as soon as it arrives, so no session lingers in a group nothing lists.
+
+## D21. Past sessions are restored with `session/list` + `session/load`
+When the agent advertises `loadSession` and `sessionCapabilities.list`
+(`ConnectionView.canBrowseSessions`), the chat header shows a history button
+and `Kiro: Open Past Session…` is available (palette, sidebar title). Both
+call `ChatController.browsePastSessions(view?)`: `session/list` is filtered
+by the workspace cwd (the first workspace folder) and only falls back to the
+unfiltered list when nothing matches; sessions already live in this process
+are excluded; the rest are offered in a QuickPick (title or id, relative
+`updatedAt`, cwd). `openPastSession(sessionId, view?)` creates a *fresh*
+`ChatSession` for that id in the requesting view's group (else the focused
+view's, else `default`), displays and focuses it, shows a "Restoring
+session…" notice and calls `session/load` with the workspace cwd. The
+history the agent replays before answering is applied to that transcript
+exactly like live updates — including the user chunks, which D13 only
+suppresses for live turns — except that replayed tool calls open or reconcile
+no diff editors. The returned modes/config options/models are merged, the
+title is the agent's (`session/list` title, later `session_info_update`) with
+the first replayed user message as fallback, and the views showing the
+session get a fresh `state` snapshot. If the load fails the placeholder
+session is dropped, the view goes back to its previous session and a warning
+notice says why. A restored session is an ordinary session afterwards
+(prompts, permissions, close); closing it only forgets it locally — the
+extension never calls `session/delete`, so the agent's history stays.

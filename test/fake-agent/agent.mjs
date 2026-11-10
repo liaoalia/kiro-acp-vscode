@@ -30,6 +30,12 @@
  *   { "kind": "repeat", "times": 40, "steps": [ ...steps using {{i}}... ] }
  *   { "kind": "exit", "code": 3 }          -> the process exits mid-turn
  *   { "kind": "stop", "stopReason": "end_turn" }
+ *
+ * Session history (v3 only): every prompt's user text and the updates emitted
+ * during the turn are kept per session. `session/list` reports live sessions
+ * plus two canned past sessions (`past-1`, `past-2`); `session/load` replays a
+ * session's history as `session/update`s marked `_meta.kiro.replay: true`
+ * before answering, after which the session accepts prompts.
  */
 import * as acp from "@agentclientprotocol/sdk";
 import { readFileSync, existsSync } from "node:fs";
@@ -129,8 +135,111 @@ function flattenOptions(options) {
 let authenticated = !config.authRequired;
 const sessions = new Map();
 let sessionCounter = 0;
+let messageCounter = 0;
+/** cwd reported for the canned past sessions: the first `session/new` cwd, else process.cwd(). */
+let cannedCwdPinned = false;
 
 const extensionMethods = ["_kiro/session/context", "_kiro/account/getUsage"];
+
+/** Update kinds kept in the per-session history for `session/load` replay. */
+const HISTORY_KINDS = new Set([
+  "user_message_chunk",
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+  "plan",
+]);
+
+function makeSession(id, cwd, extra = {}) {
+  return {
+    id,
+    cwd,
+    title: null,
+    updatedAt: new Date().toISOString(),
+    modes: makeModes(),
+    configOptions: isV2 ? null : makeConfigOptions(),
+    models: isV2 ? makeModels() : null,
+    /** false for canned past sessions until `session/load` activates them. */
+    live: true,
+    history: [],
+    turn: null,
+    ...extra,
+  };
+}
+
+function cannedHistory(id, cwd, question, file, answer) {
+  const path = `${cwd}/${file}`;
+  return [
+    { sessionUpdate: "user_message_chunk", messageId: `u-${id}-1`, content: { type: "text", text: question } },
+    { sessionUpdate: "agent_message_chunk", messageId: `a-${id}-1`, content: { type: "text", text: `Let me look at ${file}. ` } },
+    {
+      sessionUpdate: "tool_call",
+      toolCallId: `call-${id}-read`,
+      title: `Read ${file}`,
+      kind: "read",
+      status: "completed",
+      locations: [{ path }],
+      rawInput: { path },
+      content: [{ type: "content", content: { type: "text", text: `Read ${file}` } }],
+    },
+    { sessionUpdate: "agent_message_chunk", messageId: `a-${id}-1`, content: { type: "text", text: answer } },
+  ];
+}
+
+const CANNED_SESSIONS = [
+  {
+    id: "past-1",
+    title: "Investigate flaky CI",
+    updatedAt: "2026-11-09T10:00:00.000Z",
+    question: "Why is CI flaky?",
+    file: ".github/workflows/ci.yml",
+    answer: "The test job has no retry and the network step times out.",
+  },
+  {
+    id: "past-2",
+    title: "Add retry to fetch",
+    updatedAt: "2026-11-08T15:30:00.000Z",
+    question: "Add a retry to the fetch helper.",
+    file: "src/fetch.ts",
+    answer: "I would wrap fetch in a loop with exponential backoff.",
+  },
+];
+
+/** (Re)create the canned past sessions under `cwd`; sessions already loaded are left alone. */
+function seedCannedSessions(cwd) {
+  for (const entry of CANNED_SESSIONS) {
+    if (sessions.get(entry.id)?.live) continue;
+    sessions.set(
+      entry.id,
+      makeSession(entry.id, cwd, {
+        title: entry.title,
+        updatedAt: entry.updatedAt,
+        live: false,
+        history: cannedHistory(entry.id, cwd, entry.question, entry.file, entry.answer),
+      }),
+    );
+  }
+}
+
+/** Point the canned sessions at the first real session cwd (once). */
+function pinCannedCwd(cwd) {
+  if (cannedCwdPinned) return;
+  cannedCwdPinned = true;
+  seedCannedSessions(cwd);
+}
+
+if (!isV2) seedCannedSessions(process.cwd());
+
+function withReplayMeta(update) {
+  const meta = update._meta && typeof update._meta === "object" ? update._meta : {};
+  const kiro = meta.kiro && typeof meta.kiro === "object" ? meta.kiro : {};
+  return { ...update, _meta: { ...meta, kiro: { ...kiro, replay: true } } };
+}
+
+function sessionInfo(session) {
+  return { sessionId: session.id, cwd: session.cwd, title: session.title, updatedAt: session.updatedAt };
+}
 
 function makeModes() {
   return {
@@ -198,8 +307,30 @@ function requireAuth() {
 
 function requireSession(sessionId) {
   const session = sessions.get(sessionId);
-  if (!session) throw acp.RequestError.sessionNotFound(sessionId);
+  if (!session || !session.live) throw acp.RequestError.sessionNotFound(sessionId);
   return session;
+}
+
+function announceCommands(ctx, session) {
+  setTimeout(() => {
+    if (isV2) {
+      void ctx.client.notify("_kiro.dev/commands/available", {
+        sessionId: session.id,
+        commands: [
+          { name: "help", description: "Show help" },
+          { name: "context", description: "Manage context", hint: "add <file>" },
+        ],
+      });
+    } else {
+      void sendUpdate(ctx, session, {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          { name: "plan", description: "Create a plan", input: { hint: "goal" } },
+          { name: "compact", description: "Compact the conversation" },
+        ],
+      });
+    }
+  }, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +346,10 @@ async function report(ctx, session, text) {
 }
 
 async function sendUpdate(ctx, session, update) {
+  if (HISTORY_KINDS.has(update?.sessionUpdate)) {
+    session.history.push(update);
+    session.updatedAt = new Date().toISOString();
+  }
   await ctx.client.notify(acp.methods.client.session.update, { sessionId: session.id, update });
 }
 
@@ -326,9 +461,9 @@ const app = acp
   .agent({ name: "fake-kiro" })
   .onRequest(acp.methods.agent.initialize, (ctx) => {
     const agentCapabilities = {
-      loadSession: false,
+      loadSession: !isV2,
       promptCapabilities: { image: true, embeddedContext: true },
-      sessionCapabilities: {},
+      sessionCapabilities: isV2 ? {} : { list: {} },
     };
     if (!isV2) agentCapabilities._meta = { kiro: { extensionMethods } };
     const response = {
@@ -354,37 +489,13 @@ const app = acp
   .onRequest(acp.methods.agent.session.new, (ctx) => {
     requireAuth();
     const id = `sess-${++sessionCounter}`;
-    const session = {
-      id,
-      cwd: ctx.params.cwd,
-      modes: makeModes(),
-      configOptions: isV2 ? null : makeConfigOptions(),
-      models: isV2 ? makeModels() : null,
-      turn: null,
-    };
+    if (!isV2) pinCannedCwd(ctx.params.cwd);
+    const session = makeSession(id, ctx.params.cwd);
     sessions.set(id, session);
     const response = { sessionId: id, modes: session.modes, _meta: { kiro: { engine: config.engine } } };
     if (session.configOptions) response.configOptions = session.configOptions;
     if (session.models) response.models = session.models;
-    setTimeout(() => {
-      if (isV2) {
-        void ctx.client.notify("_kiro.dev/commands/available", {
-          sessionId: id,
-          commands: [
-            { name: "help", description: "Show help" },
-            { name: "context", description: "Manage context", hint: "add <file>" },
-          ],
-        });
-      } else {
-        void sendUpdate(ctx, session, {
-          sessionUpdate: "available_commands_update",
-          availableCommands: [
-            { name: "plan", description: "Create a plan", input: { hint: "goal" } },
-            { name: "compact", description: "Compact the conversation" },
-          ],
-        });
-      }
-    }, 5);
+    announceCommands(ctx, session);
     return response;
   })
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
@@ -397,6 +508,15 @@ const app = acp
     let scenario = config.scenario;
     const selector = /^\/scenario\s+([\w-]+)/.exec(text.trim());
     if (selector) scenario = selector[1];
+
+    // Remember the user turn (not echoed live; replayed by session/load).
+    session.history.push({
+      sessionUpdate: "user_message_chunk",
+      messageId: `u-${++messageCounter}`,
+      content: { type: "text", text },
+    });
+    session.updatedAt = new Date().toISOString();
+    if (!session.title) session.title = text.trim().slice(0, 40) || null;
 
     const abort = new AbortController();
     const turn = { cancelled: false, signal: abort.signal, abort, vars: { cwd: session.cwd, sessionId: session.id } };
@@ -462,6 +582,29 @@ if (isV2) {
     },
   );
 } else {
+  app.onRequest(acp.methods.agent.session.list, (ctx) => {
+    requireAuth();
+    const filterCwd = typeof ctx.params?.cwd === "string" ? ctx.params.cwd : null;
+    const all = [...sessions.values()].filter((s) => filterCwd === null || s.cwd === filterCwd);
+    all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+    return { sessions: all.map(sessionInfo), nextCursor: null };
+  });
+  app.onRequest(acp.methods.agent.session.load, async (ctx) => {
+    requireAuth();
+    const session = sessions.get(ctx.params.sessionId);
+    if (!session) throw new acp.RequestError(-32002, `session not found: ${ctx.params.sessionId}`);
+    // Kiro V3 expects cwd/mcpServers to be resent on load; the cwd wins.
+    session.cwd = ctx.params.cwd;
+    session.live = true;
+    for (const update of session.history) {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: session.id,
+        update: withReplayMeta(update),
+      });
+    }
+    announceCommands(ctx, session);
+    return { modes: session.modes, configOptions: session.configOptions };
+  });
   app.onRequest(
     "_kiro/session/context",
     (params) => params,

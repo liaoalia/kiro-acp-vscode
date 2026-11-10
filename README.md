@@ -38,8 +38,14 @@ network access happens inside `kiro-cli`, which inherits your environment
   strip under the transcript, running cards with a blue edge and spinner,
   finished cards dimmed with ✓, failed ones red, a blinking caret while the
   answer streams, and "Working…" / "Needs input" in the header.
+- **Past sessions**: when the agent can list and load sessions (Kiro CLI
+  V3), the history button in the chat header (and the sidebar title), or
+  `Kiro: Open Past Session…`, lists the sessions recorded for this workspace
+  (most recent first); pick one and its conversation is restored into the
+  current tab as a normal session you can continue. Closing it later only
+  removes it from the tab; the agent keeps its history.
 - Sessions live as long as the `kiro-cli acp` process; restarting the agent
-  ends them (session history/replay is out of scope for now).
+  ends them (restore a past session to pick one up again).
 
 ## Slash commands
 
@@ -113,8 +119,20 @@ into a compact header.
 | `kiroAcp.showSettingsByDefault` | `false` | Show the mode / model / option pickers without pressing the ⚙ button in the chat header. |
 | `kiroAcp.attachActiveFile` | `true` | Attach the active editor file to each prompt as a removable chip. |
 | `kiroAcp.autoOpenDiffs` | `whenPermissionRequired` | `whenPermissionRequired`: open the diff editor (in the editor group beside the chat) only when Kiro asks for permission for that change; `always`: on every proposed change (noisy in Autopilot mode); `never`: only via the card's Open diff button. |
+| `kiroAcp.terminal.mode` | `shared` | How agent commands are shown: `shared`: one terminal per Kiro session; `perCommand`: one terminal per command; `hidden`: no terminal, output only in the chat card. |
 | `kiroAcp.terminal.outputByteLimit` | `1048576` | Bytes of terminal output retained for the agent when it does not specify a limit. |
 | `kiroAcp.logProtocol` | `false` | Log every JSON-RPC message to the **Kiro ACP** output channel. |
+
+With the default `shared` mode every command the agent runs during a session
+goes into a single `Kiro · <session>` terminal: each command is introduced by
+a `$ <command>   [<cwd>]` header and closed by an `[exit code N]` line, the
+terminal is revealed (without taking focus) only when the session runs its
+first command, and the chat card's **Show terminal** button brings it back.
+Typing into it reaches the most recently started command that is still
+running; closing the tab stops the session's running commands and the next
+command opens a fresh one. Choose `perCommand` if you prefer one tab per
+command, or `hidden` if the output in the chat card is enough. The setting is
+read when each command starts, so a change applies to the next command.
 
 ## Proxy setup
 
@@ -147,6 +165,7 @@ from `kiro-cli` (proxy errors appear there).
 |---------|-------------|
 | `Kiro: Focus Chat` | Reveal the chat view |
 | `Kiro: New Session` | Start a fresh ACP session |
+| `Kiro: Open Past Session…` | Pick one of the agent's past sessions for this workspace and restore it |
 | `Kiro: Cancel Current Turn` | Send `session/cancel` |
 | `Kiro: Restart Agent Process` | Kill and respawn `kiro-cli acp` |
 | `Kiro: Send Selection to Kiro Chat` | Attach the current selection as a chip |

@@ -29,6 +29,7 @@ import {
   type KiroAgent,
   type ProtocolLogger,
   type SessionEvent,
+  type SessionListEntry,
   type SessionState,
 } from "../acp/index.js";
 import {
@@ -121,6 +122,20 @@ export interface AttachViewOptions {
 /** Group of sessions created without any view (API, tests, the first auto-created session). */
 export const DEFAULT_GROUP = "default";
 
+/** A past session the agent can restore (`session/list` entry, QuickPick-ready; see D21). */
+export interface PastSessionEntry {
+  sessionId: string;
+  /** `title ?? sessionId`. */
+  label: string;
+  /** Relative time of `updatedAt` ("5m ago", "2h ago", "3d ago", or the date); empty when unknown. */
+  description: string;
+  /** The session's working directory. */
+  detail: string;
+  title: string | null;
+  cwd: string;
+  updatedAt: string | null;
+}
+
 /** Diff tabs open automatically: for every edit, only when a permission asks for it, or never. */
 export type AutoOpenDiffs = "always" | "whenPermissionRequired" | "never";
 
@@ -150,10 +165,12 @@ class ChatSession {
   userMessageSeq = 0;
   readonly knownPermissionIds = new Set<string>();
   readonly openedDiffs = new Set<string>();
-  /** `session_info_update.title` from the agent, when present. */
+  /** `session_info_update.title` from the agent (or the `session/list` title of a restored session), when present. */
   agentTitle: string | null = null;
-  /** First prompt text sent to the agent (truncated), the fallback title. */
+  /** First prompt text sent to the agent (or replayed by `session/load`), truncated: the fallback title. */
   firstPrompt: string | null = null;
+  /** True while `session/load` replays the session's history (see D21). */
+  loading = false;
   updatedAt = Date.now();
 
   constructor(
@@ -261,6 +278,8 @@ export class ChatController implements vscode.Disposable {
   private readonly unsubscribers: Array<() => void> = [];
   private starting: Promise<void> | null = null;
   private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Titles seen in the last `session/list`, so a restore started by id can name the session (D21). */
+  private readonly pastTitles = new Map<string, string | null>();
 
   /**
    * Called when a session waits for the user (permission request) while no
@@ -761,6 +780,10 @@ export class ChatController implements vscode.Disposable {
     if (info && info.authMethods.length > 0) {
       view.authMethods = info.authMethods.map(toAuthMethodView);
     }
+    if (info) {
+      const caps = info.agentCapabilities;
+      view.canBrowseSessions = caps.loadSession === true && !!caps.sessionCapabilities?.list;
+    }
     return view;
   }
 
@@ -870,6 +893,173 @@ export class ChatController implements vscode.Disposable {
       this.setViewSession(binding, sessionId);
     }
     this.focus(sessionId);
+  }
+
+  // ---------------------------------------------------------------------
+  // Past sessions (session/list + session/load, see D21)
+  // ---------------------------------------------------------------------
+
+  /**
+   * The agent's past sessions for this workspace (every past session when
+   * none matches the workspace cwd), excluding the sessions live in this
+   * process, most recent first. Rejects when the agent is not ready or did
+   * not advertise `session/list`.
+   */
+  async listPastSessions(): Promise<PastSessionEntry[]> {
+    await this.ensureStarted();
+    const agent = this.agent;
+    if (!agent || agent.status !== "ready") throw new Error("The agent is not running.");
+    const entries = await this.listPastEntries(agent);
+    const now = Date.now();
+    return entries
+      .filter((e) => !this.sessions.has(e.sessionId))
+      .map((e) => ({
+        sessionId: e.sessionId,
+        label: e.title ?? e.sessionId,
+        description: relativeTime(e.updatedAt, now),
+        detail: e.cwd,
+        title: e.title,
+        cwd: e.cwd,
+        updatedAt: e.updatedAt,
+      }));
+  }
+
+  /** `session/list` filtered by the workspace cwd, falling back to the unfiltered list; remembers the titles. */
+  private async listPastEntries(agent: KiroAgent): Promise<SessionListEntry[]> {
+    let { sessions } = await agent.listSessions({ cwd: this.workspaceRoot() });
+    if (sessions.length === 0) sessions = (await agent.listSessions()).sessions;
+    for (const entry of sessions) this.pastTitles.set(entry.sessionId, entry.title);
+    return sessions;
+  }
+
+  /**
+   * Let the user pick one of the agent's past sessions and restore it into
+   * `view` (or the focused view). Problems are reported as a notice.
+   */
+  async browsePastSessions(view?: ViewHandle): Promise<void> {
+    const binding = asBinding(view) ?? this.focusedView;
+    const current = binding?.sessionId ? (this.sessions.get(binding.sessionId) ?? null) : null;
+    let entries: PastSessionEntry[];
+    try {
+      entries = await this.listPastSessions();
+    } catch (error) {
+      this.notice(current, "warning", `Could not list past sessions: ${errorMessage(error)}`);
+      return;
+    }
+    if (entries.length === 0) {
+      this.notice(current, "info", "No past sessions to restore.");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      entries.map((e) => ({ label: e.label, description: e.description, detail: e.detail, sessionId: e.sessionId })),
+      {
+        title: "Kiro: past sessions",
+        placeHolder: "Select a session to restore",
+        matchOnDescription: true,
+        matchOnDetail: true,
+      },
+    );
+    if (!picked) return;
+    await this.openPastSession(picked.sessionId, binding ?? undefined);
+  }
+
+  /**
+   * Restore a past session (`session/load`) into a fresh `ChatSession` of
+   * `view`'s group (else the focused view's, else `default`), display and
+   * focus it. The replayed history lands in its transcript as it arrives.
+   * Returns the session id, or null when the restore failed (the view keeps
+   * its previous session and a notice explains).
+   */
+  async openPastSession(sessionId: string, view?: ViewHandle): Promise<string | null> {
+    if (this.sessions.has(sessionId)) {
+      this.selectSession(sessionId, view);
+      return sessionId;
+    }
+    await this.ensureStarted();
+    const agent = this.agent;
+    const binding = asBinding(view) ?? this.focusedView;
+    const previous = binding && !binding.follows ? binding.displayed : null;
+    const previousSession = previous ? (this.sessions.get(previous) ?? null) : null;
+    if (!agent || agent.status !== "ready") {
+      this.notice(previousSession, "warning", "Cannot restore a session: the agent is not running.");
+      return null;
+    }
+    const groupId = binding?.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
+    const cwd = this.workspaceRoot();
+    const placeholder: SessionState = {
+      sessionId,
+      cwd,
+      modes: null,
+      configOptions: null,
+      models: null,
+      availableCommands: [],
+      meta: null,
+    };
+    const session = new ChatSession(placeholder, ++this.sessionSeq, groupId);
+    session.loading = true;
+    if (!this.pastTitles.has(sessionId)) {
+      try {
+        await this.listPastEntries(agent);
+      } catch {
+        /* the title stays unknown until the agent reports one */
+      }
+    }
+    session.agentTitle = this.pastTitles.get(sessionId) ?? null;
+    this.sessions.set(sessionId, session);
+    this.deps.output.appendLine(`[info] session ${sessionId} restoring (group ${groupId})`);
+    if (binding && !binding.follows) this.setViewSession(binding, sessionId);
+    this.focus(sessionId);
+    const restoring = this.notice(session, "info", "Restoring session…");
+    const wasFocused = () => this.focusedId === sessionId;
+    try {
+      const state = await agent.loadSession(sessionId, cwd);
+      // The client already emitted a `state` event for it; merging again is harmless.
+      this.applySessionState(session, state);
+    } catch (error) {
+      const message = errorMessage(error);
+      this.deps.output.appendLine(`[error] session ${sessionId} restore failed: ${message}`);
+      this.sessions.delete(sessionId);
+      this.deps.permissions.cancelAll(sessionId);
+      this.deps.permissions.clearPolicies(sessionId);
+      // The view goes back to what it showed before; focus follows.
+      for (const v of this.views) {
+        if (!v.follows && v.displayed === sessionId) this.setViewSession(v, previous);
+      }
+      if (wasFocused()) {
+        this.focusedId = null;
+        const fallback = previous ?? this.sortedSessions()[0]?.id ?? null;
+        if (fallback) this.focus(fallback);
+        else this.clearFocus();
+      }
+      this.scheduleSessions();
+      const target = this.focusedId ? (this.sessions.get(this.focusedId) ?? null) : null;
+      this.notice(target, "warning", `Could not restore session ${sessionId}: ${message}`);
+      return null;
+    }
+    session.loading = false;
+    session.touch();
+    this.clearNotice(session, restoring.id);
+    for (const v of this.views) {
+      if (v.sessionId === sessionId) this.postSessionState(v, sessionId);
+    }
+    this.scheduleSessions();
+    this.deps.output.appendLine(`[info] session ${sessionId} restored (${session.transcript.items.length} items)`);
+    return sessionId;
+  }
+
+  /** Merge a `SessionState` (session/new, session/load, state events) into `session` and tell its views. */
+  private applySessionState(session: ChatSession, state: SessionState): void {
+    session.state = state;
+    session.transcript = withSessionSnapshot(session.transcript, {
+      modes: state.modes,
+      configOptions: state.configOptions,
+      availableCommands: state.availableCommands,
+    });
+    session.models = toModelView(state.models);
+    this.postTo(session.id, { type: "modes", modes: session.transcript.modes });
+    this.postTo(session.id, { type: "configOptions", options: session.transcript.configOptions });
+    this.postTo(session.id, { type: "models", models: session.models });
+    this.postTo(session.id, { type: "commands", commands: this.commandsView(session) });
   }
 
   /** Close every session of `groupId` (a chat tab was closed, see D20). */
@@ -1061,7 +1251,15 @@ export class ChatController implements vscode.Disposable {
         session.touch();
         this.scheduleSessions();
         const update = event.update;
-        if (update.sessionUpdate === "user_message_chunk") return;
+        const replay = event.replay === true;
+        if (update.sessionUpdate === "user_message_chunk") {
+          // Live user chunks are echoed locally by prompt() (D13); replayed history must be rendered (D21).
+          if (!replay) return;
+          const content = update.content;
+          if (session.firstPrompt === null && content.type === "text" && content.text.trim()) {
+            session.firstPrompt = truncateTitle(content.text);
+          }
+        }
         if (update.sessionUpdate === "session_info_update") {
           if (typeof update.title === "string") session.agentTitle = update.title.trim() || null;
           else if (update.title === null) session.agentTitle = null;
@@ -1074,7 +1272,8 @@ export class ChatController implements vscode.Disposable {
             session.id,
             emit.type === "commands" ? { type: "commands", commands: this.commandsView(session) } : emit,
           );
-          if (emit.type === "toolCall") void this.onToolCallChanged(session, emit.call);
+          // Replayed tool calls are history: no diff editors to open or reconcile.
+          if (emit.type === "toolCall" && !replay) void this.onToolCallChanged(session, emit.call);
           if (emit.type === "plan" && this.focusedId === session.id) {
             this.deps.plan.update(emit.entries, session.id);
           }
@@ -1088,17 +1287,7 @@ export class ChatController implements vscode.Disposable {
       case "state": {
         const session = this.sessions.get(event.session.sessionId);
         if (!session) return;
-        session.state = event.session;
-        session.transcript = withSessionSnapshot(session.transcript, {
-          modes: event.session.modes,
-          configOptions: event.session.configOptions,
-          availableCommands: event.session.availableCommands,
-        });
-        session.models = toModelView(event.session.models);
-        this.postTo(session.id, { type: "modes", modes: session.transcript.modes });
-        this.postTo(session.id, { type: "configOptions", options: session.transcript.configOptions });
-        this.postTo(session.id, { type: "models", models: session.models });
-        this.postTo(session.id, { type: "commands", commands: this.commandsView(session) });
+        this.applySessionState(session, event.session);
         return;
       }
       case "turn_started":
@@ -1234,6 +1423,9 @@ export class ChatController implements vscode.Disposable {
         return;
       case "closeSession":
         await this.closeSession(message.sessionId);
+        return;
+      case "browseSessions":
+        await this.browsePastSessions(binding);
         return;
       case "restart":
         await this.restart();
@@ -1542,8 +1734,8 @@ export class ChatController implements vscode.Disposable {
   // Notices
   // ---------------------------------------------------------------------
 
-  /** A notice for one session (its views) or, with `null`, for every view. */
-  private notice(session: ChatSession | null, severity: NoticeView["severity"], text: string): void {
+  /** A notice for one session (its views) or, with `null`, for every view. Returns it (for {@link clearNotice}). */
+  private notice(session: ChatSession | null, severity: NoticeView["severity"], text: string): NoticeView {
     const notice: NoticeView = { id: `n-${++this.noticeSeq}`, severity, text };
     if (session) {
       session.notices = [...session.notices.slice(-9), notice];
@@ -1553,6 +1745,14 @@ export class ChatController implements vscode.Disposable {
       this.postAll({ type: "notice", notice });
     }
     if (severity === "error") this.deps.output.appendLine(`[error] ${text}`);
+    return notice;
+  }
+
+  /** Withdraw a session notice (a progress message that is over). */
+  private clearNotice(session: ChatSession, id: string): void {
+    if (!session.notices.some((n) => n.id === id)) return;
+    session.notices = session.notices.filter((n) => n.id !== id);
+    this.postTo(session.id, { type: "clearNotice", id });
   }
 
   dispose(): void {
@@ -1578,6 +1778,22 @@ function chipLabel(chip: ContextChip): string {
   return chip.kind === "selection" && chip.startLine !== undefined
     ? `${chip.label}:${chip.startLine}-${chip.endLine ?? chip.startLine}`
     : chip.label;
+}
+
+/** "just now", "5m ago", "2h ago", "3d ago", or the date for older sessions; empty when unknown. */
+export function relativeTime(iso: string | null, now: number = Date.now()): string {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, Math.round((now - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(then).toLocaleDateString();
 }
 
 /** First line of the prompt, whitespace collapsed, cut to ~40 characters. */

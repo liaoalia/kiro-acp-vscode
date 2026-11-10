@@ -1,10 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type * as acp from "@agentclientprotocol/sdk";
-import { AcpError, AUTH_REQUIRED_CODE, type SessionEvent, type SessionState } from "../src/acp/index.js";
+import { AcpError, AUTH_REQUIRED_CODE, KiroAgentImpl, type SessionEvent, type SessionState } from "../src/acp/index.js";
 import { chunkText, launch, makeServices, rejectFirst, toolUpdates, updatesOf, waitFor } from "./harness.js";
 
 const text = (value: string): acp.ContentBlock[] => [{ type: "text", text: value }];
+
+function getSession(h: { agent: unknown }, sessionId: string): SessionState | null {
+  assert.ok(h.agent instanceof KiroAgentImpl);
+  return h.agent.getSession(sessionId);
+}
 
 function latestState(events: SessionEvent[]): SessionState | undefined {
   const states = events.filter((e): e is Extract<SessionEvent, { type: "state" }> => e.type === "state");
@@ -378,6 +383,162 @@ test("CLI v2: models on session/new, session/set_model and _kiro.dev/commands/av
       () => h.agent.callExtension("_kiro/session/context", {}),
       (e: unknown) => e instanceof AcpError && e.code === -32601,
     );
+  } finally {
+    await h.agent.stop();
+  }
+});
+
+test("session/list: rejected when not advertised (v2), canned sessions with cwd filter (v3)", async () => {
+  const v2 = launch({ args: ["--scenario", "chat", "--engine", "v2"] });
+  try {
+    const info = await v2.agent.start();
+    assert.equal(info.agentCapabilities.loadSession, false);
+    assert.equal(info.agentCapabilities.sessionCapabilities?.list, undefined);
+    await assert.rejects(
+      () => v2.agent.listSessions(),
+      (e: unknown) => e instanceof AcpError && /did not advertise session\/list/.test(e.message),
+    );
+    await assert.rejects(
+      () => v2.agent.loadSession("past-1", v2.cwd),
+      (e: unknown) => e instanceof AcpError && /did not advertise session\/load/.test(e.message),
+    );
+    assert.ok(!v2.logger.traces.some((t) => t.direction === "send" && t.payload.includes("session/list")));
+  } finally {
+    await v2.agent.stop();
+  }
+
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    const info = await h.agent.start();
+    assert.equal(info.agentCapabilities.loadSession, true);
+    assert.deepEqual(info.agentCapabilities.sessionCapabilities?.list, {});
+
+    const all = await h.agent.listSessions();
+    assert.equal(all.nextCursor, null);
+    assert.deepEqual(
+      all.sessions.map((s) => [s.sessionId, s.title]),
+      [
+        ["past-1", "Investigate flaky CI"],
+        ["past-2", "Add retry to fetch"],
+      ],
+    );
+    for (const entry of all.sessions) {
+      assert.equal(entry.cwd, h.cwd);
+      assert.match(entry.updatedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+    }
+
+    // live sessions join the list, newest first; the cwd filter matches exactly
+    const session = await h.agent.newSession(h.cwd);
+    const withLive = await h.agent.listSessions({ cwd: h.cwd });
+    assert.deepEqual(
+      withLive.sessions.map((s) => s.sessionId),
+      [session.sessionId, "past-1", "past-2"],
+    );
+    const elsewhere = await h.agent.listSessions({ cwd: `${h.cwd}-elsewhere` });
+    assert.deepEqual(elsewhere.sessions, []);
+    assert.equal(elsewhere.nextCursor, null);
+    const sentLists = h.logger.traces.filter((t) => t.direction === "send" && t.payload.includes('"session/list"'));
+    assert.equal(sentLists.length, 3);
+    assert.ok(sentLists[2]!.payload.includes("-elsewhere"));
+  } finally {
+    await h.agent.stop();
+  }
+});
+
+test("session/load replays history with replay: true, then prompts stream live", async () => {
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    await h.agent.start();
+    assert.equal(getSession(h, "past-1"), null);
+
+    const state = await h.agent.loadSession("past-1", h.cwd);
+    assert.equal(state.sessionId, "past-1");
+    assert.equal(state.cwd, h.cwd);
+    assert.equal(state.modes?.currentModeId, "vibe");
+    assert.deepEqual(state.configOptions?.map((o) => o.id), ["model", "effortLevel", "autoCompact"]);
+    assert.equal(state.models, null);
+    assert.equal(getSession(h, "past-1"), state);
+
+    const sent = h.logger.traces.find((t) => t.direction === "send" && t.payload.includes('"session/load"'));
+    assert.ok(sent);
+    const loadRequest = JSON.parse(sent.payload) as { params: acp.LoadSessionRequest };
+    assert.equal(loadRequest.params.sessionId, "past-1");
+    assert.equal(loadRequest.params.cwd, h.cwd);
+    assert.deepEqual(loadRequest.params.mcpServers, []);
+
+    // everything before the `state` event is replayed history, flagged as such
+    const stateIndex = h.events.findIndex((e) => e.type === "state");
+    assert.ok(stateIndex >= 4, `expected replayed updates before the state event, got ${stateIndex}`);
+    assert.equal(h.events[stateIndex]?.type === "state" && h.events[stateIndex].session.sessionId, "past-1");
+    const replayed = h.events
+      .slice(0, stateIndex)
+      .filter((e): e is Extract<SessionEvent, { type: "update" }> => e.type === "update");
+    assert.equal(replayed.length, stateIndex);
+    for (const event of replayed) {
+      assert.equal(event.sessionId, "past-1");
+      assert.equal(event.replay, true);
+      const meta = (event.update as { _meta?: { kiro?: { replay?: boolean } } })._meta;
+      assert.equal(meta?.kiro?.replay, true);
+    }
+    const user = replayed.find((e) => e.update.sessionUpdate === "user_message_chunk")?.update;
+    assert.ok(user && user.sessionUpdate === "user_message_chunk");
+    assert.equal(user.messageId, "u-past-1-1");
+    assert.equal(user.content.type === "text" ? user.content.text : "", "Why is CI flaky?");
+    const agentChunk = replayed.find((e) => e.update.sessionUpdate === "agent_message_chunk")?.update;
+    assert.ok(agentChunk && agentChunk.sessionUpdate === "agent_message_chunk");
+    assert.equal(agentChunk.messageId, "a-past-1-1");
+    const toolCall = replayed.find((e) => e.update.sessionUpdate === "tool_call")?.update;
+    assert.ok(toolCall && toolCall.sessionUpdate === "tool_call");
+    assert.equal(toolCall.kind, "read");
+    assert.equal(toolCall.status, "completed");
+    assert.equal(chunkText(h.events), "Let me look at .github/workflows/ci.yml. The test job has no retry and the network step times out.");
+
+    // the post-load commands update is routed to the loaded session and is not a replay
+    await waitFor(() => (latestState(h.events)?.availableCommands.length ?? 0) === 2, 5000, "commands after load");
+    const commandsEvent = h.events.find(
+      (e): e is Extract<SessionEvent, { type: "update" }> => e.type === "update" && e.update.sessionUpdate === "available_commands_update",
+    );
+    assert.ok(commandsEvent);
+    assert.equal(commandsEvent.replay, undefined);
+    assert.equal(getSession(h, "past-1")?.availableCommands.length, 2);
+
+    // a prompt on the loaded session streams normally, without the replay flag
+    const before = h.events.length;
+    const response = await h.agent.prompt("past-1", text("and now?"));
+    assert.equal(response.stopReason, "end_turn");
+    const turn = h.events.slice(before);
+    assert.deepEqual(turn.map((e) => e.type), ["turn_started", "update", "update", "update", "turn_finished"]);
+    for (const event of turn) {
+      if (event.type === "update") {
+        assert.equal(event.sessionId, "past-1");
+        assert.equal(event.replay, undefined);
+      }
+    }
+    assert.equal(chunkText(turn), "The answer is 42.");
+
+    // the prompt was appended to the session history (it is now the newest session)
+    const listed = await h.agent.listSessions();
+    assert.equal(listed.sessions[0]?.sessionId, "past-1");
+    assert.equal(listed.sessions[0]?.title, "Investigate flaky CI");
+  } finally {
+    await h.agent.stop();
+  }
+});
+
+test("session/load of an unknown id rejects and leaves no session registered", async () => {
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    await h.agent.start();
+    await assert.rejects(
+      () => h.agent.loadSession("nope", h.cwd),
+      (e: unknown) => e instanceof AcpError && e.code === -32002,
+    );
+    assert.equal(getSession(h, "nope"), null);
+    assert.ok(!h.events.some((e) => e.type === "state"));
+    assert.ok(!h.events.some((e) => e.type === "update"));
+    // prompting a never-loaded past session fails at the agent as well
+    await assert.rejects(() => h.agent.prompt("past-2", text("hi")), AcpError);
+    assert.equal(getSession(h, "past-2"), null);
   } finally {
     await h.agent.stop();
   }

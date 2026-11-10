@@ -22,6 +22,7 @@ import {
   type KiroAgent,
   type ModelState,
   type SessionEvent,
+  type SessionListEntry,
   type SessionState,
   type Unsubscribe,
 } from "./types.js";
@@ -110,6 +111,26 @@ export function buildSessionState(cwd: string, response: acp.NewSessionResponse)
   };
 }
 
+/** Map one `session/list` entry defensively (missing optional fields become null). */
+export function readSessionListEntry(raw: unknown): SessionListEntry | null {
+  if (!isRecord(raw) || typeof raw.sessionId !== "string") return null;
+  return {
+    sessionId: raw.sessionId,
+    cwd: typeof raw.cwd === "string" ? raw.cwd : "",
+    title: typeof raw.title === "string" ? raw.title : null,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+  };
+}
+
+/** True when a `session/update` carries Kiro's `_meta.kiro.replay: true` marker. */
+export function isReplayUpdate(update: unknown): boolean {
+  if (!isRecord(update)) return false;
+  const meta = update._meta;
+  if (!isRecord(meta)) return false;
+  const kiro = meta.kiro;
+  return isRecord(kiro) && kiro.replay === true;
+}
+
 /** Best-effort mapping of Kiro v2 `_kiro.dev/commands/available` params. */
 export function mapV2Commands(params: unknown): { sessionId: string | null; commands: acp.AvailableCommand[] } | null {
   if (!isRecord(params)) return null;
@@ -145,6 +166,8 @@ export class KiroAgentImpl implements KiroAgent {
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private readonly sessions = new Map<string, SessionState>();
+  /** Session ids whose `session/load` is in flight: their updates are replayed history. */
+  private readonly loadingSessions = new Set<string>();
   private lastSessionId: string | null = null;
   private readonly pendingPermissions = new Map<string, Set<AbortController>>();
   private readonly connectionListeners = new Set<(change: ConnectionStateChange) => void>();
@@ -317,6 +340,7 @@ export class KiroAgentImpl implements KiroAgent {
       this.child = null;
     }
     this.sessions.clear();
+    this.loadingSessions.clear();
     this.lastSessionId = null;
     if (this._status !== "stopped") this.setStatus("stopped", { message: "agent stopped" });
   }
@@ -331,6 +355,7 @@ export class KiroAgentImpl implements KiroAgent {
     if (connection) connection.close(new AcpError(description));
     this.abortAllPermissions();
     this.sessions.clear();
+    this.loadingSessions.clear();
     if (this.stopping || this._status === "stopped") {
       if (this._status !== "stopped") this.setStatus("stopped", { message: "agent stopped" });
       return;
@@ -383,6 +408,83 @@ export class KiroAgentImpl implements KiroAgent {
     const state = buildSessionState(cwd, response);
     this.sessions.set(state.sessionId, state);
     this.lastSessionId = state.sessionId;
+    if (this._status === "auth_required") this.setStatus("ready", { agent: this._agent ?? undefined });
+    this.emitSession({ type: "state", session: state });
+    return state;
+  }
+
+  async listSessions(
+    options?: { cwd?: string; cursor?: string },
+  ): Promise<{ sessions: SessionListEntry[]; nextCursor: string | null }> {
+    const agent = this.requireAgent();
+    const listCapability = this._agent?.agentCapabilities.sessionCapabilities?.list;
+    if (listCapability === undefined || listCapability === null) {
+      throw new AcpError("the agent did not advertise session/list");
+    }
+    const params: acp.ListSessionsRequest = {};
+    if (options?.cwd !== undefined) params.cwd = options.cwd;
+    if (options?.cursor !== undefined) params.cursor = options.cursor;
+    let response: acp.ListSessionsResponse;
+    try {
+      response = await agent.request(acp.methods.agent.session.list, params);
+    } catch (error) {
+      throw toAcpError(error, "session/list failed");
+    }
+    const rawSessions = isRecord(response) && Array.isArray(response.sessions) ? response.sessions : [];
+    const sessions: SessionListEntry[] = [];
+    for (const entry of rawSessions) {
+      const mapped = readSessionListEntry(entry);
+      if (mapped) sessions.push(mapped);
+    }
+    const nextCursor = isRecord(response) && typeof response.nextCursor === "string" ? response.nextCursor : null;
+    return { sessions, nextCursor };
+  }
+
+  async loadSession(
+    sessionId: string,
+    cwd: string,
+    options?: { mcpServers?: acp.McpServer[] },
+  ): Promise<SessionState> {
+    const agent = this.requireAgent();
+    if (this._agent?.agentCapabilities.loadSession !== true) {
+      throw new AcpError("the agent did not advertise session/load");
+    }
+    const previous = this.sessions.get(sessionId);
+    const placeholder: SessionState = {
+      sessionId,
+      cwd,
+      modes: null,
+      configOptions: null,
+      models: null,
+      availableCommands: [],
+      meta: null,
+    };
+    // Register before sending so replayed `session/update`s are routed to this
+    // session and flagged `replay: true` while the load is in flight.
+    this.sessions.set(sessionId, placeholder);
+    this.loadingSessions.add(sessionId);
+    const params: acp.LoadSessionRequest = { sessionId, cwd, mcpServers: options?.mcpServers ?? [] };
+    let response: acp.LoadSessionResponse;
+    try {
+      response = await agent.request(acp.methods.agent.session.load, params);
+    } catch (error) {
+      this.loadingSessions.delete(sessionId);
+      if (previous) this.sessions.set(sessionId, previous);
+      else this.sessions.delete(sessionId);
+      throw toAcpError(error, "session/load failed");
+    }
+    this.loadingSessions.delete(sessionId);
+    const current = this.sessions.get(sessionId) ?? placeholder;
+    const state: SessionState = {
+      ...current,
+      cwd,
+      modes: response?.modes ?? current.modes,
+      configOptions: response?.configOptions ?? current.configOptions,
+      models: readModelState(response) ?? current.models,
+      meta: isRecord(response?._meta) ? response._meta : current.meta,
+    };
+    this.sessions.set(sessionId, state);
+    this.lastSessionId = sessionId;
     if (this._status === "auth_required") this.setStatus("ready", { agent: this._agent ?? undefined });
     this.emitSession({ type: "state", session: state });
     return state;
@@ -610,7 +712,8 @@ export class KiroAgentImpl implements KiroAgent {
       return;
     }
     const typed = update as unknown as acp.SessionUpdate;
-    this.emitSession({ type: "update", sessionId, update: typed });
+    const replay = this.loadingSessions.has(sessionId) || isReplayUpdate(update);
+    this.emitSession(replay ? { type: "update", sessionId, update: typed, replay: true } : { type: "update", sessionId, update: typed });
     if (!this.sessions.has(sessionId)) return;
     switch (typed.sessionUpdate) {
       case "current_mode_update": {

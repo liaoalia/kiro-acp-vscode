@@ -93,7 +93,14 @@ function findMode(ctx: SlashContext, needle: string): ModeView | undefined {
 }
 
 function plannerMode(ctx: SlashContext): ModeView | undefined {
-  return ctx.modes?.availableModes.find((m) => /plan/i.test(m.id) || /plan/i.test(m.name));
+  const modes = ctx.modes?.availableModes ?? [];
+  // Exact id first: a real Kiro workspace also had a custom agent named
+  // "qc-sprint-planner", which must not win over the built-in "plan" mode.
+  return (
+    modes.find((m) => m.id.toLowerCase() === "plan") ??
+    modes.find((m) => m.name.toLowerCase() === "plan") ??
+    modes.find((m) => /^plan(ner)?\b/i.test(m.id) || /^plan(ner)?\b/i.test(m.name))
+  );
 }
 
 function findOption(ctx: SlashContext, idOrCategory: string): ConfigOptionView | undefined {

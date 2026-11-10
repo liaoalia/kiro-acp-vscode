@@ -9,6 +9,8 @@ export {
   buildSessionState,
   readModelState,
   readKiroExtensionMethods,
+  readSessionListEntry,
+  isReplayUpdate,
   mapV2Commands,
   CLIENT_NAME,
   CLIENT_TITLE,

@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -49,6 +49,11 @@
         "command": "kiroAcp.newSessionInSidebar",
         "title": "Kiro: New Session in Sidebar",
         "icon": "$(add)"
+      },
+      {
+        "command": "kiroAcp.openPastSession",
+        "title": "Kiro: Open Past Session…",
+        "icon": "$(history)"
       },
       {
         "command": "kiroAcp.cancel",
@@ -125,9 +130,14 @@
           "group": "navigation@1"
         },
         {
+          "command": "kiroAcp.openPastSession",
+          "when": "view == kiroAcp.chat",
+          "group": "navigation@2"
+        },
+        {
           "command": "kiroAcp.cancel",
           "when": "view == kiroAcp.chat && kiroAcp.turnActive",
-          "group": "navigation@2"
+          "group": "navigation@3"
         },
         {
           "command": "kiroAcp.openPlan",
@@ -236,6 +246,21 @@
           ],
           "default": "whenPermissionRequired",
           "description": "When to open the native diff editor for file changes proposed by the agent. In autonomous modes tool calls complete without a permission request; opening a tab for each would hide the chat."
+        },
+        "kiroAcp.terminal.mode": {
+          "type": "string",
+          "enum": [
+            "shared",
+            "perCommand",
+            "hidden"
+          ],
+          "enumDescriptions": [
+            "One VS Code terminal per Kiro session (default): every agent command writes its header, output and exit code into it. It is revealed once, on the session's first command.",
+            "One VS Code terminal per agent command, revealed when the command starts.",
+            "No VS Code terminal; command output is only shown in the chat card."
+          ],
+          "default": "shared",
+          "description": "How terminals opened by the agent are shown. Read when each command starts, so a change applies to the next command."
         },
         "kiroAcp.terminal.outputByteLimit": {
           "type": "number",

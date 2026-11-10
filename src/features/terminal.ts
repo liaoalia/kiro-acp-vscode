@@ -1,8 +1,15 @@
 /**
  * ACP terminal methods (DECISIONS.md D9).
  *
- * Each `terminal/create` spawns a real child process; its output is mirrored
- * into a visible VS Code pseudoterminal and retained (bounded) for the agent.
+ * Each `terminal/create` spawns a real child process; its output is retained
+ * (bounded) for the agent and the chat card, and mirrored into a VS Code
+ * pseudoterminal according to `kiroAcp.terminal.mode`:
+ *
+ * - `shared` (default): one terminal per ACP session, created lazily and
+ *   revealed only on its first command; every command of the session writes
+ *   a header, its output and an exit footer into it.
+ * - `perCommand`: one terminal per command, revealed on creation.
+ * - `hidden`: no VS Code terminal at all.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import * as vscode from "vscode";
@@ -14,6 +21,17 @@ import {
   stripAnsi,
   toPtyText,
 } from "./pure/outputBuffer.js";
+import {
+  LinePrefixer,
+  commandTerminalName,
+  concurrentPrefix,
+  formatCommandHeader,
+  formatExitFooter,
+  parseTerminalMode,
+  pickInputTarget,
+  sharedTerminalName,
+  type TerminalMode,
+} from "./pure/terminalPresentation.js";
 
 export interface TerminalServiceOptions {
   /** Fallback cwd when the request has none; defaults to the first workspace folder. */
@@ -36,16 +54,37 @@ export interface TerminalSnapshot {
 
 interface TerminalEntry {
   id: string;
+  /** Start order; keystrokes in a shared terminal go to the highest running one. */
+  seq: number;
+  sessionId: string;
+  mode: TerminalMode;
   child: ChildProcess;
   buffer: OutputBuffer;
   exit: ExitStatus | undefined;
   exitPromise: Promise<ExitStatus>;
-  pty: MirrorPty;
-  terminal: vscode.Terminal;
   killed: boolean;
+  /** Mirror text into the VS Code terminal (no-op in `hidden` mode). */
+  write: (text: string) => void;
+  /** `perCommand` only: this command's own pseudoterminal. */
+  pty?: MirrorPty;
 }
 
-/** Pseudoterminal that mirrors a child process' output and forwards input. */
+/** Where a terminal id was shown, kept after release for "Show terminal". */
+interface Placement {
+  mode: TerminalMode;
+  sessionId: string;
+  /** `perCommand` only. */
+  terminal?: vscode.Terminal;
+}
+
+/** The one VS Code terminal of a session in `shared` mode. */
+interface SharedTerminal {
+  sessionId: string;
+  pty: MirrorPty;
+  terminal: vscode.Terminal;
+}
+
+/** Pseudoterminal that mirrors child process output and forwards input. */
 class MirrorPty implements vscode.Pseudoterminal {
   private readonly writeEmitter = new vscode.EventEmitter<string>();
   private readonly closeEmitter = new vscode.EventEmitter<number | void>();
@@ -94,10 +133,12 @@ const DEFAULT_LIMIT = 1024 * 1024;
 
 export class TerminalService implements vscode.Disposable {
   private readonly active = new Map<string, TerminalEntry>();
-  /** Every VS Code terminal ever created, including released ones (for "show"). */
-  private readonly terminals = new Map<string, vscode.Terminal>();
+  /** Where every terminal id ever created was shown, including released ones. */
+  private readonly placements = new Map<string, Placement>();
   /** Final output/exit of released terminals so tool cards can still show them. */
   private readonly released = new Map<string, TerminalSnapshot>();
+  /** `shared` mode: the session's terminal, present while its tab is open. */
+  private readonly shared = new Map<string, SharedTerminal>();
   private counter = 0;
 
   constructor(private readonly options: TerminalServiceOptions = {}) {}
@@ -111,7 +152,10 @@ export class TerminalService implements vscode.Disposable {
     if (typeof req.command !== "string" || req.command.length === 0) {
       throw new Error("terminal/create requires a command");
     }
-    const id = `term-${++this.counter}`;
+    const seq = ++this.counter;
+    const id = `term-${seq}`;
+    const sessionId = typeof req.sessionId === "string" && req.sessionId ? req.sessionId : "default";
+    const mode = this.currentMode();
     const commandLine = buildShellCommand(req.command, req.args);
     const cwd = req.cwd ?? this.defaultCwd();
     const env = mergeEnv(process.env, req.env);
@@ -126,46 +170,30 @@ export class TerminalService implements vscode.Disposable {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    const pty = new MirrorPty(
-      (data) => {
-        const entry = this.active.get(id);
-        if (entry && !entry.exit && child.stdin && !child.stdin.destroyed) {
-          child.stdin.write(data === "\r" ? "\n" : data);
-          pty.write(data === "\r" ? "\r\n" : data);
-        }
-      },
-      () => {
-        // User closed the terminal tab: stop the process.
-        void this.killEntry(this.active.get(id));
-      },
-    );
-    const terminal = vscode.window.createTerminal({
-      name: `Kiro: ${truncate(req.command, 40)}`,
-      pty,
-    });
-    this.terminals.set(id, terminal);
-
     let resolveExit!: (s: ExitStatus) => void;
     const exitPromise = new Promise<ExitStatus>((resolve) => {
       resolveExit = resolve;
     });
     const entry: TerminalEntry = {
       id,
+      seq,
+      sessionId,
+      mode,
       child,
       buffer,
       exit: undefined,
       exitPromise,
-      pty,
-      terminal,
       killed: false,
+      write: () => {},
     };
+    this.attachPresentation(entry, req.command);
     this.active.set(id, entry);
 
-    pty.write(`$ ${commandLine}\r\n`);
+    entry.write(formatCommandHeader(commandLine, cwd));
     const onData = (chunk: Buffer | string) => {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       buffer.append(text);
-      pty.write(toPtyText(text));
+      entry.write(toPtyText(text));
     };
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -174,7 +202,7 @@ export class TerminalService implements vscode.Disposable {
     child.on("error", (err) => {
       const msg = `[spawn error: ${err.message}]`;
       buffer.append(`\n${msg}\n`);
-      pty.write(`\r\n${msg}\r\n`);
+      entry.write(`\r\n${msg}\r\n`);
       this.options.logger?.error(`terminal ${id}: ${err.message}`);
       if (!entry.exit) {
         // "close" may never fire when the spawn itself failed.
@@ -188,16 +216,11 @@ export class TerminalService implements vscode.Disposable {
       }
       const status: ExitStatus = { exitCode: code, signal: signal ?? null };
       entry.exit = status;
-      const label =
-        status.signal !== null && status.exitCode === null
-          ? `[terminated by ${status.signal}]`
-          : `[exit code ${status.exitCode ?? "unknown"}]`;
-      pty.write(`\r\n${label}\r\n`);
+      entry.write(formatExitFooter(status));
       resolveExit(status);
     });
 
-    terminal.show(true);
-    this.options.logger?.info(`terminal ${id}: spawned "${commandLine}" in ${cwd}`);
+    this.options.logger?.info(`terminal ${id} (${mode}): spawned "${commandLine}" in ${cwd}`);
     return { terminalId: id };
   }
 
@@ -230,7 +253,7 @@ export class TerminalService implements vscode.Disposable {
     return {};
   }
 
-  /** ClientServices.releaseTerminal — kills if running; the VS Code tab stays open. */
+  /** ClientServices.releaseTerminal — kills if running; the VS Code terminal stays open. */
   async releaseTerminal(req: acp.ReleaseTerminalRequest): Promise<acp.ReleaseTerminalResponse> {
     const entry = this.require(req.terminalId);
     await this.killEntry(entry);
@@ -255,9 +278,19 @@ export class TerminalService implements vscode.Disposable {
   // UI helpers
   // ---------------------------------------------------------------------
 
-  /** Reveal the VS Code terminal for `terminalId` (works after release too). */
+  /**
+   * Reveal the VS Code terminal that showed `terminalId` (works after release
+   * too): its own tab in `perCommand` mode, the session's tab in `shared`
+   * mode. `false` when there is none (`hidden` mode, unknown id, or the user
+   * closed the shared tab).
+   */
   showTerminal(terminalId: string): boolean {
-    const terminal = this.terminals.get(terminalId);
+    const placement = this.placements.get(terminalId);
+    if (!placement) {
+      return false;
+    }
+    const terminal =
+      placement.mode === "shared" ? this.shared.get(placement.sessionId)?.terminal : placement.terminal;
     if (!terminal) {
       return false;
     }
@@ -270,14 +303,28 @@ export class TerminalService implements vscode.Disposable {
     return [...this.active.keys()];
   }
 
-  /** Kill every running process and forget all terminals (tabs stay open). */
+  /** The current `kiroAcp.terminal.mode` (read on every `terminal/create`). */
+  currentMode(): TerminalMode {
+    return parseTerminalMode(vscode.workspace.getConfiguration("kiroAcp").get("terminal.mode"));
+  }
+
+  /**
+   * Kill every running process and forget all terminals. Shared session
+   * terminals are closed; per-command tabs stay open.
+   */
   disposeAll(): void {
     for (const entry of this.active.values()) {
       void this.killEntry(entry);
-      entry.pty.dispose();
+      entry.pty?.dispose();
     }
     this.active.clear();
-    this.terminals.clear();
+    const sharedTerminals = [...this.shared.values()];
+    this.shared.clear();
+    for (const st of sharedTerminals) {
+      st.terminal.dispose();
+      st.pty.dispose();
+    }
+    this.placements.clear();
     this.released.clear();
   }
 
@@ -295,6 +342,101 @@ export class TerminalService implements vscode.Disposable {
       throw new Error(`Unknown terminal: ${terminalId}`);
     }
     return entry;
+  }
+
+  /** Wire `entry.write` (and input/close handling) according to its mode. */
+  private attachPresentation(entry: TerminalEntry, command: string): void {
+    switch (entry.mode) {
+      case "hidden":
+        this.placements.set(entry.id, { mode: "hidden", sessionId: entry.sessionId });
+        return;
+      case "perCommand": {
+        const pty = new MirrorPty(
+          (data) => this.forwardInput(entry, data),
+          () => {
+            // User closed the terminal tab: stop the process.
+            void this.killEntry(this.active.get(entry.id));
+          },
+        );
+        const terminal = vscode.window.createTerminal({ name: commandTerminalName(command), pty });
+        entry.pty = pty;
+        entry.write = (text) => pty.write(text);
+        this.placements.set(entry.id, { mode: "perCommand", sessionId: entry.sessionId, terminal });
+        terminal.show(true);
+        return;
+      }
+      case "shared": {
+        const concurrent = [...this.active.values()].some(
+          (other) => other.sessionId === entry.sessionId && !other.exit,
+        );
+        const prefixer = concurrent ? new LinePrefixer(concurrentPrefix(entry.id)) : undefined;
+        const st = this.sharedTerminalFor(entry.sessionId);
+        entry.write = (text) => {
+          // Only while this is still the session's terminal: after the user
+          // closed it, late output of killed children must not leak into a
+          // terminal created for a later command.
+          if (this.shared.get(entry.sessionId) === st) {
+            st.pty.write(prefixer ? prefixer.apply(text) : text);
+          }
+        };
+        this.placements.set(entry.id, { mode: "shared", sessionId: entry.sessionId });
+        return;
+      }
+    }
+  }
+
+  /** The session's shared terminal, created (and revealed once) on demand. */
+  private sharedTerminalFor(sessionId: string): SharedTerminal {
+    const existing = this.shared.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+    const pty = new MirrorPty(
+      (data) => {
+        const target = pickInputTarget(
+          [...this.active.values()]
+            .filter((e) => e.sessionId === sessionId && e.mode === "shared")
+            .map((e) => ({ id: e.id, seq: e.seq, running: !e.exit, entry: e })),
+        );
+        if (target) {
+          this.forwardInput(target.entry, data);
+        }
+      },
+      () => this.onSharedClosed(sessionId, st),
+    );
+    const st: SharedTerminal = {
+      sessionId,
+      pty,
+      terminal: vscode.window.createTerminal({ name: sharedTerminalName(sessionId), pty }),
+    };
+    this.shared.set(sessionId, st);
+    // Revealed only now, on the session's first command; later commands never re-show it.
+    st.terminal.show(true);
+    this.options.logger?.info(`terminal: opened shared terminal for session ${sessionId}`);
+    return st;
+  }
+
+  /** The user closed a session's shared terminal: stop its running commands. */
+  private onSharedClosed(sessionId: string, st: SharedTerminal): void {
+    if (this.shared.get(sessionId) !== st) {
+      return;
+    }
+    this.shared.delete(sessionId);
+    for (const entry of this.active.values()) {
+      if (entry.sessionId === sessionId && entry.mode === "shared") {
+        void this.killEntry(entry);
+      }
+    }
+    st.pty.dispose();
+  }
+
+  /** Send typed data to the child's stdin and echo it into the terminal. */
+  private forwardInput(entry: TerminalEntry, data: string): void {
+    const { child } = entry;
+    if (this.active.get(entry.id) === entry && !entry.exit && child.stdin && !child.stdin.destroyed) {
+      child.stdin.write(data === "\r" ? "\n" : data);
+      entry.write(data === "\r" ? "\r\n" : data);
+    }
   }
 
   private async killEntry(entry: TerminalEntry | undefined): Promise<void> {
@@ -344,9 +486,4 @@ function snapshotOf(entry: TerminalEntry): TerminalSnapshot {
     output: stripAnsi(entry.buffer.text),
     exitCode: entry.exit ? entry.exit.exitCode : undefined,
   };
-}
-
-function truncate(s: string, max: number): string {
-  const oneLine = s.replace(/\s+/g, " ").trim();
-  return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }

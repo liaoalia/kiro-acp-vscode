@@ -302,10 +302,16 @@ function renderSessionSelect(dom: HeaderDom, state: UiState): void {
 /** Displayed session id as last rendered; read by the select's change handler. */
 let currentSessionId: string | null = null;
 
+/** The agent can list and load past sessions, so a History button makes sense. */
+function canBrowseSessions(state: UiState): boolean {
+  return state.connection.canBrowseSessions === true;
+}
+
 function renderHeaderActions(dom: HeaderDom, state: UiState, local: LocalUi): void {
   const hasPlan = state.plan.length > 0;
   const settings = hasSettings(state);
-  const key = [state.turnActive, settings, local.showSettings, hasPlan].join(SEP);
+  const canBrowse = canBrowseSessions(state);
+  const key = [state.turnActive, settings, local.showSettings, hasPlan, canBrowse].join(SEP);
   if (key === dom.actionsKey) return;
   dom.actionsKey = key;
   setChildren(dom.actions, [
@@ -314,6 +320,13 @@ function renderHeaderActions(dom: HeaderDom, state: UiState, local: LocalUi): vo
           cls: "btn btn-secondary btn-sm hdr-cancel",
           title: "Cancel the current turn",
           ariaLabel: "Cancel the current turn",
+        })
+      : null,
+    canBrowse
+      ? actionButton("browse-sessions", [icon("history")], {
+          cls: "btn btn-ghost btn-sm btn-icon hdr-btn hdr-history",
+          title: "Past sessions…",
+          ariaLabel: "Past sessions",
         })
       : null,
     actionButton("new-session", [icon("plus"), h("span", { class: "btn-text" }, "New")], {
@@ -403,6 +416,8 @@ export function renderEmpty(el: HTMLElement, state: UiState): void {
  */
 interface PanelDom {
   el: HTMLElement;
+  /** "Past sessions…" under the New button; hidden unless the agent can browse sessions. */
+  history: HTMLButtonElement;
   list: HTMLElement;
   toggle: HTMLButtonElement;
   toggleKey: string;
@@ -416,16 +431,23 @@ function ensurePanelDom(el: HTMLElement): PanelDom {
   if (panelDom && panelDom.el === el) return panelDom;
   const list = h("div", { class: "sp-list", role: "listbox", "aria-label": "Sessions" });
   const toggle = actionButton("toggle-session-panel", [], { cls: "sp-toggle" });
+  const history = actionButton("browse-sessions", [icon("history"), h("span", { class: "sp-label" }, "Past sessions…")], {
+    cls: "sp-history",
+    title: "Past sessions…",
+    ariaLabel: "Past sessions",
+  });
+  history.hidden = true;
   setChildren(el, [
     actionButton("new-session", [icon("plus"), h("span", { class: "sp-label" }, "New session")], {
       cls: "sp-new",
       title: "Start a new session",
       ariaLabel: "Start a new session",
     }),
+    history,
     list,
     toggle,
   ]);
-  panelDom = { el, list, toggle, toggleKey: "", rows: new Map(), key: "" };
+  panelDom = { el, history, list, toggle, toggleKey: "", rows: new Map(), key: "" };
   return panelDom;
 }
 
@@ -479,9 +501,13 @@ export function renderSessionPanel(el: HTMLElement, state: UiState, local: Local
 
   const rowKeys = state.sessions.map((s) => `${s.id}${SEP}${sessionRowKey(s, s.id === state.sessionId, collapsed, now)}`);
   const pending = needsInputCount(state);
-  const key = `${collapsed}${SEP}${pending}${ROW_SEP}${rowKeys.join(ROW_SEP)}`;
+  const canBrowse = canBrowseSessions(state);
+  const key = `${collapsed}${SEP}${pending}${SEP}${canBrowse}${ROW_SEP}${rowKeys.join(ROW_SEP)}`;
   if (key === dom.key) return;
   dom.key = key;
+
+  // History button: same element always (keeps focus), shown only when the agent supports it.
+  dom.history.hidden = !canBrowse;
 
   // Rows: reuse cached elements whose key is unchanged; drop the rest.
   const seen = new Set<string>();

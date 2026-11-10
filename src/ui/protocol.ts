@@ -26,6 +26,8 @@ export interface ConnectionView {
   agentVersion?: string;
   message?: string;
   authMethods?: AuthMethodView[];
+  /** The agent advertised `session/list` + `session/load`, so a history button makes sense. */
+  canBrowseSessions?: boolean;
 }
 
 export interface ContextChip {
@@ -281,6 +283,8 @@ export type FromWebview =
   | { type: "selectSession"; sessionId: string }
   /** Close (forget) a session; if it is displayed, the webview shows the next one. */
   | { type: "closeSession"; sessionId: string }
+  /** Open the host's picker of past sessions (`session/list`); the chosen one is loaded into this webview. */
+  | { type: "browseSessions" }
   | { type: "restart" }
   | { type: "login"; methodId: string }
   | { type: "permissionResponse"; requestId: string; optionId: string }

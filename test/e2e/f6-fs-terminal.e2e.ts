@@ -1,6 +1,7 @@
 /** F6 — fs/read_text_file with a dirty editor and agent terminals. */
 import * as vscode from "vscode";
 
+import { sharedTerminalName } from "../../src/features/pure/terminalPresentation.js";
 import {
   assert,
   assertEqual,
@@ -14,8 +15,13 @@ import {
   workspacePath,
 } from "./harness.js";
 
-test("F6.1 the read tool sees unsaved edits and the execute tool runs in a Kiro terminal", async ({ api }) => {
-  await freshSession(api);
+/** Every terminal this extension creates (`Kiro · <session>` or `Kiro: <command>`). */
+function kiroTerminals(): vscode.Terminal[] {
+  return vscode.window.terminals.filter((t) => t.name.startsWith("Kiro"));
+}
+
+test("F6.1 the read tool sees unsaved edits and the execute tool runs in the session's shared terminal", async ({ api }) => {
+  const sessionId = await freshSession(api);
   await closeAllEditors();
 
   // Open README.md with an unsaved modification so fs/read_text_file must
@@ -28,7 +34,8 @@ test("F6.1 the read tool sees unsaved edits and the execute tool runs in a Kiro 
   assert(await vscode.workspace.applyEdit(edit), "README edit applied");
   assertEqual(readme.isDirty, true, "README is dirty before the prompt");
 
-  const terminalsBefore = vscode.window.terminals.filter((t) => t.name.startsWith("Kiro:")).length;
+  assertEqual(api.terminal.currentMode(), "shared", "default terminal mode");
+  const terminalsBefore = kiroTerminals().length;
   const state = await runTourAccepting(api);
 
   const reports = fakeAgentReports(state);
@@ -40,15 +47,18 @@ test("F6.1 the read tool sees unsaved edits and the execute tool runs in a Kiro 
   assert(read.locations.some((l) => l.path.endsWith("README.md")), "read tool location is README.md");
   assertEqual(readme.isDirty, true, "README is still dirty (the read did not save it)");
 
-  const kiroTerminals = await waitFor(
-    () => {
-      const list = vscode.window.terminals.filter((t) => t.name.startsWith("Kiro:"));
-      return list.length > terminalsBefore ? list : undefined;
-    },
+  // Exactly one new terminal, named after the session rather than the command.
+  const expectedName = sharedTerminalName(sessionId);
+  const sharedTerminal = await waitFor(
+    () => kiroTerminals().find((t) => t.name === expectedName),
     15_000,
-    "a Kiro terminal",
+    `a terminal named ${expectedName}`,
   );
-  assert(kiroTerminals.some((t) => t.name.includes("echo")), `terminal name: ${kiroTerminals.map((t) => t.name).join(", ")}`);
+  assertEqual(
+    kiroTerminals().length,
+    terminalsBefore + 1,
+    `one Kiro terminal added: ${kiroTerminals().map((t) => t.name).join(", ")}`,
+  );
   assertEqual(api.terminal.activeIds().length, 0, "the agent released its terminal");
 
   const exec = toolCall(state, "call-exec");
@@ -60,8 +70,54 @@ test("F6.1 the read tool sees unsaved edits and the execute tool runs in a Kiro 
   assertEqual(terminal.exitCode, 0, "terminal exit code");
   assert(api.terminal.showTerminal(terminal.terminalId), "showTerminal works after release");
 
+  // A second command in the same session reuses the shared terminal.
+  const again = await runTourAccepting(api);
+  assertEqual(fakeAgentReports(again).length, 0, "second tour reported no failures");
+  const exec2 = toolCall(again, "call-exec");
+  const terminal2 = exec2.content.find((c) => c.type === "terminal");
+  assert(terminal2 && terminal2.type === "terminal", "second execute card has terminal content");
+  assert(terminal2.terminalId !== terminal.terminalId, "the second command has its own terminal id");
+  assertEqual(terminal2.exitCode, 0, "second terminal exit code");
+  assertEqual(
+    kiroTerminals().length,
+    terminalsBefore + 1,
+    `still one Kiro terminal after a second command: ${kiroTerminals().map((t) => t.name).join(", ")}`,
+  );
+  assert(kiroTerminals().includes(sharedTerminal), "the same shared terminal is still open");
+  assert(api.terminal.showTerminal(terminal2.terminalId), "showTerminal works for the second command");
+
   // Leave the workspace clean for the next test.
   await vscode.window.showTextDocument(readme, { preview: false });
   await vscode.commands.executeCommand("workbench.action.files.revert");
   await waitFor(() => !readme.isDirty, 15_000, "README to be reverted");
+});
+
+test("F6.2 terminal.mode=hidden creates no VS Code terminal but the card still gets the output", async ({ api }) => {
+  const config = vscode.workspace.getConfiguration("kiroAcp");
+  const previous = config.inspect<string>("terminal.mode")?.workspaceValue;
+  await config.update("terminal.mode", "hidden", vscode.ConfigurationTarget.Workspace);
+  try {
+    await waitFor(() => api.terminal.currentMode() === "hidden", 15_000, "terminal mode to be hidden");
+    await freshSession(api);
+    await closeAllEditors();
+    const terminalsBefore = kiroTerminals().length;
+
+    const state = await runTourAccepting(api);
+    assertEqual(fakeAgentReports(state).length, 0, "fake agent reported no failures");
+
+    const exec = toolCall(state, "call-exec");
+    assertEqual(exec.status, "completed", "execute tool status");
+    const terminal = exec.content.find((c) => c.type === "terminal");
+    assert(terminal && terminal.type === "terminal", "execute card has terminal content");
+    assert(terminal.output.includes("hello"), `terminal output: ${JSON.stringify(terminal.output)}`);
+    assertEqual(terminal.exitCode, 0, "terminal exit code");
+    assertEqual(api.terminal.activeIds().length, 0, "the agent released its terminal");
+    assertEqual(kiroTerminals().length, terminalsBefore, "no Kiro terminal was created in hidden mode");
+    assertEqual(api.terminal.showTerminal(terminal.terminalId), false, "showTerminal reports no terminal");
+  } finally {
+    await vscode.workspace
+      .getConfiguration("kiroAcp")
+      .update("terminal.mode", previous, vscode.ConfigurationTarget.Workspace);
+    await waitFor(() => api.terminal.currentMode() === "shared", 15_000, "terminal mode restored");
+  }
 });

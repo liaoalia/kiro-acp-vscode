@@ -289,6 +289,9 @@ app.addEventListener("click", (event) => {
     case "new-session":
       post({ type: "newSession" });
       break;
+    case "browse-sessions":
+      post({ type: "browseSessions" });
+      break;
     case "select-session":
       if (d.sessionId && d.sessionId !== state.sessionId) post({ type: "selectSession", sessionId: d.sessionId });
       break;

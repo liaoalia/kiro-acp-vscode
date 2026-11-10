@@ -166,6 +166,29 @@ Unknown notifications are logged to the "Kiro ACP" output channel.
 
 Paste the output of `node scripts/record-acp.mjs` here, redacting tokens.
 
+## Recorded capabilities of a real Kiro CLI V3 (2026-11-10, `/capabilities` in the extension)
+
+Organisation-managed account (AWS IAM Identity Center), Windows, Kiro CLI 3.x:
+
+- `agentInfo` is **not** sent (the extension shows "Kiro" as the name).
+- `agentCapabilities`: `loadSession: true`, `promptCapabilities: { image: true, embeddedContext: true }`,
+  `sessionCapabilities: { list, close, delete, fork }`, `mcpCapabilities: { http, sse }`.
+- `authMethods`: `aws-builder-id`, `aws-iam-identity-center` (shown when signed out).
+- `_meta.kiro.extensionMethods` (34): `_kiro/knowledge`, `_kiro/memory/{list,get,create,update,delete,getSyncStatus,sync}`,
+  `_kiro/codeIntelligence`, `_kiro/environment/{start_ssh_session,get_network_configuration}`,
+  `_kiro/session/{context,compact,export,history}`, `_kiro/config/template`,
+  `_kiro/configuration/{getState,set}`, `_kiro/workflow/{new,invoke,load,inspect,list,pause,cancel,delete,listRecipes,listWatchHandlers,resumeAll,retry,update,resume}`,
+  `_kiro/sourceProviders/{list,listResources}`. **No usage/quota method at all**, so `/usage` cannot be served
+  for this account; `/context` and `/compact` map to `_kiro/session/context` / `_kiro/session/compact`.
+- `modes`: `vibe` ("Default", current), `spec`, `quick-spec`, `bug-fix`, `plan`, `autonomous`, plus every custom
+  agent of the workspace (`kirocrew-*`, `atlassian`, `qc-*`, …) — 49 in total. The same list is also exposed as
+  the config option `mode`.
+- `configOptions`: `mode` (category mode), `model` (category model; `auto` + 18 model ids such as
+  `claude-opus-5.5`, `gpt-5.6-sol`, `minimax-m2.5`), `memoryReflection` (on/off), `autopilot` (on/off),
+  `contentCollection` (enabled/disabled). No `effortLevel`.
+- `available_commands_update`: the workspace's custom prompts/agents (`/general-task-execution`,
+  `/resolve-jira-ticket`, `/kirocrew-*`, …); the extension forwards them as prompt text.
+
 ## Spec vs. real behaviour differences
 
 Observed on 2026-11-10 through the extension (Kiro CLI 3.x, V3 harness, an

@@ -126,8 +126,28 @@ export interface ModelState {
   availableModels: Array<{ modelId: string; name: string; description?: string | null }>;
 }
 
+/** One entry of `session/list`. */
+export interface SessionListEntry {
+  sessionId: string;
+  cwd: string;
+  title: string | null;
+  /** ISO timestamp when known. */
+  updatedAt: string | null;
+}
+
 export type SessionEvent =
-  | { type: "update"; sessionId: string; update: acp.SessionUpdate }
+  | {
+      type: "update";
+      sessionId: string;
+      update: acp.SessionUpdate;
+      /**
+       * True for history replayed by `session/load` (while the load is in
+       * flight, or when the agent marks it with `_meta.kiro.replay`).
+       * Replayed `user_message_chunk`s must be rendered, live ones are echoed
+       * locally by the host.
+       */
+      replay?: boolean;
+    }
   | { type: "turn_started"; sessionId: string }
   | { type: "turn_finished"; sessionId: string; stopReason: acp.StopReason }
   | { type: "turn_failed"; sessionId: string; error: string }
@@ -154,6 +174,17 @@ export interface KiroAgent {
   onSessionEvent(listener: (event: SessionEvent) => void): Unsubscribe;
 
   newSession(cwd: string, options?: { mcpServers?: acp.McpServer[]; meta?: Record<string, unknown> }): Promise<SessionState>;
+  /**
+   * `session/list` (requires `agentCapabilities.sessionCapabilities.list`).
+   * Rejects with AcpError when the agent did not advertise it.
+   */
+  listSessions(options?: { cwd?: string; cursor?: string }): Promise<{ sessions: SessionListEntry[]; nextCursor: string | null }>;
+  /**
+   * `session/load` (requires `agentCapabilities.loadSession`). History is
+   * replayed through {@link onSessionEvent} updates flagged `replay: true`
+   * before this resolves; the returned state carries modes/config options.
+   */
+  loadSession(sessionId: string, cwd: string, options?: { mcpServers?: acp.McpServer[] }): Promise<SessionState>;
   /**
    * Send a prompt. Resolves with the final stop reason once the agent answers
    * `session/prompt`; updates stream through {@link onSessionEvent}.

@@ -146,6 +146,8 @@ const ICON_PATHS: Record<string, string> = {
   diff: '<path d="M5 2.5v6"/><path d="M2 5.5h6"/><path d="M9 11h5"/><path d="M11.5 3l-7 10"/>',
   terminal: '<path d="M3 4.5l3 3-3 3"/><path d="M8 11h5"/>',
   warning: '<path d="M8 2.5l6 11H2z"/><path d="M8 6.5v3M8 11.5v.2"/>',
+  // Clock face with hands at ~10 past: "past sessions".
+  history: '<circle cx="8" cy="8" r="5.5"/><path d="M8 4.8V8l2.4 1.5"/>',
   gear: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/><path d="M8 4.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6z"/>',
   // Composer toolbar / brand
   bolt: '<path d="M9 2L4 9h4l-1 5 5-7H8z"/>',
