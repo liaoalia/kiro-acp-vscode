@@ -35,6 +35,8 @@ interface DiffEntry {
   mtime: number;
   /** `uri.path` shared by both schemes. */
   key: string;
+  /** Set once finalize() captured the entry: lookups ignore it so a re-used tool-call id gets a fresh entry. */
+  closing?: boolean;
 }
 
 export interface OpenDiffOptions {
@@ -390,7 +392,7 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
 
   private findEntry(toolCallId: string, index: number): DiffEntry | undefined {
     for (const entry of this.entries.values()) {
-      if (entry.toolCallId === toolCallId && entry.index === index) {
+      if (!entry.closing && entry.toolCallId === toolCallId && entry.index === index) {
         return entry;
       }
     }
@@ -399,7 +401,7 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
 
   private entriesFor(toolCallId: string): DiffEntry[] {
     return [...this.entries.values()]
-      .filter((e) => e.toolCallId === toolCallId)
+      .filter((e) => e.toolCallId === toolCallId && !e.closing)
       .sort((a, b) => a.index - b.index);
   }
 
@@ -473,6 +475,11 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
           this.logger.info(`diff: recorded user edits for ${spec.path}`);
         }
       }
+    }
+    // From here on lookups must not see these entries: a re-used tool-call id
+    // gets a fresh entry while these are being closed.
+    for (const entry of entries) {
+      entry.closing = true;
     }
     this.state.remove(toolCallId);
     await this.closeEditors(entries);

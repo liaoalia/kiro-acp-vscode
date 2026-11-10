@@ -20,7 +20,7 @@
  * exercises the same code path a user with a .cmd wrapper would hit.
  */
 import { runTests } from "@vscode/test-electron";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +36,26 @@ if (!existsSync(testsEntry)) {
 if (!existsSync(path.join(repo, "dist", "extension.js"))) {
   console.error("Missing dist/extension.js — run `npm run build` (or `npm run test:e2e`) first.");
   process.exit(2);
+}
+
+// A stale bundle silently tests old code: warn when any source is newer than dist/.
+{
+  const distMtime = statSync(path.join(repo, "dist", "extension.js")).mtimeMs;
+  const newer = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const full = path.join(dir, name);
+      const st = statSync(full);
+      if (st.isDirectory()) walk(full);
+      else if (st.mtimeMs > distMtime) newer.push(path.relative(repo, full));
+    }
+  };
+  walk(path.join(repo, "src"));
+  if (newer.length > 0) {
+    console.error(
+      `[e2e] WARNING: dist/extension.js is older than ${newer.length} source file(s) (e.g. ${newer[0]}); run npm run build first.`,
+    );
+  }
 }
 
 function cliSettings() {

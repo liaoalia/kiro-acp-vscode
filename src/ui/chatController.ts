@@ -466,6 +466,10 @@ export class ChatController implements vscode.Disposable {
     const diffs = call.content.filter((c): c is ToolDiffContent => c.type === "diff");
     if (diffs.length === 0) return;
     if (call.status === "completed" || call.status === "failed" || call.status === "cancelled") {
+      // Forget the "already opened" marks so a later tool call re-using the id opens again.
+      for (const key of this.openedDiffs) {
+        if (key.startsWith(`${call.toolCallId}#`)) this.openedDiffs.delete(key);
+      }
       await this.deps.diff.reconcileToolCallEnded(call.toolCallId, call.status, diffs);
       return;
     }
