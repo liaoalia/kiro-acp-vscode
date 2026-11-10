@@ -23,6 +23,7 @@ import {
   clear,
   h,
   icon,
+  mascot,
   safeJson,
   setChildren,
   shortPath,
@@ -75,40 +76,114 @@ export function statusAnnouncement(state: UiState): string {
   return state.turnActive ? `${base} Working on your request.` : `${base} Ready for input.`;
 }
 
+/** True when the agent advertises anything the settings panel can show. */
+export function hasSettings(state: UiState): boolean {
+  return (state.modes?.availableModes.length ?? 0) > 0 || state.configOptions.length > 0 || state.models !== null;
+}
+
+/** Display name of the current model (config option with category `model`, else `models`). */
+export function currentModelName(state: UiState): string | undefined {
+  const opt = state.configOptions.find((o) => o.category === "model" && o.type === "select");
+  if (opt) {
+    const value = String(opt.currentValue);
+    return opt.options?.find((o) => o.value === value)?.name ?? value;
+  }
+  const models = state.models;
+  if (models) {
+    return models.availableModels.find((m) => m.modelId === models.currentModelId)?.name ?? models.currentModelId;
+  }
+  return undefined;
+}
+
+/** Display name of the current mode (config option with category/id `mode`, else `modes`). */
+export function currentModeName(state: UiState): string | undefined {
+  const opt = state.configOptions.find((o) => (o.category === "mode" || o.id === "mode") && o.type === "select");
+  if (opt) {
+    const value = String(opt.currentValue);
+    return opt.options?.find((o) => o.value === value)?.name ?? value;
+  }
+  const modes = state.modes;
+  if (modes && modes.availableModes.length > 0) {
+    return modes.availableModes.find((m) => m.id === modes.currentModeId)?.name ?? modes.currentModeId;
+  }
+  return undefined;
+}
+
+/**
+ * Header: the `.brand` block doubles as the compact status pill (narrow) and
+ * the title + muted status text (wide); the stylesheet switches the look.
+ * Text labels (`.btn-text`) and the Cancel button are hidden in the wide
+ * layout, where Cancel lives in the composer's stop button instead.
+ */
 export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): void {
   const c = state.connection;
   const text = statusText(c);
-  const hasSettings =
-    (state.modes?.availableModes.length ?? 0) > 0 || state.configOptions.length > 0 || state.models !== null;
   setChildren(el, [
     h(
       "div",
-      { class: `status-pill status-${c.status}`, title: c.message ? `${text}: ${c.message}` : text },
-      h("span", { class: "dot", "aria-hidden": "true" }),
-      h("span", { class: "status-text" }, text),
+      { class: "brand" },
+      h("span", { class: "brand-name" }, icon("kiro", "icon brand-icon"), h("span", { class: "brand-text" }, "Kiro")),
+      h(
+        "div",
+        { class: `status-pill status-${c.status}`, title: c.message ? `${text}: ${c.message}` : text },
+        h("span", { class: "dot", "aria-hidden": "true" }),
+        h("span", { class: "status-text" }, text),
+      ),
     ),
     h("span", { class: "spacer" }),
     state.turnActive
       ? actionButton("cancel", [icon("stop"), h("span", { class: "btn-text" }, "Cancel")], {
-          cls: "btn btn-secondary btn-sm",
+          cls: "btn btn-secondary btn-sm hdr-cancel",
           title: "Cancel the current turn",
           ariaLabel: "Cancel the current turn",
         })
       : null,
     actionButton("new-session", [icon("plus"), h("span", { class: "btn-text" }, "New")], {
-      cls: "btn btn-ghost btn-sm",
+      cls: "btn btn-ghost btn-sm hdr-btn",
       title: "Start a new session",
       ariaLabel: "Start a new session",
     }),
-    hasSettings
+    hasSettings(state)
       ? actionButton("toggle-settings", [icon("gear")], {
-          cls: `btn btn-ghost btn-sm btn-icon${local.showSettings ? " is-active" : ""}`,
+          cls: `btn btn-ghost btn-sm btn-icon hdr-btn${local.showSettings ? " is-active" : ""}`,
           title: local.showSettings ? "Hide session settings" : "Show session settings (mode, model, options)",
           ariaLabel: "Toggle session settings",
           pressed: local.showSettings,
         })
       : null,
+    state.plan.length > 0
+      ? actionButton("open-plan", [icon("plan")], {
+          cls: "btn btn-ghost btn-sm btn-icon hdr-btn hdr-plan",
+          title: "Open the plan",
+          ariaLabel: "Open the plan",
+        })
+      : null,
   ]);
+}
+
+/**
+ * Empty state: brand line at the top, mascot + tagline in the middle. Shown
+ * only while the transcript has no items and no permission is pending.
+ */
+export function renderEmpty(el: HTMLElement, state: UiState): void {
+  const show = state.items.length === 0 && state.permissions.length === 0;
+  if (!show) {
+    if (el.childElementCount > 0) clear(el);
+    el.hidden = true;
+    return;
+  }
+  if (el.childElementCount === 0) {
+    setChildren(el, [
+      h("div", { class: "empty-brand" }, icon("kiro", "icon brand-icon"), h("span", { class: "brand-text" }, "Kiro")),
+      h(
+        "div",
+        { class: "empty-center" },
+        mascot(56),
+        h("p", { class: "empty-tagline" }, "// TODO: build the next thing. Ask Kiro."),
+      ),
+    ]);
+  }
+  el.hidden = false;
 }
 
 export function renderBanners(el: HTMLElement, state: UiState): void {

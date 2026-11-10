@@ -1,10 +1,13 @@
 /**
- * Composer: auto-growing textarea, send button, `@` file autocomplete and
- * `/` command popup. Owns its own DOM; the chips row element is exposed so the
- * main renderer can fill it from state.
+ * Composer: a single rounded container holding the chips row, the
+ * auto-growing textarea and a toolbar row (`+` context, `/` commands, model
+ * pill on the left; mode pill and send/stop button on the right). Also owns
+ * the `@` file autocomplete and `/` command popup. The chips row and the pill
+ * slots are filled by the main renderer from state; buttons carry
+ * `data-action` and are handled by delegation in `main.ts`.
  */
 import type { CommandView, ContextChip, FileSuggestion } from "../ui/protocol";
-import { h, icon, setChildren, shortPath } from "./dom";
+import { actionButton, h, icon, setChildren, shortPath } from "./dom";
 import { loadDraft, post, saveDraft } from "./vscodeApi";
 
 export interface ComposerHost {
@@ -15,6 +18,16 @@ export interface ComposerHost {
   /** The prompt was sent; the host may drop local chips. */
   onSent(): void;
   getCommands(): CommandView[];
+}
+
+/** State-derived labels shown in the toolbar row. */
+export interface ComposerMeta {
+  /** Current model name; omitted when the agent advertises none. */
+  model?: string;
+  /** Current mode name; omitted when the agent advertises none. */
+  mode?: string;
+  /** Whether the settings panel is open (pills are `aria-pressed` toggles). */
+  settingsOpen: boolean;
 }
 
 type PopupMode = "none" | "files" | "commands";
@@ -36,6 +49,8 @@ export class Composer {
 
   private readonly textarea: HTMLTextAreaElement;
   private readonly sendBtn: HTMLButtonElement;
+  private readonly modelSlot: HTMLElement;
+  private readonly modeSlot: HTMLElement;
   private readonly popup: HTMLElement;
 
   private mode: PopupMode = "none";
@@ -48,6 +63,7 @@ export class Composer {
   private queryTimer: number | undefined;
   private draftTimer: number | undefined;
   private turnActive = false;
+  private meta: ComposerMeta = { settingsOpen: false };
 
   constructor(private readonly host: ComposerHost) {
     this.chipsEl = h("div", { class: "chips", role: "list", "aria-label": "Context" });
@@ -64,7 +80,39 @@ export class Composer {
       spellcheck: "true",
     });
 
-    this.sendBtn = h("button", { type: "button", class: "btn btn-primary btn-icon send-btn", "aria-label": "Send message", title: "Send (Enter)" }, icon("send"));
+    // Send / stop share one slot; `data-action` flips with `turnActive`.
+    this.sendBtn = actionButton("send", [icon("arrow-up")], {
+      cls: "send-btn",
+      ariaLabel: "Send message",
+      title: "Send (Enter)",
+    });
+
+    this.modelSlot = h("span", { class: "tool-slot tool-slot-model" });
+    this.modeSlot = h("span", { class: "tool-slot tool-slot-mode" });
+
+    const tools = h(
+      "div",
+      { class: "composer-tools", role: "toolbar", "aria-label": "Composer tools" },
+      actionButton("add-context", [icon("plus")], {
+        cls: "tool-btn",
+        title: "Add a file to the context (@)",
+        ariaLabel: "Add a file to the context",
+      }),
+      actionButton("insert-slash", [icon("slash")], {
+        cls: "tool-btn",
+        title: "Commands (/)",
+        ariaLabel: "Show commands",
+      }),
+      this.modelSlot,
+      h("span", { class: "spacer" }),
+      this.modeSlot,
+      this.sendBtn,
+    );
+    // Keep the caret in the textarea while clicking toolbar buttons (keyboard
+    // focus still works: buttons stay tabbable).
+    tools.addEventListener("mousedown", (e) => {
+      if ((e.target as HTMLElement).closest("button")) e.preventDefault();
+    });
 
     this.popup = h("div", { class: "popup", id: "composer-popup", role: "listbox" });
     this.popup.hidden = true;
@@ -73,8 +121,7 @@ export class Composer {
       "div",
       { class: "composer" },
       this.popup,
-      this.chipsEl,
-      h("div", { class: "composer-row" }, this.textarea, this.sendBtn),
+      h("div", { class: "composer-box" }, this.chipsEl, this.textarea, tools),
     );
 
     this.textarea.value = loadDraft();
@@ -89,7 +136,6 @@ export class Composer {
       const opt = (e.target as HTMLElement).closest<HTMLElement>("[data-index]");
       if (opt) this.select(Number(opt.dataset.index));
     });
-    this.sendBtn.addEventListener("click", () => this.send());
 
     this.autoGrow();
     this.updateSendState();
@@ -105,6 +151,34 @@ export class Composer {
     this.updateSendState();
   }
 
+  /** Updates the model/mode pills in the toolbar row. */
+  setMeta(meta: ComposerMeta): void {
+    const prev = this.meta;
+    if (prev.model === meta.model && prev.mode === meta.mode && prev.settingsOpen === meta.settingsOpen) return;
+    this.meta = meta;
+    const title = meta.settingsOpen ? "Hide session settings" : "Show session settings (mode, model, options)";
+    setChildren(this.modelSlot, [
+      meta.model
+        ? actionButton("toggle-settings", [h("span", { class: "pill-text" }, meta.model)], {
+            cls: `pill pill-model${meta.settingsOpen ? " is-active" : ""}`,
+            title,
+            ariaLabel: `Model: ${meta.model}. Toggle session settings`,
+            pressed: meta.settingsOpen,
+          })
+        : null,
+    ]);
+    setChildren(this.modeSlot, [
+      meta.mode
+        ? actionButton("toggle-settings", [icon("bolt"), h("span", { class: "pill-text" }, meta.mode)], {
+            cls: `pill pill-mode${meta.settingsOpen ? " is-active" : ""}`,
+            title,
+            ariaLabel: `Mode: ${meta.mode}. Toggle session settings`,
+            pressed: meta.settingsOpen,
+          })
+        : null,
+    ]);
+  }
+
   /** Results for a `queryFiles` request; ignored unless they answer the latest query. */
   setSuggestions(query: string, items: FileSuggestion[]): void {
     if (this.mode !== "files" || query !== this.lastQuery) return;
@@ -112,6 +186,52 @@ export class Composer {
     this.fileItems = items;
     this.active = 0;
     this.renderPopup();
+  }
+
+  /** `+` button: inserts `@` at the caret and opens the file suggestions. */
+  insertAtMention(): void {
+    const ta = this.textarea;
+    ta.focus();
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? start;
+    const before = ta.value.slice(0, start);
+    const after = ta.value.slice(end);
+    const needsSpace = before.length > 0 && !/\s$/.test(before);
+    const insert = (needsSpace ? " " : "") + "@";
+    ta.value = before + insert + after;
+    const pos = before.length + insert.length;
+    ta.setSelectionRange(pos, pos);
+    this.onInput();
+  }
+
+  /** `/` button: puts `/` at the start of the text and opens the command popup. */
+  insertSlash(): void {
+    const ta = this.textarea;
+    ta.focus();
+    if (ta.value.trim().length === 0) {
+      ta.value = "/";
+    } else if (!ta.value.startsWith("/")) {
+      ta.value = "/" + ta.value;
+    }
+    const pos = ta.value.startsWith("/") ? Math.min(ta.value.length, ta.value.search(/\s|$/)) : ta.value.length;
+    ta.setSelectionRange(pos, pos);
+    this.onInput();
+  }
+
+  /** Sends the current text (same path as pressing Enter). */
+  send(): void {
+    if (this.turnActive) return;
+    const text = this.textarea.value.replace(/\s+$/, "");
+    if (text.trim().length === 0) return;
+    post({ type: "prompt", text, chips: this.host.getChips() });
+    this.textarea.value = "";
+    this.closePopup();
+    this.autoGrow();
+    this.updateSendState();
+    window.clearTimeout(this.draftTimer);
+    saveDraft("");
+    this.host.onSent();
+    this.textarea.focus();
   }
 
   // -------------------------------------------------------------------------
@@ -133,9 +253,23 @@ export class Composer {
   }
 
   private updateSendState(): void {
+    const btn = this.sendBtn;
     const empty = this.textarea.value.trim().length === 0;
-    this.sendBtn.disabled = this.turnActive || empty;
-    this.sendBtn.title = this.turnActive ? "Kiro is working… use Cancel to stop" : "Send (Enter)";
+    if (this.turnActive) {
+      btn.dataset.action = "cancel";
+      btn.className = "send-btn is-stop";
+      btn.disabled = false;
+      btn.title = "Stop (cancel the current turn)";
+      btn.setAttribute("aria-label", "Cancel the current turn");
+      setChildren(btn, [icon("stop")]);
+    } else {
+      btn.dataset.action = "send";
+      btn.className = "send-btn";
+      btn.disabled = empty;
+      btn.title = "Send (Enter)";
+      btn.setAttribute("aria-label", "Send message");
+      setChildren(btn, [icon("arrow-up")]);
+    }
   }
 
   private updatePopup(): void {
@@ -315,20 +449,5 @@ export class Composer {
       saveDraft(ta.value);
       ta.focus();
     }
-  }
-
-  private send(): void {
-    if (this.turnActive) return;
-    const text = this.textarea.value.replace(/\s+$/, "");
-    if (text.trim().length === 0) return;
-    post({ type: "prompt", text, chips: this.host.getChips() });
-    this.textarea.value = "";
-    this.closePopup();
-    this.autoGrow();
-    this.updateSendState();
-    window.clearTimeout(this.draftTimer);
-    saveDraft("");
-    this.host.onSent();
-    this.textarea.focus();
   }
 }

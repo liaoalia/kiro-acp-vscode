@@ -8,9 +8,12 @@ import { actionButton, h, icon } from "./dom";
 import { copyText } from "./markdown";
 import {
   TranscriptRenderer,
+  currentModeName,
+  currentModelName,
   effectiveChips,
   renderBanners,
   renderChips,
+  renderEmpty,
   renderHeader,
   renderNotices,
   renderPickers,
@@ -42,8 +45,15 @@ const banners = h("div", { class: "banners" });
 banners.hidden = true;
 const notices = h("div", { class: "notices" });
 notices.hidden = true;
+const empty = h("div", { class: "empty" });
+empty.hidden = true;
 const items = h("div", { class: "items" });
-const transcript = h("main", { class: "transcript", "aria-label": "Conversation" }, notices, items);
+// The transcript is the only scroll container; its content sits in a centered column.
+const transcript = h(
+  "main",
+  { class: "transcript", "aria-label": "Conversation" },
+  h("div", { class: "column transcript-col" }, notices, empty, items),
+);
 const jump = actionButton("jump-bottom", [icon("down"), "Jump to latest"], {
   cls: "jump",
   ariaLabel: "Scroll to the latest message",
@@ -70,7 +80,13 @@ const composer = new Composer({
   getCommands: () => state.commands,
 });
 
-app.append(header, banners, h("div", { class: "transcript-wrap" }, transcript, jump), planBar, pickers, composer.el, live);
+app.append(
+  header,
+  h("div", { class: "column banners-col" }, banners),
+  h("div", { class: "transcript-wrap" }, transcript, jump),
+  h("div", { class: "column bottom-col" }, planBar, pickers, composer.el),
+  live,
+);
 
 const transcriptRenderer = new TranscriptRenderer(items, local);
 
@@ -133,12 +149,14 @@ function render(): void {
   renderHeader(header, state, local);
   renderBanners(banners, state);
   renderNotices(notices, state, local);
+  renderEmpty(empty, state);
   transcriptRenderer.render(state);
   renderPlanBar(planBar, state);
   renderPickers(pickers, state);
   if (!local.showSettings) pickers.hidden = true;
   else if (pickers.childElementCount > 0) pickers.hidden = false;
   renderChips(composer.chipsEl, effectiveChips(state, local));
+  composer.setMeta({ model: currentModelName(state), mode: currentModeName(state), settingsOpen: local.showSettings });
   composer.setTurnActive(state.turnActive);
   if (stuckToBottom) scrollToBottom();
   jump.hidden = stuckToBottom;
@@ -217,6 +235,15 @@ app.addEventListener("click", (event) => {
       break;
     case "cancel":
       post({ type: "cancel" });
+      break;
+    case "send":
+      composer.send();
+      break;
+    case "add-context":
+      composer.insertAtMention();
+      break;
+    case "insert-slash":
+      composer.insertSlash();
       break;
     case "restart":
       post({ type: "restart" });

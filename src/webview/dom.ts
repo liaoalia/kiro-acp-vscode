@@ -118,6 +118,12 @@ const ICON_PATHS: Record<string, string> = {
   terminal: '<path d="M3 4.5l3 3-3 3"/><path d="M8 11h5"/>',
   warning: '<path d="M8 2.5l6 11H2z"/><path d="M8 6.5v3M8 11.5v.2"/>',
   gear: '<circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M3.6 12.4l1.2-1.2M11.2 4.8l1.2-1.2"/><path d="M8 4.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6z"/>',
+  // Composer toolbar / brand
+  bolt: '<path d="M9 2L4 9h4l-1 5 5-7H8z"/>',
+  slash: '<rect x="3" y="2.5" width="10" height="11" rx="1.5"/><path d="M9.5 5l-3 6"/>',
+  "arrow-up": '<path d="M8 13V3"/><path d="M3.5 7.5L8 3l4.5 4.5"/>',
+  chat: '<path d="M3 3.5h10v7H8.5L5.5 13v-2.5H3z"/><path d="M5.5 6.5h5M5.5 8.5h3"/>',
+  kiro: '<path d="M3 2.5v11"/><path d="M3 8.5l6-6"/><path d="M5.5 6l7.5 7.5"/><circle cx="12" cy="3.5" r="1"/>',
 };
 
 export function icon(name: string, cls = "icon"): HTMLSpanElement {
@@ -126,6 +132,44 @@ export function icon(name: string, cls = "icon"): HTMLSpanElement {
   span.setAttribute("aria-hidden", "true");
   const path = ICON_PATHS[name] ?? ICON_PATHS.other;
   span.innerHTML = SVG_OPEN + path + SVG_CLOSE;
+  return span;
+}
+
+/**
+ * Decorative pixel-art mascot for the empty state (a small "pixel bot" with an
+ * antenna). Drawn from a cell grid so it stays crisp at any size and follows
+ * `currentColor`.
+ */
+const MASCOT_GRID = [
+  ".....##.....",
+  ".....##.....",
+  "..########..",
+  ".##########.",
+  ".##..##..##.",
+  ".##..##..##.",
+  ".##########.",
+  ".##########.",
+  ".##.####.##.",
+  "..########..",
+  "...##..##...",
+  "...##..##...",
+];
+
+export function mascot(size = 56): HTMLSpanElement {
+  const span = document.createElement("span");
+  span.className = "mascot";
+  span.setAttribute("aria-hidden", "true");
+  const rows = MASCOT_GRID.length;
+  const cols = MASCOT_GRID[0].length;
+  const cells: string[] = [];
+  MASCOT_GRID.forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) {
+      if (row[x] === "#") cells.push(`<rect x="${x}" y="${y}" width="1" height="1"/>`);
+    }
+  });
+  span.innerHTML =
+    `<svg viewBox="0 0 ${cols} ${rows}" width="${size}" height="${Math.round((size * rows) / cols)}" ` +
+    `aria-hidden="true" focusable="false" fill="currentColor" shape-rendering="crispEdges">${cells.join("")}</svg>`;
   return span;
 }
 

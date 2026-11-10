@@ -7,10 +7,20 @@
   --kiro-mono: var(--vscode-editor-font-family, monospace);
   --kiro-mono-size: var(--vscode-editor-font-size, 12px);
   --kiro-dim: var(--vscode-descriptionForeground);
+  --kiro-accent: var(--vscode-textLink-foreground);
+  /* Width of the centered content column in the wide (editor tab) layout. */
+  --kiro-column: 880px;
+  /* Side padding of the content column; 0 in the wide layout. */
+  --kiro-gutter: 10px;
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* `hidden` must win over the display rules of flex containers. */
+[hidden] {
+  display: none !important;
 }
 
 html,
@@ -38,6 +48,19 @@ body {
 
 .spacer {
   flex: 1 1 auto;
+}
+
+/* Centered content column (full width when narrow, capped when wide). */
+.column {
+  width: 100%;
+  max-width: var(--kiro-column);
+  margin: 0 auto;
+  min-width: 0;
+}
+.bottom-col {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .sr-only {
@@ -161,6 +184,27 @@ summary:focus-visible {
   min-width: 0;
 }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* The "Kiro" title is a wide-layout element; narrow keeps only the status pill. */
+.brand-name {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.brand-icon {
+  color: var(--kiro-accent);
+}
+.hdr-plan {
+  display: none;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -241,6 +285,9 @@ summary:focus-visible {
 .notices {
   padding: 8px 0 0;
 }
+.banners-col {
+  flex: 0 0 auto;
+}
 .notice {
   display: flex;
   align-items: flex-start;
@@ -281,17 +328,67 @@ summary:focus-visible {
   min-height: 0;
 }
 .transcript {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 10px 10px;
+  padding: 0 var(--kiro-gutter) 10px;
+}
+/* Grows to fill the viewport when short (so the empty state can center) and
+   overflows the scroll container when long. */
+.transcript-col {
+  flex: 1 0 auto;
+  display: flex;
+  flex-direction: column;
 }
 .items {
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding-top: 10px;
+}
+
+/* Empty state */
+
+.empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px 0 20px;
+  color: var(--kiro-dim);
+  user-select: none;
+}
+.empty-brand {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--vscode-foreground);
+}
+.empty-center {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  text-align: center;
+}
+.mascot {
+  display: none;
+  line-height: 0;
+  color: var(--kiro-accent);
+}
+.empty-tagline {
+  margin: 0;
+  font-family: var(--kiro-mono);
+  font-size: var(--kiro-mono-size);
+  color: var(--kiro-dim);
 }
 
 .jump {
@@ -801,7 +898,7 @@ summary:focus-visible {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 10px;
+  padding: 4px var(--kiro-gutter);
   border-top: 1px solid var(--kiro-border);
   font-size: 12px;
   color: var(--kiro-dim);
@@ -825,7 +922,7 @@ summary:focus-visible {
   flex-wrap: wrap;
   align-items: center;
   gap: 4px 8px;
-  padding: 4px 10px;
+  padding: 4px var(--kiro-gutter);
   border-top: 1px solid var(--kiro-border);
   flex: 0 0 auto;
 }
@@ -862,33 +959,36 @@ summary:focus-visible {
 .composer {
   position: relative;
   flex: 0 0 auto;
-  padding: 6px 10px 10px;
+  padding: 6px var(--kiro-gutter) 10px;
   border-top: 1px solid var(--kiro-border);
+}
+/* One rounded container: chips, textarea, toolbar row. */
+.composer-box {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--vscode-input-border, var(--kiro-border));
+  background: var(--vscode-input-background);
+  transition: border-color 100ms ease;
+}
+.composer-box:focus-within {
+  border-color: var(--vscode-focusBorder);
 }
 .chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-bottom: 5px;
-}
-.composer-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
-  padding: 4px 4px 4px 8px;
-  border-radius: var(--kiro-radius);
-  border: 1px solid var(--vscode-input-border, var(--kiro-border));
-  background: var(--vscode-input-background);
-}
-.composer-row:focus-within {
-  border-color: var(--vscode-focusBorder);
+  padding: 2px 0 2px;
 }
 .composer-input {
-  flex: 1 1 auto;
+  display: block;
+  width: 100%;
   min-width: 0;
   min-height: 24px;
   max-height: 200px;
-  padding: 3px 0;
+  padding: 3px 2px;
   border: none;
   outline: none;
   resize: none;
@@ -903,14 +1003,144 @@ summary:focus-visible {
 .composer-input:focus-visible {
   outline: none;
 }
-.send-btn {
+
+/* Toolbar row under the textarea */
+.composer-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.tool-slot {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--kiro-dim);
+  cursor: pointer;
   flex: 0 0 auto;
+}
+.tool-btn:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+.tool-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+.tool-btn .icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--kiro-dim);
+  font: inherit;
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pill-model {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-color: var(--vscode-contrastBorder, transparent);
+  margin-left: 4px;
+}
+.pill-model:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-badge-background));
+}
+.pill-mode:hover {
+  color: var(--vscode-foreground);
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+.pill.is-active {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+.pill:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+.pill-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pill-mode .icon {
+  color: var(--kiro-accent);
+}
+
+/* Send (idle) / stop (turn active) button */
+.send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin-left: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.send-btn .icon svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+.send-btn:hover {
+  background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+}
+.send-btn:disabled {
+  cursor: default;
+  color: var(--kiro-dim);
+  background: var(--vscode-button-secondaryBackground, var(--vscode-badge-background));
+  opacity: 0.6;
+}
+.send-btn.is-stop {
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, var(--vscode-badge-background));
+  border-color: var(--vscode-contrastBorder, transparent);
+}
+.send-btn.is-stop:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
+}
+.send-btn.is-stop .icon svg {
+  fill: currentColor;
+}
+.send-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
 }
 
 .popup {
   position: absolute;
-  left: 10px;
-  right: 10px;
+  left: var(--kiro-gutter);
+  right: var(--kiro-gutter);
   bottom: calc(100% - 2px);
   z-index: 10;
   max-height: 220px;
@@ -1010,4 +1240,144 @@ summary:focus-visible {
 .btn-ghost.is-active {
   background: var(--vscode-toolbar-activeBackground, var(--vscode-list-activeSelectionBackground));
   color: var(--vscode-foreground);
+}
+
+/* ---------------------------------------------------------------------------
+   Wide layout (editor tab): thin title bar with icon buttons, centered
+   content column, empty-state mascot, floating rounded composer.
+--------------------------------------------------------------------------- */
+
+@media (min-width: 640px) {
+  :root {
+    --kiro-gutter: 0px;
+  }
+  body {
+    background: var(--vscode-editor-background, var(--vscode-sideBar-background));
+  }
+
+  /* Title bar */
+  .header {
+    padding: 8px 14px;
+    gap: 2px;
+    border-bottom-color: transparent;
+  }
+  .brand-name {
+    display: inline-flex;
+    font-size: 13px;
+  }
+  .brand-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  /* Status becomes a muted dot + text instead of a badge pill. */
+  .status-pill {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--kiro-dim);
+    font-size: 11px;
+  }
+  .status-pill .dot {
+    width: 6px;
+    height: 6px;
+  }
+  .header .btn-text,
+  .header .hdr-cancel {
+    display: none;
+  }
+  .header .hdr-btn {
+    padding: 4px;
+    color: var(--kiro-dim);
+  }
+  .header .hdr-btn:hover,
+  .header .hdr-btn.is-active {
+    color: var(--vscode-foreground);
+  }
+  .header .hdr-btn .icon svg {
+    width: 16px;
+    height: 16px;
+  }
+  .hdr-plan {
+    display: inline-flex;
+  }
+
+  /* Column content */
+  .column {
+    padding: 0 24px;
+  }
+  .transcript {
+    padding-bottom: 12px;
+  }
+  .items {
+    padding-top: 16px;
+    gap: 14px;
+  }
+  .msg-user {
+    max-width: 80%;
+  }
+
+  /* Empty state */
+  .empty {
+    padding: 18px 0 24px;
+  }
+  .empty-brand {
+    display: inline-flex;
+  }
+  .empty-brand .brand-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+  .mascot {
+    display: inline-block;
+  }
+  .empty-tagline {
+    font-size: 13px;
+  }
+
+  /* Banners / notices sit in the column, not edge to edge. */
+  .banner {
+    margin-top: 8px;
+    border: 1px solid var(--kiro-border);
+    border-left: 3px solid var(--vscode-focusBorder);
+    border-radius: var(--kiro-radius);
+  }
+  .banner-error {
+    border-left-color: var(--vscode-errorForeground);
+  }
+
+  /* Plan bar and pickers become cards above the composer. */
+  .planbar,
+  .pickers {
+    margin: 0 0 8px;
+    padding: 5px 10px;
+    border: 1px solid var(--kiro-border);
+    border-radius: var(--kiro-radius);
+    background: var(--vscode-editorWidget-background, transparent);
+  }
+  .pickers {
+    gap: 6px 12px;
+    padding: 8px 10px;
+  }
+
+  /* Floating composer with a 16px bottom margin. */
+  .composer {
+    padding: 0 0 16px;
+    border-top: none;
+  }
+  .composer-box {
+    padding: 8px 10px 8px;
+    gap: 6px;
+    box-shadow: 0 1px 6px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.18));
+  }
+  .composer-input {
+    padding: 5px 4px;
+    line-height: 1.45;
+  }
+  .jump {
+    bottom: 12px;
+  }
+  .popup {
+    left: 0;
+    right: 0;
+  }
 }

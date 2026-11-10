@@ -118,3 +118,13 @@ attached webview, so both can be open at once. The pickers sit behind a ⚙
 toggle in the header; the host default comes from
 `kiroAcp.showSettingsByDefault` and the user's toggle is persisted per
 webview with `setState`.
+
+## D17. Wide-layout chat mirrors a familiar editor-tab chat shape
+In the editor tab (≥ 640px) the webview uses a centred 880px column, a thin
+title bar (brand + status left, icon buttons right), an empty state with an
+original pixel mascot and a code-style tagline, and a single rounded
+composer card: chips, textarea, then a toolbar with `+` (attach file = `@`),
+`/` (commands), the current model pill on the left, the mode pill and the
+send/stop button on the right. Below 640px (secondary sidebar) the compact
+layout stays. The reference for the arrangement was a screenshot the user
+supplied; all code, icons, mascot and copy are original to this project.

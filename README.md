@@ -58,7 +58,14 @@ The extension is distributed as a `.vsix` file, not through the Marketplace.
    to `sidebar` and use the **Kiro** view in the secondary side bar
    (View → Appearance → Secondary Side Bar, `Ctrl+Alt+B`).
 4. Mode, model and other agent options are behind the ⚙ button in the chat
-   header; press it to show or hide them.
+   header (or click the model / mode pill in the composer); press it again to
+   hide them.
+
+The composer at the bottom has `+` (attach a workspace file, same as typing
+`@`), `/` (slash commands advertised by the agent), the current model and
+mode as pills, and a send button that turns into **Stop** while Kiro is
+working. In the narrow secondary-sidebar layout the same controls collapse
+into a compact header.
 
 ## Settings
 
