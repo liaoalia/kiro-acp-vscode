@@ -21,6 +21,7 @@ import * as vscode from "vscode";
 import type * as acp from "@agentclientprotocol/sdk";
 
 import {
+  AcpError,
   createKiroAgent,
   resolveCliPath,
   type AgentInfo,
@@ -35,6 +36,7 @@ import {
 import {
   applyUpdate,
   createTranscript,
+  setMessageDelivery,
   snapshotToUiState,
   toModelView,
   withSessionSnapshot,
@@ -60,6 +62,7 @@ import type {
   ConnectionView,
   ContextChip,
   FromWebview,
+  MessageDelivery,
   ModelView,
   NoticeView,
   PermissionView,
@@ -139,6 +142,24 @@ export interface PastSessionEntry {
 /** Diff tabs open automatically: for every edit, only when a permission asks for it, or never. */
 export type AutoOpenDiffs = "always" | "whenPermissionRequired" | "never";
 
+/**
+ * Kiro V3 extension method that injects a prompt into the running turn. Its
+ * parameter shape (`{ sessionId, prompt }`) mirrors `session/prompt` and is a
+ * guess until confirmed against the real CLI (see DECISIONS D22; the
+ * `[info] steer` output-channel lines show what was sent and answered).
+ */
+const STEER_METHOD = "_session/steer";
+
+/** A prompt typed mid-turn and held until the turn ends (steering unavailable, see D22). */
+interface QueuedPrompt {
+  text: string;
+  chips: ContextChip[];
+  /** Built when queued, so the dequeue starts the turn without awaiting anything. */
+  blocks: acp.ContentBlock[];
+  /** View id of the echoed user message (its `queued` badge). */
+  messageId: string;
+}
+
 const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
 /** Upper bound on `session/list` pages followed per listing (guards against an agent that never ends its list). */
 const MAX_LIST_PAGES = 50;
@@ -178,6 +199,12 @@ class ChatSession {
    * history and is never resolved against this run's live terminals (D21).
    */
   readonly replayedToolCalls = new Set<string>();
+  /** Prompts typed while a turn ran, sent one per turn end in order (D22). */
+  readonly queue: QueuedPrompt[] = [];
+  /** View ids of user messages sent through `_session/steer` and not yet injected. */
+  readonly steering = new Set<string>();
+  /** `_session/steer` failed once (e.g. -32601): later mid-turn prompts queue directly. */
+  steerUnsupported = false;
   updatedAt = Date.now();
 
   constructor(
@@ -406,6 +433,7 @@ export class ChatController implements vscode.Disposable {
     const sessionPanelCollapsed = config.get<boolean>("sessionPanelCollapsed", false);
     return {
       ...state,
+      acceptsPromptsDuringTurn: true,
       toolCalls,
       commands: mergeCommands(transcript.commands, this.slashContext(transcript)),
       prefs: { showSettings, sessionPanelCollapsed },
@@ -805,7 +833,7 @@ export class ChatController implements vscode.Disposable {
       // The sessions stay visible (status `error`) until the agent restarts.
       for (const session of this.sessions.values()) {
         this.deps.permissions.cancelAll(session.id);
-        if (session.turnActive) this.setTurnActive(session, false, "error");
+        if (session.turnActive) this.endTurn(session, "error");
       }
     }
     this.setConnection(this.connectionFromAgent(change.status, change.message));
@@ -1204,10 +1232,6 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     this.focus(session.id);
-    if (session.turnActive) {
-      this.notice(session, "info", "Wait for the current turn to finish or cancel it first.");
-      return;
-    }
     if (session.loading) {
       // The client still flags the session's updates as replay until `session/load`
       // resolves (D21), so a prompt now would render its live answer as history.
@@ -1218,32 +1242,34 @@ export class ChatController implements vscode.Disposable {
     const trimmed = text.trim();
     if (!trimmed && chips.length === 0) return;
 
+    // Slash commands run at once, turn or no turn: `/cancel` must stop the
+    // running turn and `/clear` must be able to leave it (D22).
     const parsed = parseSlash(trimmed);
     if (parsed && (await this.runSlash(session, parsed, chips, binding))) return;
 
     const embeddedContext = this.agentInfo?.agentCapabilities.promptCapabilities?.embeddedContext === true;
     const blocks = await buildPromptBlocks(trimmed, chips, readWorkspaceText, { embeddedContext });
 
+    if (session.turnActive) {
+      // Plain text while the agent works: steer the turn, or hold the message
+      // until the turn ends when the agent cannot steer (D22).
+      await this.promptDuringTurn(agent, session, trimmed, chips, blocks);
+      return;
+    }
+
     if (session.firstPrompt === null && trimmed) {
       session.firstPrompt = truncateTitle(trimmed);
     }
-    // Show the user's message locally; echoed `user_message_chunk`s are ignored (see DECISIONS D13).
-    const messageId = `user-${++session.userMessageSeq}`;
-    const echo: acp.SessionUpdate = {
-      sessionUpdate: "user_message_chunk",
-      messageId,
-      content: { type: "text", text: trimmed },
-    };
-    this.applyLocalUpdate(session, echo);
-    for (const chip of chips) {
-      this.applyLocalUpdate(session, {
-        sessionUpdate: "user_message_chunk",
-        messageId,
-        content: { type: "resource_link", uri: vscode.Uri.file(chip.path).toString(), name: chipLabel(chip) },
-      });
-    }
+    this.echoUserMessage(session, trimmed, chips);
     this.deps.contextTracker.clearExplicit();
+    await this.runTurn(agent, session, blocks);
+  }
 
+  /**
+   * `session/prompt` for `session`, already echoed: flips the turn state and
+   * reports the stop reason (or the failure) when the agent answers.
+   */
+  private async runTurn(agent: KiroAgent, session: ChatSession, blocks: acp.ContentBlock[]): Promise<void> {
     this.setTurnActive(session, true);
     try {
       const response = await agent.prompt(session.id, blocks);
@@ -1251,13 +1277,137 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       const message = errorMessage(error);
       this.notice(session, "error", `Prompt failed: ${message}`);
-      this.setTurnActive(session, false, "error");
+      this.endTurn(session, "error");
+    }
+  }
+
+  /**
+   * Show the user's message locally (echoed `user_message_chunk`s are ignored,
+   * see DECISIONS D13), optionally badged with its delivery state. Returns the
+   * message's view id (the id `chunk` / `messageDelivery` posts carry).
+   */
+  private echoUserMessage(session: ChatSession, text: string, chips: ContextChip[], delivery?: MessageDelivery): string {
+    const messageId = `user-${++session.userMessageSeq}`;
+    const emitted = this.applyLocalUpdate(session, {
+      sessionUpdate: "user_message_chunk",
+      messageId,
+      content: { type: "text", text },
+    });
+    const chunk = emitted.find((e): e is Extract<ToWebview, { type: "chunk" }> => e.type === "chunk");
+    const viewId = chunk?.messageId ?? session.transcript.openMessage?.id ?? messageId;
+    for (const chip of chips) {
+      this.applyLocalUpdate(session, {
+        sessionUpdate: "user_message_chunk",
+        messageId,
+        content: { type: "resource_link", uri: vscode.Uri.file(chip.path).toString(), name: chipLabel(chip) },
+      });
+    }
+    if (delivery) this.setDelivery(session, viewId, delivery);
+    return viewId;
+  }
+
+  /** Update the delivery badge of a user message in the transcript and in the views (D22). */
+  private setDelivery(session: ChatSession, messageId: string, delivery: MessageDelivery | null): void {
+    session.transcript = setMessageDelivery(session.transcript, messageId, delivery);
+    this.postTo(session.id, { type: "messageDelivery", messageId, delivery });
+  }
+
+  /**
+   * A plain prompt typed while a turn runs (D22): echo it as `steering` and
+   * send it through `_session/steer`; when the agent refuses (method unknown,
+   * no turn, …) the message becomes `queued` and goes out as a normal prompt
+   * once the turn ends. A session whose steer failed once queues directly.
+   */
+  private async promptDuringTurn(
+    agent: KiroAgent,
+    session: ChatSession,
+    text: string,
+    chips: ContextChip[],
+    blocks: acp.ContentBlock[],
+  ): Promise<void> {
+    if (session.steerUnsupported) {
+      const messageId = this.echoUserMessage(session, text, chips, "queued");
+      this.deps.contextTracker.clearExplicit();
+      this.enqueue(session, { text, chips, blocks, messageId });
       return;
+    }
+    const messageId = this.echoUserMessage(session, text, chips, "steering");
+    this.deps.contextTracker.clearExplicit();
+    session.steering.add(messageId);
+    const params = { sessionId: session.id, prompt: blocks };
+    this.deps.output.appendLine(`[info] steer ${session.id}: ${STEER_METHOD} ${safeJson(params)}`);
+    try {
+      const result = await agent.callExtension(STEER_METHOD, params);
+      this.deps.output.appendLine(`[info] steer ${session.id}: accepted ${safeJson(result)}`);
+    } catch (error) {
+      const code = error instanceof AcpError && error.code !== undefined ? ` (${error.code})` : "";
+      this.deps.output.appendLine(
+        `[info] steer ${session.id}: failed${code}: ${errorMessage(error)}; queueing mid-turn prompts instead`,
+      );
+      session.steerUnsupported = true;
+      session.steering.delete(messageId);
+      if (!this.sessions.has(session.id)) return;
+      this.setDelivery(session, messageId, "queued");
+      this.enqueue(session, { text, chips, blocks, messageId });
+    }
+  }
+
+  /** Hold `item` until the turn ends; sent right away when the turn ended meanwhile. */
+  private enqueue(session: ChatSession, item: QueuedPrompt): void {
+    session.queue.push(item);
+    if (!session.turnActive) this.drainQueue(session);
+  }
+
+  /** Send the next queued prompt of an idle session as a turn of its own. */
+  private drainQueue(session: ChatSession): void {
+    if (session.turnActive) return;
+    const next = session.queue.shift();
+    if (!next) return;
+    this.setDelivery(session, next.messageId, null);
+    const agent = this.agent;
+    if (!agent || agent.status !== "ready" || !this.sessions.has(session.id)) {
+      this.discardQueue(session, 1 + this.discardRemaining(session));
+      return;
+    }
+    // The echo happened mid-turn, so the previous answer may still be open:
+    // close it so the new turn's answer starts a message of its own.
+    session.transcript = { ...session.transcript, openMessage: null };
+    void this.runTurn(agent, session, next.blocks);
+  }
+
+  /** Clear the badges of every queued prompt and forget them. Returns how many were dropped. */
+  private discardRemaining(session: ChatSession): number {
+    const dropped = session.queue.splice(0);
+    for (const item of dropped) this.setDelivery(session, item.messageId, null);
+    return dropped.length;
+  }
+
+  private discardQueue(session: ChatSession, count: number): void {
+    if (count <= 0) return;
+    this.notice(session, "info", `${count} queued message${count === 1 ? "" : "s"} discarded.`);
+  }
+
+  /** Clear the `steering` badges: the agent injected (or dropped) the steered prompts, or the turn is over. */
+  private clearSteering(session: ChatSession): void {
+    for (const messageId of session.steering) this.setDelivery(session, messageId, null);
+    session.steering.clear();
+  }
+
+  /**
+   * The turn of `session` is over (`session/prompt` answered, failed, or the
+   * agent went away): badges go, and the queue is dropped after a cancel or
+   * an error, else its first prompt starts the next turn (D22).
+   */
+  private endTurn(session: ChatSession, stopReason: acp.StopReason | "error"): void {
+    this.setTurnActive(session, false, stopReason);
+    this.clearSteering(session);
+    if (stopReason === "cancelled" || stopReason === "error") {
+      this.discardQueue(session, this.discardRemaining(session));
     }
   }
 
   private handleStopReason(session: ChatSession, stopReason: acp.StopReason): void {
-    this.setTurnActive(session, false, stopReason);
+    this.endTurn(session, stopReason);
     switch (stopReason) {
       case "refusal":
         this.notice(session, "warning", "Kiro declined to continue with this request.");
@@ -1272,14 +1422,23 @@ export class ChatController implements vscode.Disposable {
         break;
     }
     this.deps.permissions.cancelAll(session.id);
+    this.drainQueue(session);
   }
 
-  private applyLocalUpdate(session: ChatSession, update: acp.SessionUpdate): void {
+  /** Test hook: pretend `_session/steer` already failed for `sessionId`, so mid-turn prompts queue (D22). */
+  setSteerUnsupportedForTests(sessionId: string, unsupported: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (session) session.steerUnsupported = unsupported;
+  }
+
+  /** Apply a locally generated update and forward its emits; returns them. */
+  private applyLocalUpdate(session: ChatSession, update: acp.SessionUpdate): ToWebview[] {
     const result = applyUpdate(session.transcript, update);
     session.transcript = result.state;
     session.touch();
     for (const emit of result.emits) this.postTo(session.id, emit);
     this.scheduleSessions();
+    return result.emits;
   }
 
   // ---------------------------------------------------------------------
@@ -1306,6 +1465,11 @@ export class ChatController implements vscode.Disposable {
         if (update.sessionUpdate === "session_info_update") {
           if (typeof update.title === "string") session.agentTitle = update.title.trim() || null;
           else if (update.title === null) session.agentTitle = null;
+          const kind = kiroKind(update._meta);
+          if (kind === "steering_injected" || kind === "steering_cleared") {
+            this.deps.output.appendLine(`[info] steer ${session.id}: ${kind}`);
+            this.clearSteering(session);
+          }
           return;
         }
         const result = applyUpdate(session.transcript, update);
@@ -1623,11 +1787,13 @@ export class ChatController implements vscode.Disposable {
         return false;
       case "new_session": {
         // `/clear`: a new session in the view the command came from (else the
-        // focused view, else any view) when it displays this session.
+        // focused view, else any view) when it displays this session. Typed
+        // mid-turn it also stops the turn it leaves behind (D22).
         const displays = (v: ViewBinding | null | undefined): ViewBinding | undefined =>
           v && !v.follows && v.displayed === sessionId ? v : undefined;
         const view =
           displays(sender) ?? displays(this.focusedView) ?? [...this.views].find((v) => displays(v) !== undefined);
+        if (session.turnActive) await this.cancel(sessionId);
         await this.newSession(view);
         return true;
       }
@@ -1875,6 +2041,15 @@ async function openFile(absPath: string, line?: number): Promise<void> {
   } catch (error) {
     void vscode.window.showWarningMessage(`Cannot open ${absPath}: ${errorMessage(error)}`);
   }
+}
+
+/** `_meta.kiro.kind` of a Kiro V3 update, when present. */
+function kiroKind(meta: unknown): string | undefined {
+  if (typeof meta !== "object" || meta === null) return undefined;
+  const kiro = (meta as Record<string, unknown>).kiro;
+  if (typeof kiro !== "object" || kiro === null) return undefined;
+  const kind = (kiro as Record<string, unknown>).kind;
+  return typeof kind === "string" ? kind : undefined;
 }
 
 function errorMessage(error: unknown): string {

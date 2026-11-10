@@ -594,3 +594,44 @@ test("stop() terminates the process cleanly and a missing executable is reported
     await missing.agent.stop();
   }
 });
+
+test("_session/steer (fake agent): injected into the running turn on v3, -32602 without a turn, -32601 on v2", async () => {
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    await h.agent.start();
+    const session = await h.agent.newSession(h.cwd);
+    // Not advertised (the real CLI did not advertise it either); the client does not gate on the list.
+    await assert.rejects(
+      () => h.agent.callExtension("_session/steer", { sessionId: session.sessionId, prompt: text("nothing runs") }),
+      (e: unknown) => e instanceof AcpError && e.code === -32602,
+    );
+
+    const turn = h.agent.prompt(session.sessionId, text("/scenario slow"));
+    await waitFor(() => chunkText(h.events).includes("slow 1 "), 5000, "the slow turn to stream");
+    const steered = await h.agent.callExtension<Record<string, unknown>>("_session/steer", {
+      sessionId: session.sessionId,
+      prompt: text("hi there"),
+    });
+    assert.deepEqual(steered, {});
+    await waitFor(() => chunkText(h.events).includes("Steered: hi there"), 5000, "the steered answer");
+    const infos = updatesOf(h.events, "session_info_update") as Array<{ _meta?: { kiro?: { kind?: string } } }>;
+    assert.ok(infos.some((u) => u._meta?.kiro?.kind === "steering_injected"), "steering_injected was reported");
+    assert.ok(!h.events.some((e) => e.type === "turn_finished"), "the steered answer arrived inside the turn");
+    const response = await turn;
+    assert.equal(response.stopReason, "end_turn");
+  } finally {
+    await h.agent.stop();
+  }
+
+  const v2 = launch({ args: ["--scenario", "chat", "--engine", "v2"] });
+  try {
+    await v2.agent.start();
+    const session = await v2.agent.newSession(v2.cwd);
+    await assert.rejects(
+      () => v2.agent.callExtension("_session/steer", { sessionId: session.sessionId, prompt: text("x") }),
+      (e: unknown) => e instanceof AcpError && e.code === -32601,
+    );
+  } finally {
+    await v2.agent.stop();
+  }
+});

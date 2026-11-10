@@ -155,3 +155,70 @@ test("`turn` returns the same object when nothing changes", () => {
   assert.equal(reduce(state, { type: "turn", active: false }), state);
   assert.equal(reduce(state, { type: "turn", active: true }).turnActive, true);
 });
+
+test("`messageDelivery` sets, replaces and clears the badge of a user message", () => {
+  let state = reduce(initialState(), { type: "chunk", messageId: "u1", role: "user", segment: { type: "text", text: "steer" } });
+  const first = state.items[0];
+  assert.ok(first.type === "message");
+  assert.equal(first.message.delivery, undefined, "a new message starts without a delivery badge");
+
+  state = reduce(state, { type: "messageDelivery", messageId: "u1", delivery: "steering" });
+  const steering = state.items[0];
+  assert.ok(steering.type === "message");
+  assert.notEqual(steering.message, first.message, "message object is replaced so the renderer re-renders it");
+  assert.equal(steering.message.delivery, "steering");
+  assert.deepEqual(steering.message.segments, first.message.segments);
+
+  // Same value again: nothing changes (same object).
+  assert.equal(reduce(state, { type: "messageDelivery", messageId: "u1", delivery: "steering" }), state);
+
+  state = reduce(state, { type: "messageDelivery", messageId: "u1", delivery: "queued" });
+  const queued = state.items[0];
+  assert.ok(queued.type === "message");
+  assert.equal(queued.message.delivery, "queued");
+
+  // A later chunk keeps the badge.
+  state = reduce(state, { type: "chunk", messageId: "u1", role: "user", segment: { type: "text", text: "!" } });
+  const grown = state.items[0];
+  assert.ok(grown.type === "message");
+  assert.equal(grown.message.delivery, "queued");
+
+  const before = state;
+  state = reduce(state, { type: "messageDelivery", messageId: "u1", delivery: null });
+  const cleared = state.items[0];
+  assert.ok(cleared.type === "message");
+  assert.notEqual(state, before);
+  assert.equal(cleared.message.delivery, undefined);
+  assert.equal("delivery" in cleared.message, false, "a cleared badge leaves no key behind");
+  // Clearing an already clear message is a no-op.
+  assert.equal(reduce(state, { type: "messageDelivery", messageId: "u1", delivery: null }), state);
+});
+
+test("`messageDelivery` for an unknown message id is a no-op", () => {
+  const state = reduce(initialState(), { type: "chunk", messageId: "u1", role: "user", segment: { type: "text", text: "hi" } });
+  assert.equal(reduce(state, { type: "messageDelivery", messageId: "nope", delivery: "steering" }), state);
+  assert.equal(reduce(initialState(), { type: "messageDelivery", messageId: "u1", delivery: "queued" }).items.length, 0);
+});
+
+test("a state snapshot carries `acceptsPromptsDuringTurn` and per-message `delivery`", () => {
+  const withFlag = reduce(initialState(), snapshot({ sessionId: "s1", acceptsPromptsDuringTurn: true, turnActive: true }));
+  assert.equal(withFlag.acceptsPromptsDuringTurn, true);
+  assert.equal(reduce(initialState(), snapshot({ sessionId: "s1", acceptsPromptsDuringTurn: false })).acceptsPromptsDuringTurn, false);
+  assert.equal(reduce(initialState(), snapshot({ sessionId: "s1" })).acceptsPromptsDuringTurn, undefined);
+  // Not a session field: a session switch keeps it.
+  assert.equal(reduce(withFlag, { type: "session", sessionId: "s2" }).acceptsPromptsDuringTurn, true);
+
+  const next = reduce(
+    initialState(),
+    snapshot({
+      sessionId: "s1",
+      items: [
+        { type: "message", message: { id: "u1", role: "user", segments: [{ type: "text", text: "a" }], delivery: "steering" } },
+        { type: "message", message: { id: "u2", role: "user", segments: [{ type: "text", text: "b" }], delivery: "queued" } },
+        { type: "message", message: { id: "u3", role: "user", segments: [{ type: "text", text: "c" }] } },
+      ],
+    }),
+  );
+  const deliveries = next.items.map((it) => (it.type === "message" ? it.message.delivery : "tool"));
+  assert.deepEqual(deliveries, ["steering", "queued", undefined]);
+});

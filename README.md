@@ -44,6 +44,12 @@ network access happens inside `kiro-cli`, which inherits your environment
   (most recent first); pick one and its conversation is restored into the
   current tab as a normal session you can continue. Closing it later only
   removes it from the tab; the agent keeps its history.
+- **Send while Kiro works**: the input stays open during a turn. Plain text
+  is handed to the running turn (`_session/steer`, badge *steering* until
+  the agent takes it in); when the agent cannot steer, the message waits with
+  a *queued* badge and goes out by itself when the turn ends, one per turn.
+  Stop / `/cancel` discards the queue (a notice says how many). Slash
+  commands run immediately mid-turn.
 - Sessions live as long as the `kiro-cli acp` process; restarting the agent
   ends them (restore a past session to pick one up again).
 

@@ -39,6 +39,10 @@ const MAX_HEIGHT_PX = 200;
 const AT_TOKEN = /(^|\s)@([^\s@]*)$/;
 const CMD_TOKEN = /^\/(\S*)$/;
 
+const PLACEHOLDER_IDLE = "Ask Kiro…  @ to add a file, / for commands";
+/** Shown while a turn runs and the host accepts prompts mid-turn (steering/queueing). */
+const PLACEHOLDER_STEER = "Type to steer Kiro… (Enter sends now, /cancel stops)";
+
 function commandName(c: CommandView): string {
   return c.name.startsWith("/") ? c.name.slice(1) : c.name;
 }
@@ -49,6 +53,8 @@ export class Composer {
 
   private readonly textarea: HTMLTextAreaElement;
   private readonly sendBtn: HTMLButtonElement;
+  /** Separate stop button, shown next to Send only while composing mid-turn is allowed. */
+  private readonly stopBtn: HTMLButtonElement;
   private readonly modelSlot: HTMLElement;
   private readonly modeSlot: HTMLElement;
   private readonly popup: HTMLElement;
@@ -63,6 +69,8 @@ export class Composer {
   private queryTimer: number | undefined;
   private draftTimer: number | undefined;
   private turnActive = false;
+  /** The host accepts prompts while a turn runs (`UiState.acceptsPromptsDuringTurn`). */
+  private composableDuringTurn = false;
   private meta: ComposerMeta = { settingsOpen: false };
 
   constructor(private readonly host: ComposerHost) {
@@ -72,7 +80,7 @@ export class Composer {
     this.textarea = h("textarea", {
       class: "composer-input",
       rows: 1,
-      placeholder: "Ask Kiro…  @ to add a file, / for commands",
+      placeholder: PLACEHOLDER_IDLE,
       "aria-label": "Message to Kiro",
       "aria-autocomplete": "list",
       "aria-controls": "composer-popup",
@@ -80,12 +88,19 @@ export class Composer {
       spellcheck: "true",
     });
 
-    // Send / stop share one slot; `data-action` flips with `turnActive`.
+    // Send / stop share one slot; `data-action` flips with `turnActive`, unless
+    // the host accepts prompts mid-turn: then Send stays and `stopBtn` appears.
     this.sendBtn = actionButton("send", [icon("arrow-up")], {
       cls: "send-btn",
       ariaLabel: "Send message",
       title: "Send (Enter)",
     });
+    this.stopBtn = actionButton("cancel", [icon("stop")], {
+      cls: "send-btn is-stop composer-stop",
+      ariaLabel: "Cancel the current turn",
+      title: "Stop (cancel the current turn)",
+    });
+    this.stopBtn.hidden = true;
 
     this.modelSlot = h("span", { class: "tool-slot tool-slot-model" });
     this.modeSlot = h("span", { class: "tool-slot tool-slot-mode" });
@@ -106,6 +121,7 @@ export class Composer {
       this.modelSlot,
       h("span", { class: "spacer" }),
       this.modeSlot,
+      this.stopBtn,
       this.sendBtn,
     );
     // Keep the caret in the textarea while clicking toolbar buttons (keyboard
@@ -145,10 +161,20 @@ export class Composer {
     this.textarea.focus();
   }
 
-  setTurnActive(active: boolean): void {
-    if (this.turnActive === active) return;
+  /**
+   * `active`: a turn is running. `composable`: the host accepts prompts during
+   * a turn, so the textarea and Send stay usable and Stop gets its own button.
+   */
+  setTurnActive(active: boolean, composable = false): void {
+    if (this.turnActive === active && this.composableDuringTurn === composable) return;
     this.turnActive = active;
+    this.composableDuringTurn = composable;
     this.updateSendState();
+  }
+
+  /** True when Enter/Send would post a prompt right now. */
+  private canSend(): boolean {
+    return !this.turnActive || this.composableDuringTurn;
   }
 
   /** Updates the model/mode pills in the toolbar row. */
@@ -220,7 +246,7 @@ export class Composer {
 
   /** Sends the current text (same path as pressing Enter). */
   send(): void {
-    if (this.turnActive) return;
+    if (!this.canSend()) return;
     const text = this.textarea.value.replace(/\s+$/, "");
     if (text.trim().length === 0) return;
     post({ type: "prompt", text, chips: this.host.getChips() });
@@ -255,7 +281,12 @@ export class Composer {
   private updateSendState(): void {
     const btn = this.sendBtn;
     const empty = this.textarea.value.trim().length === 0;
-    if (this.turnActive) {
+    const steering = this.turnActive && this.composableDuringTurn;
+    // Dedicated Stop only while composing mid-turn; otherwise Send itself becomes Stop.
+    this.stopBtn.hidden = !steering;
+    const placeholder = steering ? PLACEHOLDER_STEER : PLACEHOLDER_IDLE;
+    if (this.textarea.placeholder !== placeholder) this.textarea.placeholder = placeholder;
+    if (this.turnActive && !this.composableDuringTurn) {
       btn.dataset.action = "cancel";
       btn.className = "send-btn is-stop";
       btn.disabled = false;
@@ -266,8 +297,8 @@ export class Composer {
       btn.dataset.action = "send";
       btn.className = "send-btn";
       btn.disabled = empty;
-      btn.title = "Send (Enter)";
-      btn.setAttribute("aria-label", "Send message");
+      btn.title = steering ? "Send now (Enter) — steers the running turn" : "Send (Enter)";
+      btn.setAttribute("aria-label", steering ? "Send message now (steers the running turn)" : "Send message");
       setChildren(btn, [icon("arrow-up")]);
     }
   }

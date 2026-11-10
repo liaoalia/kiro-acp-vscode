@@ -11,6 +11,7 @@
 import type {
   ConnectionView,
   ContextChip,
+  MessageDelivery,
   MessageView,
   PermissionView,
   SessionSummary,
@@ -73,6 +74,15 @@ export function displayedSessionTitle(state: UiState): string {
 export function needsInputCount(state: UiState): number {
   let n = 0;
   for (const s of state.sessions) if (s.status === "needs_input") n++;
+  return n;
+}
+
+/** User messages of the displayed session held by the host until the turn ends. */
+export function queuedCount(state: UiState): number {
+  let n = 0;
+  for (const it of state.items) {
+    if (it.type === "message" && it.message.role === "user" && it.message.delivery === "queued") n++;
+  }
   return n;
 }
 
@@ -410,14 +420,14 @@ export function renderEmpty(el: HTMLElement, state: UiState): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Persistent panel skeleton: `[new] [list] [toggle]`. Rows are cached per
- * session id and rebuilt only when their own key changes; the list is
- * reconciled in place so a focused row keeps focus.
+ * Persistent panel skeleton: `[list] [toggle]`. New-session and past-sessions
+ * live in the header (always visible), so the panel holds only the list and
+ * its collapse toggle. Rows are cached per session id and rebuilt only when
+ * their own key changes; the list is reconciled in place so a focused row
+ * keeps focus.
  */
 interface PanelDom {
   el: HTMLElement;
-  /** "Past sessions…" under the New button; hidden unless the agent can browse sessions. */
-  history: HTMLButtonElement;
   list: HTMLElement;
   toggle: HTMLButtonElement;
   toggleKey: string;
@@ -431,23 +441,8 @@ function ensurePanelDom(el: HTMLElement): PanelDom {
   if (panelDom && panelDom.el === el) return panelDom;
   const list = h("div", { class: "sp-list", role: "listbox", "aria-label": "Sessions" });
   const toggle = actionButton("toggle-session-panel", [], { cls: "sp-toggle" });
-  const history = actionButton("browse-sessions", [icon("history"), h("span", { class: "sp-label" }, "Past sessions…")], {
-    cls: "sp-history",
-    title: "Past sessions…",
-    ariaLabel: "Past sessions",
-  });
-  history.hidden = true;
-  setChildren(el, [
-    actionButton("new-session", [icon("plus"), h("span", { class: "sp-label" }, "New session")], {
-      cls: "sp-new",
-      title: "Start a new session",
-      ariaLabel: "Start a new session",
-    }),
-    history,
-    list,
-    toggle,
-  ]);
-  panelDom = { el, history, list, toggle, toggleKey: "", rows: new Map(), key: "" };
+  setChildren(el, [list, toggle]);
+  panelDom = { el, list, toggle, toggleKey: "", rows: new Map(), key: "" };
   return panelDom;
 }
 
@@ -501,13 +496,9 @@ export function renderSessionPanel(el: HTMLElement, state: UiState, local: Local
 
   const rowKeys = state.sessions.map((s) => `${s.id}${SEP}${sessionRowKey(s, s.id === state.sessionId, collapsed, now)}`);
   const pending = needsInputCount(state);
-  const canBrowse = canBrowseSessions(state);
-  const key = `${collapsed}${SEP}${pending}${SEP}${canBrowse}${ROW_SEP}${rowKeys.join(ROW_SEP)}`;
+  const key = `${collapsed}${SEP}${pending}${ROW_SEP}${rowKeys.join(ROW_SEP)}`;
   if (key === dom.key) return;
   dom.key = key;
-
-  // History button: same element always (keeps focus), shown only when the agent supports it.
-  dom.history.hidden = !canBrowse;
 
   // Rows: reuse cached elements whose key is unchanged; drop the rest.
   const seen = new Set<string>();
@@ -782,7 +773,8 @@ export function renderWorkingStrip(el: HTMLElement, state: UiState): void {
     return;
   }
   const lead = activityOf(state) === "needs_input" ? "Kiro needs your input" : "Kiro is working…";
-  const step = workingStep(state);
+  const queued = queuedCount(state);
+  const step = queued > 0 ? `${workingStep(state)} · ${queued} queued` : workingStep(state);
   if (el.childElementCount === 0) {
     setChildren(el, [
       h("span", { class: "working-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
@@ -814,6 +806,8 @@ interface Entry {
   rendered: MessageView | ToolCallView | undefined;
   perm: PermissionView | undefined;
   open: boolean;
+  /** Delivery badge as last rendered (part of a message's identity). */
+  delivery: MessageDelivery | undefined;
 }
 
 function itemKey(item: TranscriptItem): string {
@@ -832,9 +826,31 @@ function messageSkeleton(message: MessageView): HTMLElement {
   return h("div", { class: `msg msg-${message.role}` }, h("div", { class: "msg-body" }));
 }
 
+const DELIVERY_LABEL: Record<MessageDelivery, string> = {
+  steering: "steering…",
+  queued: "queued",
+};
+const DELIVERY_TITLE: Record<MessageDelivery, string> = {
+  steering: "Sent to the running turn; Kiro will pick it up shortly",
+  queued: "Held until the current turn ends, then sent as a prompt",
+};
+
+/** Small pill at the end of a user bubble: "steering…" (pulsing) or "queued" (muted). */
+function deliveryBadge(delivery: MessageDelivery): HTMLElement {
+  return h(
+    "span",
+    { class: `delivery delivery-${delivery}`, role: "status", title: DELIVERY_TITLE[delivery] },
+    delivery === "steering" ? h("span", { class: "delivery-glyph", "aria-hidden": "true" }, h("span", { class: "spinner" })) : null,
+    h("span", { class: "delivery-label" }, DELIVERY_LABEL[delivery]),
+  );
+}
+
 function renderMessage(el: HTMLElement, message: MessageView): void {
   const body = el.querySelector<HTMLElement>(".msg-body");
   if (!body) return;
+  // Delivery badge lives after the body so the body only ever holds content.
+  el.querySelector(":scope > .delivery")?.remove();
+  if (message.role === "user" && message.delivery) el.appendChild(deliveryBadge(message.delivery));
   clear(body);
   const plain = message.role === "user";
   let buffer = "";
@@ -1086,19 +1102,20 @@ export class TranscriptRenderer {
 
       if (item.type === "message") {
         if (!entry) {
-          entry = { el: messageSkeleton(item.message), rendered: undefined, perm: undefined, open: false };
+          entry = { el: messageSkeleton(item.message), rendered: undefined, perm: undefined, open: false, delivery: undefined };
           this.entries.set(key, entry);
         }
-        if (entry.rendered !== item.message) {
+        if (entry.rendered !== item.message || entry.delivery !== item.message.delivery) {
           renderMessage(entry.el, item.message);
           entry.rendered = item.message;
+          entry.delivery = item.message.delivery;
         }
         if (item.message.role === "agent") lastAgent = entry.el;
         entry.el.classList.remove("streaming");
       } else {
         const call = state.toolCalls[item.toolCallId];
         if (!entry) {
-          entry = { el: h("div", { class: "tool" }), rendered: undefined, perm: undefined, open: false };
+          entry = { el: h("div", { class: "tool" }), rendered: undefined, perm: undefined, open: false, delivery: undefined };
           this.entries.set(key, entry);
         }
         if (!call) {

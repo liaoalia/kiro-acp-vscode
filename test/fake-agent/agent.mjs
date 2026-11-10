@@ -38,6 +38,12 @@
  * `session/load` replays a
  * session's history as `session/update`s marked `_meta.kiro.replay: true`
  * before answering, after which the session accepts prompts.
+ *
+ * Steering (v3 only): `_session/steer { sessionId, prompt }` during a turn
+ * answers `{}` and, 150 ms later, emits `session_info_update`
+ * (`_meta.kiro.kind: "steering_injected"`) followed by an agent chunk
+ * `Steered: <text>` inside the running turn; without a turn it fails with
+ * -32602. The v2 engine does not register the method (-32601).
  */
 import * as acp from "@agentclientprotocol/sdk";
 import { readFileSync, existsSync } from "node:fs";
@@ -150,6 +156,8 @@ let messageCounter = 0;
 let cannedCwdPinned = false;
 
 const extensionMethods = ["_kiro/session/context", "_kiro/account/getUsage"];
+/** Delay between accepting `_session/steer` and reporting `steering_injected` (lets tests observe the badge). */
+const STEER_INJECT_DELAY_MS = 150;
 
 /** Update kinds kept in the per-session history for `session/load` replay. */
 const HISTORY_KINDS = new Set([
@@ -637,6 +645,40 @@ if (isV2) {
     () => {
       requireAuth();
       return { ok: true, usage: { used: 12, limit: 100 } };
+    },
+  );
+  // Steering (V3 only): `{ sessionId, prompt: ContentBlock[] }` while a turn
+  // runs is accepted at once; a little later (like the real CLI, which injects
+  // at the next model round trip) the session reports `steering_injected` and
+  // the running turn answers with `Steered: <text>`. Without a turn: -32602.
+  app.onRequest(
+    "_session/steer",
+    (params) => params,
+    (ctx) => {
+      requireAuth();
+      const session = requireSession(ctx.params?.sessionId);
+      const turn = session.turn;
+      if (!turn) throw acp.RequestError.invalidParams(undefined, "no active turn to steer");
+      const text = (ctx.params.prompt ?? [])
+        .filter((b) => b && b.type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      log(`steer accepted for ${session.id}: ${JSON.stringify(text)}`);
+      setTimeout(() => {
+        if (session.turn !== turn || turn.cancelled) {
+          void sendUpdate(ctx, session, { sessionUpdate: "session_info_update", _meta: { kiro: { kind: "steering_cleared" } } });
+          return;
+        }
+        void (async () => {
+          await sendUpdate(ctx, session, { sessionUpdate: "session_info_update", _meta: { kiro: { kind: "steering_injected" } } });
+          await sendUpdate(ctx, session, {
+            sessionUpdate: "agent_message_chunk",
+            messageId: `steer-${++messageCounter}`,
+            content: { type: "text", text: `Steered: ${text}` },
+          });
+        })();
+      }, STEER_INJECT_DELAY_MS);
+      return {};
     },
   );
 }

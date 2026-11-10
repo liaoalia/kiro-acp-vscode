@@ -209,7 +209,7 @@ function render(): void {
   else if (pickers.childElementCount > 0) pickers.hidden = false;
   renderChips(composer.chipsEl, effectiveChips(state, local));
   composer.setMeta({ model: currentModelName(state), mode: currentModeName(state), settingsOpen: local.showSettings });
-  composer.setTurnActive(state.turnActive);
+  composer.setTurnActive(state.turnActive, state.acceptsPromptsDuringTurn === true);
   if (stuckToBottom) scrollToBottom();
   jump.hidden = stuckToBottom;
   const announcement = statusAnnouncement(state);

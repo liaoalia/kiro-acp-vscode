@@ -61,10 +61,19 @@ export interface ImageSegment {
 }
 export type MessageSegment = TextSegment | ResourceSegment | ImageSegment;
 
+/**
+ * Delivery state of a user message typed while a turn was running:
+ * `steering` = sent to the agent mid-turn (`_session/steer`) and not yet
+ * injected; `queued` = held by the extension until the turn ends, then sent
+ * as a normal prompt. Absent/undefined = delivered normally.
+ */
+export type MessageDelivery = "steering" | "queued";
+
 export interface MessageView {
   id: string;
   role: MessageRole;
   segments: MessageSegment[];
+  delivery?: MessageDelivery;
 }
 
 export type ToolKind =
@@ -126,16 +135,25 @@ export interface PermissionOptionView {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always";
 }
 
+export type PermissionScope = "kind" | "capability" | "resource";
+
 export interface PermissionView {
   requestId: string;
   toolCallId: string;
   title: string;
+  /** Resolved tool kind (from the request, else from the known tool call). */
   kind: ToolKind;
   options: PermissionOptionView[];
   /** True when the tool call carries diff content (a diff editor may be open). */
   hasDiff: boolean;
   /** Kiro V3 consent context when present. */
   consent?: { capability?: string; resource?: string; persistableConsent?: boolean };
+  /**
+   * Client-side "always" policies the host can offer for this request, with
+   * ready-made labels (e.g. "Allow all edits this session",
+   * "Allow all changes to tasks.json this session").
+   */
+  policies?: Array<{ scope: PermissionScope; label: string; rejectLabel: string }>;
 }
 
 export interface ModeView {
@@ -199,6 +217,12 @@ export type TranscriptItem = TranscriptItemMessage | TranscriptItemTool;
 /** Full state snapshot; sent on webview (re)load and after a new session. */
 export interface UiState {
   connection: ConnectionView;
+  /**
+   * The host accepts prompts while a turn is running (steering or queueing),
+   * so the composer must stay enabled; when false the webview disables Send
+   * during a turn (legacy behaviour).
+   */
+  acceptsPromptsDuringTurn?: boolean;
   /** The session this webview currently displays; all other fields describe it. */
   sessionId: string | null;
   /**
@@ -255,6 +279,8 @@ export type ToWebview =
   | { type: "sessions"; sessions: SessionSummary[] }
   | { type: "turn"; active: boolean; stopReason?: string }
   | { type: "chunk"; messageId: string; role: MessageRole; segment: MessageSegment }
+  /** Update (or clear with `null`) the delivery badge of a user message. */
+  | { type: "messageDelivery"; messageId: string; delivery: MessageDelivery | null }
   | { type: "toolCall"; call: ToolCallView }
   | { type: "plan"; entries: PlanEntryView[] }
   | { type: "permission"; request: PermissionView }
@@ -288,8 +314,13 @@ export type FromWebview =
   | { type: "restart" }
   | { type: "login"; methodId: string }
   | { type: "permissionResponse"; requestId: string; optionId: string }
-  /** Client-side policy: remember this choice for the rest of the session for the tool kind. */
-  | { type: "permissionAlways"; requestId: string; decision: "allow" | "reject" }
+  /**
+   * Client-side policy: remember this choice for the rest of the session.
+   * `scope` selects the key: `kind` (tool kind, default), `capability`
+   * (Kiro consent capability such as `fs_write`), or `resource` (the exact
+   * consent resource, e.g. one file path).
+   */
+  | { type: "permissionAlways"; requestId: string; decision: "allow" | "reject"; scope?: PermissionScope }
   | { type: "setMode"; modeId: string }
   | { type: "setConfigOption"; configId: string; value: string | boolean }
   | { type: "setModel"; modelId: string }

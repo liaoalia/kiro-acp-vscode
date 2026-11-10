@@ -101,6 +101,27 @@ process). The exact error code is **[unverified]**; the extension treats any
   prompt with `stopReason: "cancelled"`. The client answers pending
   `session/request_permission` requests with `{ outcome: "cancelled" }`.
 
+### Steering **[unverified]**
+
+- The extension sends a prompt typed while a turn runs as the extension
+  request `_session/steer { sessionId, prompt: ContentBlock[] }` (the method
+  keeps its `_session/` prefix, like `_session/terminate`; it is **not**
+  `_kiro/…`). The parameter shape mirrors `session/prompt` and is a **guess**:
+  the real CLI has not answered it yet, and the capabilities recorded below
+  (2026-11-10) do not list it among the advertised extension methods. The
+  **Kiro ACP** output channel logs every attempt (`[info] steer <sessionId>:
+  _session/steer {…}` then `accepted …` / `failed (<code>): …`); use it to
+  record the real request/response here.
+- Expected replies: `{}`-ish on success, `-32601` when the engine has no such
+  method (CLI v2), `-32602` when there is no turn to steer. Any error makes the
+  extension queue the message until the turn ends (DECISIONS D22).
+- The agent reports progress through `session_info_update` with
+  `_meta.kiro.kind` = `steering_queued` (accepted, waiting for the next model
+  round trip), `steering_injected` (now part of the turn; the extension clears
+  the `steering` badge) or `steering_cleared` (dropped; badge cleared too).
+  The injected text's answer arrives as normal `agent_message_chunk`s of the
+  running turn; the `session/prompt` response still ends the turn.
+
 ## Permissions
 
 `session/request_permission { sessionId, toolCall: ToolCallUpdate, options[] }`

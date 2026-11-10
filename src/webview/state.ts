@@ -40,6 +40,8 @@ function normalizeSnapshot(s: Partial<UiState> | null | undefined): UiState {
   if (!s) return base;
   return {
     connection: s.connection ?? base.connection,
+    // Host capability, not session state: kept as sent (absent on older hosts).
+    acceptsPromptsDuringTurn: typeof s.acceptsPromptsDuringTurn === "boolean" ? s.acceptsPromptsDuringTurn : undefined,
     sessionId: s.sessionId ?? null,
     sessions: Array.isArray(s.sessions) ? s.sessions.slice() : [],
     turnActive: Boolean(s.turnActive),
@@ -128,6 +130,20 @@ export function reduce(state: UiState, msg: ToWebview): UiState {
       }
       const existing = (state.items[idx] as { type: "message"; message: MessageView }).message;
       const message: MessageView = { ...existing, segments: appendSegment(existing.segments, msg.segment) };
+      const items = state.items.slice();
+      items[idx] = { type: "message", message };
+      return { ...state, items };
+    }
+
+    case "messageDelivery": {
+      const idx = findMessageIndex(state.items, msg.messageId);
+      if (idx < 0) return state;
+      const existing = (state.items[idx] as { type: "message"; message: MessageView }).message;
+      const delivery = msg.delivery ?? undefined;
+      if (existing.delivery === delivery) return state;
+      // Drop the key entirely when cleared so the message equals a never-badged one.
+      const { delivery: _dropped, ...rest } = existing;
+      const message: MessageView = delivery ? { ...rest, delivery } : rest;
       const items = state.items.slice();
       items[idx] = { type: "message", message };
       return { ...state, items };

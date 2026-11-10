@@ -9,6 +9,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type {
   CommandView,
   ConfigOptionView,
+  MessageDelivery,
   MessageRole,
   MessageSegment,
   MessageView,
@@ -454,6 +455,28 @@ export function applyUpdate(state: TranscriptState, update: acp.SessionUpdate): 
     default:
       return { state, emits: [] };
   }
+}
+
+/**
+ * Set (or clear with `null`) the delivery badge of the message with view id
+ * `messageId` (the id carried by `chunk` / `messageDelivery` posts). Unknown
+ * ids leave the state untouched; a cleared badge drops the key entirely so the
+ * message equals a never-badged one.
+ */
+export function setMessageDelivery(
+  state: TranscriptState,
+  messageId: string,
+  delivery: MessageDelivery | null,
+): TranscriptState {
+  let changed = false;
+  const items = state.items.map((item) => {
+    if (item.type !== "message" || item.message.id !== messageId) return item;
+    if ((item.message.delivery ?? null) === delivery) return item;
+    changed = true;
+    const { delivery: _dropped, ...rest } = item.message;
+    return { ...item, message: delivery ? { ...rest, delivery } : rest };
+  });
+  return changed ? { ...state, items } : state;
 }
 
 /** Apply several updates in order, concatenating the emits. */

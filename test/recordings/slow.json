@@ -1,0 +1,11 @@
+{
+  "name": "slow",
+  "description": "Streams 20 chunks 100 ms apart (about 2 s) and ends normally, so a test can steer or queue mid-turn and still observe end_turn.",
+  "steps": [
+    { "kind": "repeat", "times": 20, "steps": [
+      { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "slow {{i}} " } } },
+      { "kind": "delay", "ms": 100 }
+    ] },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

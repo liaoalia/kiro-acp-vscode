@@ -236,3 +236,56 @@ session is dropped, the view goes back to its previous session and a warning
 notice says why. A restored session is an ordinary session afterwards
 (prompts, permissions, close); closing it only forgets it locally — the
 extension never calls `session/delete`, so the agent's history stays.
+
+## D22. Prompts typed during a turn are steered, else queued
+The composer stays enabled while a turn runs (`UiState.acceptsPromptsDuringTurn`
+is always `true`). Plain text sent mid-turn is echoed at once with a delivery
+badge and handled one of two ways:
+
+- **Steering.** The host calls the Kiro V3 extension method `_session/steer`
+  with `{ sessionId, prompt: ContentBlock[] }` (the same blocks a
+  `session/prompt` would carry, chips included) and badges the message
+  `steering`. The badge clears when the session reports a
+  `session_info_update` whose `_meta.kiro.kind` is `steering_injected` (the
+  agent took the text into the running turn) or `steering_cleared` (it dropped
+  it), or at the latest when the turn ends — the extension cannot tell which
+  of several steered messages an update refers to, so all of them clear
+  together. The reply to a steered prompt arrives inside the running turn as
+  ordinary chunks; nothing else changes about the turn.
+- **Queue fallback.** When the steer call fails (any `AcpError`: `-32601`
+  method not found on CLI v2 or an agent without the method, `-32602` when the
+  agent sees no turn, …) the message is re-badged `queued`, kept in the
+  session's queue (`{ text, chips, messageId }` plus the prompt blocks built
+  when it was typed) and `steerUnsupported` is remembered for that session so
+  later mid-turn prompts queue directly instead of retrying. When the turn
+  ends with any stop reason other than `cancelled`, the first queued prompt
+  starts the next turn as a normal `session/prompt` (its badge clears, the
+  message is not echoed again); the next queued one follows after that turn.
+  A `cancelled` turn (Stop, `/cancel`, closing the session) and a turn that
+  failed or lost its agent drop the whole queue: every badge clears and an
+  info notice says "N queued message(s) discarded". Nothing is sent that the
+  user did not see go.
+
+Badge semantics in one line: `steering` = the agent has it, not yet acted on;
+`queued` = still on the client, will go when the turn ends; no badge =
+delivered (or discarded, in which case a notice said so).
+
+Slash commands bypass the gate: `parseSlash`/`runSlash` run before the
+turn-active check, so `/cancel`, `/help`, `/mode …`, `/usage` work while the
+agent streams, and `/clear` mid-turn cancels the running turn and then opens
+the new session. Only the "session is restoring" refusal (D21) still applies
+to everything. Agent-advertised commands (`forward` routing) are prompt text
+and are steered/queued like any other text. A pending permission request
+does not block steering either — the steer request goes out while the
+permission waits.
+
+Caveat: neither the request shape nor the method name of `_session/steer`
+has been confirmed against the real CLI — the parameters mirror
+`session/prompt` as a guess, and the V3 capabilities recorded on 2026-11-10
+(docs/protocol-notes.md) do not advertise `_session/steer` at all, so the
+first real attempt may well land in the queue fallback. Every attempt is
+logged to the **Kiro ACP** output channel as `[info] steer <sessionId>:
+_session/steer {…}` followed by `accepted …` or `failed (<code>): …`; read
+those lines to learn what the CLI expects, then fix `STEER_METHOD` / the
+params in `src/ui/chatController.ts` (`promptDuringTurn`). The fake agent
+implements the guessed shape (v3 only; v2 answers -32601).

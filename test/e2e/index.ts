@@ -29,6 +29,7 @@ import "./f8-panel.e2e.js";
 import "./f9-slash.e2e.js";
 import "./f10-sessions.e2e.js";
 import "./f11-history.e2e.js";
+import "./f12-steering.e2e.js";
 import "./f5-selection.e2e.js";
 
 const TEST_TIMEOUT_MS = 60_000;
