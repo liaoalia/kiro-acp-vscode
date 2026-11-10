@@ -427,19 +427,32 @@ test("session/list: rejected when not advertised (v2), canned sessions with cwd 
       assert.match(entry.updatedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
     }
 
-    // live sessions join the list, newest first; the cwd filter matches exactly
+    // live sessions join the list, newest first; the cwd filter matches exactly.
+    // Three matches exceed the fake agent's page size (2): the first page
+    // carries a cursor, which listSessions() passes through for the second.
     const session = await h.agent.newSession(h.cwd);
     const withLive = await h.agent.listSessions({ cwd: h.cwd });
     assert.deepEqual(
       withLive.sessions.map((s) => s.sessionId),
-      [session.sessionId, "past-1", "past-2"],
+      [session.sessionId, "past-1"],
     );
+    assert.equal(typeof withLive.nextCursor, "string");
+    const secondPage = await h.agent.listSessions({ cwd: h.cwd, cursor: withLive.nextCursor! });
+    assert.deepEqual(
+      secondPage.sessions.map((s) => s.sessionId),
+      ["past-2"],
+    );
+    assert.equal(secondPage.nextCursor, null);
     const elsewhere = await h.agent.listSessions({ cwd: `${h.cwd}-elsewhere` });
     assert.deepEqual(elsewhere.sessions, []);
     assert.equal(elsewhere.nextCursor, null);
     const sentLists = h.logger.traces.filter((t) => t.direction === "send" && t.payload.includes('"session/list"'));
-    assert.equal(sentLists.length, 3);
-    assert.ok(sentLists[2]!.payload.includes("-elsewhere"));
+    assert.equal(sentLists.length, 4);
+    const secondRequest = JSON.parse(sentLists[2]!.payload) as { params: acp.ListSessionsRequest };
+    assert.equal(secondRequest.params.cursor, withLive.nextCursor);
+    assert.equal(secondRequest.params.cwd, h.cwd);
+    assert.ok(!sentLists[1]!.payload.includes('"cursor"'), "the first page is requested without a cursor");
+    assert.ok(sentLists[3]!.payload.includes("-elsewhere"));
   } finally {
     await h.agent.stop();
   }

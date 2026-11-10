@@ -30,6 +30,7 @@ import {
   parseTerminalMode,
   pickInputTarget,
   sharedTerminalName,
+  shouldMirrorOutput,
   type TerminalMode,
 } from "./pure/terminalPresentation.js";
 
@@ -63,6 +64,8 @@ interface TerminalEntry {
   exit: ExitStatus | undefined;
   exitPromise: Promise<ExitStatus>;
   killed: boolean;
+  /** `terminal/release` happened: in `shared` mode, output of a surviving process is no longer mirrored. */
+  released: boolean;
   /** Mirror text into the VS Code terminal (no-op in `hidden` mode). */
   write: (text: string) => void;
   /** `perCommand` only: this command's own pseudoterminal. */
@@ -184,6 +187,7 @@ export class TerminalService implements vscode.Disposable {
       exit: undefined,
       exitPromise,
       killed: false,
+      released: false,
       write: () => {},
     };
     this.attachPresentation(entry, req.command);
@@ -193,7 +197,9 @@ export class TerminalService implements vscode.Disposable {
     const onData = (chunk: Buffer | string) => {
       const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
       buffer.append(text);
-      entry.write(toPtyText(text));
+      if (shouldMirrorOutput(entry)) {
+        entry.write(toPtyText(text));
+      }
     };
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -202,7 +208,9 @@ export class TerminalService implements vscode.Disposable {
     child.on("error", (err) => {
       const msg = `[spawn error: ${err.message}]`;
       buffer.append(`\n${msg}\n`);
-      entry.write(`\r\n${msg}\r\n`);
+      if (shouldMirrorOutput(entry)) {
+        entry.write(`\r\n${msg}\r\n`);
+      }
       this.options.logger?.error(`terminal ${id}: ${err.message}`);
       if (!entry.exit) {
         // "close" may never fire when the spawn itself failed.
@@ -253,9 +261,15 @@ export class TerminalService implements vscode.Disposable {
     return {};
   }
 
-  /** ClientServices.releaseTerminal — kills if running; the VS Code terminal stays open. */
+  /**
+   * ClientServices.releaseTerminal — kills if running; the VS Code terminal
+   * stays open. In `shared` mode nothing the process (or a survivor of the
+   * kill) still writes reaches the session's terminal afterwards; only the
+   * exit footer does.
+   */
   async releaseTerminal(req: acp.ReleaseTerminalRequest): Promise<acp.ReleaseTerminalResponse> {
     const entry = this.require(req.terminalId);
+    entry.released = true;
     await this.killEntry(entry);
     this.released.set(entry.id, snapshotOf(entry));
     this.active.delete(entry.id);

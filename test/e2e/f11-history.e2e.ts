@@ -4,6 +4,7 @@ import {
   assertEqual,
   closeAllEditors,
   ensureReady,
+  freshSession,
   messagesOf,
   runPrompt,
   test,
@@ -26,12 +27,17 @@ test("F11.1 the fake agent advertises session/list + session/load: canBrowseSess
 
 test("F11.2 listPastSessions() returns the canned past sessions with titles, excluding live ones", async ({ api }) => {
   await ensureReady(api);
+  // The fake agent pages `session/list` two entries at a time (newest first).
+  // With at least two live sessions in this workspace the canned past ones
+  // (older) land beyond the first page: the controller must follow nextCursor.
+  while (api.controller.sessionIds().length < 2) await freshSession(api);
   const entries = await withTimeout(api.controller.listPastSessions(), 15_000, "listPastSessions()");
   const byId = new Map(entries.map((e) => [e.sessionId, e]));
   const past1 = byId.get(PAST_1);
   const past2 = byId.get("past-2");
   assert(past1, `past-1 is listed (${JSON.stringify(entries.map((e) => e.sessionId))})`);
-  assert(past2, "past-2 is listed");
+  assert(past2, `past-2 is listed although it is on a later session/list page (${JSON.stringify(entries.map((e) => e.sessionId))})`);
+  assertEqual(entries.filter((e) => e.sessionId === PAST_1).length, 1, "past-1 is listed exactly once across pages");
   assertEqual(past1.title, PAST_1_TITLE, "past-1 title");
   assertEqual(past1.label, PAST_1_TITLE, "past-1 label is its title");
   assertEqual(past2.title, "Add retry to fetch", "past-2 title");
@@ -47,13 +53,35 @@ test("F11.2 listPastSessions() returns the canned past sessions with titles, exc
   assert(ids.indexOf(PAST_1) < ids.indexOf("past-2"), `past-1 (newer) is listed before past-2 (${ids.join(",")})`);
 });
 
-test("F11.3 openPastSession('past-1') restores the transcript: user text, answer, completed tool call, title", async ({ api, recorder }) => {
+test("F11.3 openPastSession('past-1') restores the transcript: user text, answer, completed tool call, title; prompts wait for the restore", async ({ api, recorder }) => {
   await ensureReady(api);
+  // Known title → openPastSession() registers the session before its first await on the agent.
+  await withTimeout(api.controller.listPastSessions(), 15_000, "listPastSessions()");
   const before = api.controller.snapshot().sessionId;
   assert(before && before !== PAST_1, "a live session is displayed before the restore");
   const mark = recorder.mark();
-  const id = await withTimeout(api.controller.openPastSession(PAST_1), 15_000, "openPastSession(past-1)");
+  const restore = api.controller.openPastSession(PAST_1);
+  // Not awaited: the session is still restoring (session/load pending) when
+  // this prompt arrives. It must be refused with a notice, not sent to the
+  // agent, where its live answer would be flagged as replayed history (D21).
+  await withTimeout(api.controller.prompt("/scenario chat", [], PAST_1), 15_000, "prompt during restore");
+  const waitNotice = recorder.ofType("notice", mark).find((m) => m.notice.text === "Wait for the session to finish restoring.");
+  assert(waitNotice, `a notice asks to wait for the restore (${JSON.stringify(recorder.ofType("notice", mark))})`);
+  const restoring = api.controller.snapshot();
+  assertEqual(restoring.sessionId, PAST_1, "the restoring session is already displayed");
+  assert(
+    restoring.notices.some((n) => n.id === waitNotice.notice.id),
+    "the notice is part of the restoring session's state",
+  );
+  assertEqual(api.controller.snapshot().turnActive, false, "no turn is active while restoring");
+  assertEqual(recorder.ofType("turn", mark).length, 0, "no turn started during the restore");
+  const id = await withTimeout(restore, 15_000, "openPastSession(past-1)");
   assertEqual(id, PAST_1, "openPastSession() returns the restored id");
+  assertEqual(recorder.ofType("turn", mark).length, 0, "no turn started by the time the restore finished");
+  assert(
+    !messagesOf(api.controller.snapshot()).some((m) => m.role === "user" && textOf(m).includes("/scenario chat")),
+    "the refused prompt was not echoed into the transcript",
+  );
 
   const state = api.controller.snapshot();
   assertEqual(state.sessionId, PAST_1, "the restored session is displayed");

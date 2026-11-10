@@ -9,6 +9,7 @@ import {
   fakeAgentReports,
   freshSession,
   runTourAccepting,
+  sleep,
   test,
   toolCall,
   waitFor,
@@ -69,6 +70,15 @@ test("F6.1 the read tool sees unsaved edits and the execute tool runs in the ses
   assert(terminal.output.includes("hello"), `terminal output: ${JSON.stringify(terminal.output)}`);
   assertEqual(terminal.exitCode, 0, "terminal exit code");
   assert(api.terminal.showTerminal(terminal.terminalId), "showTerminal works after release");
+  // After terminal/release the command is cut off: its snapshot is frozen
+  // (the pseudoterminal's bytes are not observable through the public API,
+  // so the mirroring cut-off itself is covered by the unit test of
+  // shouldMirrorOutput in test/features-terminalPresentation.test.ts).
+  const released = api.terminal.snapshot(terminal.terminalId);
+  assert(released, "the released terminal still has a snapshot");
+  assertEqual(released.exitCode, 0, "the released snapshot carries the exit code");
+  await sleep(200);
+  assertEqual(api.terminal.snapshot(terminal.terminalId)?.output, released.output, "no bytes reach the released snapshot later");
 
   // A second command in the same session reuses the shared terminal.
   const again = await runTourAccepting(api);

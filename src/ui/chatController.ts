@@ -140,6 +140,8 @@ export interface PastSessionEntry {
 export type AutoOpenDiffs = "always" | "whenPermissionRequired" | "never";
 
 const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
+/** Upper bound on `session/list` pages followed per listing (guards against an agent that never ends its list). */
+const MAX_LIST_PAGES = 50;
 const TITLE_MAX = 40;
 const SESSIONS_DEBOUNCE_MS = 50;
 /** Webview messages that act on the view's session and may therefore need one assigned first. */
@@ -926,9 +928,33 @@ export class ChatController implements vscode.Disposable {
 
   /** `session/list` filtered by the workspace cwd, falling back to the unfiltered list; remembers the titles. */
   private async listPastEntries(agent: KiroAgent): Promise<SessionListEntry[]> {
-    let { sessions } = await agent.listSessions({ cwd: this.workspaceRoot() });
-    if (sessions.length === 0) sessions = (await agent.listSessions()).sessions;
+    let sessions = await this.listAllPages(agent, this.workspaceRoot());
+    if (sessions.length === 0) sessions = await this.listAllPages(agent);
     for (const entry of sessions) this.pastTitles.set(entry.sessionId, entry.title);
+    return sessions;
+  }
+
+  /**
+   * Every page of `session/list` (optionally cwd-filtered) concatenated: the
+   * agent pages the list through `nextCursor`. Stops at the last page, on a
+   * cursor the agent already handed out (a looping agent) or after
+   * {@link MAX_LIST_PAGES} pages.
+   */
+  private async listAllPages(agent: KiroAgent, cwd?: string): Promise<SessionListEntry[]> {
+    const sessions: SessionListEntry[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_LIST_PAGES; page++) {
+      const options: { cwd?: string; cursor?: string } = {};
+      if (cwd !== undefined) options.cwd = cwd;
+      if (cursor !== undefined) options.cursor = cursor;
+      const result = await agent.listSessions(options);
+      sessions.push(...result.sessions);
+      const next = result.nextCursor;
+      if (next === null || next.length === 0 || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
     return sessions;
   }
 
@@ -1170,6 +1196,13 @@ export class ChatController implements vscode.Disposable {
     this.focus(session.id);
     if (session.turnActive) {
       this.notice(session, "info", "Wait for the current turn to finish or cancel it first.");
+      return;
+    }
+    if (session.loading) {
+      // The client still flags the session's updates as replay until `session/load`
+      // resolves (D21), so a prompt now would render its live answer as history.
+      // Slash commands (`/clear` replacing the view's session, …) wait as well.
+      this.notice(session, "info", "Wait for the session to finish restoring.");
       return;
     }
     const trimmed = text.trim();

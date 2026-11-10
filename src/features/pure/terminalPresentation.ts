@@ -139,6 +139,27 @@ export function pickInputTarget<T extends InputCandidate>(candidates: Iterable<T
   return best;
 }
 
+/** The bits of a terminal entry that decide whether its child's output is still mirrored. */
+export interface MirrorCandidate {
+  mode: TerminalMode;
+  /** `terminal/release` happened (the agent no longer holds the terminal). */
+  released: boolean;
+}
+
+/**
+ * Whether output arriving from a command's child process should still be
+ * written into its VS Code terminal. In `shared` mode a released command is
+ * cut off: its process is killed on release, but a survivor (POSIX: the
+ * `sh -c` wrapper dies, a grandchild lives on) must not keep writing into
+ * the session's terminal where it would be unattributable and interleave
+ * with later commands. A per-command tab is the command's own, so late
+ * output stays there; `hidden` mode mirrors nothing anyway. The exit footer
+ * is written regardless (it is not output).
+ */
+export function shouldMirrorOutput(entry: MirrorCandidate): boolean {
+  return entry.mode !== "shared" || !entry.released;
+}
+
 /** Prefix for the output lines of a command that runs concurrently with another. */
 export function concurrentPrefix(terminalId: string): string {
   return `[${terminalId}] `;

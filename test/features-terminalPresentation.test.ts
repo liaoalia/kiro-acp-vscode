@@ -11,6 +11,7 @@ import {
   pickInputTarget,
   sharedTerminalName,
   shortSessionId,
+  shouldMirrorOutput,
 } from "../src/features/pure/terminalPresentation.js";
 import { stripAnsi } from "../src/features/pure/outputBuffer.js";
 
@@ -111,4 +112,15 @@ test("LinePrefixer prefixes line starts across chunk boundaries", () => {
 test("LinePrefixer with an empty prefix is the identity", () => {
   const p = new LinePrefixer("");
   assert.equal(p.apply("a\nb"), "a\nb");
+});
+
+test("shouldMirrorOutput cuts a released command off the shared terminal only", () => {
+  assert.equal(shouldMirrorOutput({ mode: "shared", released: false }), true);
+  assert.equal(shouldMirrorOutput({ mode: "shared", released: true }), false);
+  // A per-command tab belongs to the command: a survivor's late output stays attributable there.
+  assert.equal(shouldMirrorOutput({ mode: "perCommand", released: false }), true);
+  assert.equal(shouldMirrorOutput({ mode: "perCommand", released: true }), true);
+  // Hidden mode writes nowhere anyway; the flag does not matter.
+  assert.equal(shouldMirrorOutput({ mode: "hidden", released: false }), true);
+  assert.equal(shouldMirrorOutput({ mode: "hidden", released: true }), true);
 });

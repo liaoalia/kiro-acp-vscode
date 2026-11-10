@@ -33,7 +33,9 @@
  *
  * Session history (v3 only): every prompt's user text and the updates emitted
  * during the turn are kept per session. `session/list` reports live sessions
- * plus two canned past sessions (`past-1`, `past-2`); `session/load` replays a
+ * plus two canned past sessions (`past-1`, `past-2`), paginated in pages of
+ * `--list-page-size N` (default 2) entries via `cursor`/`nextCursor`;
+ * `session/load` replays a
  * session's history as `session/update`s marked `_meta.kiro.replay: true`
  * before answering, after which the session accepts prompts.
  */
@@ -52,7 +54,8 @@ const recordingsDir = join(here, "..", "recordings");
 
 const argv = process.argv.slice(2);
 if (argv[0] === "acp") argv.shift();
-const config = { scenario: "tour", authRequired: false, engine: "v3" };
+/** `listPageSize`: `session/list` pages of this many entries (`--list-page-size N`, default 2). */
+const config = { scenario: "tour", authRequired: false, engine: "v3", listPageSize: 2 };
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === "--scenario") config.scenario = argv[++i] ?? config.scenario;
@@ -61,8 +64,15 @@ for (let i = 0; i < argv.length; i++) {
   else if (arg === "--engine") config.engine = argv[++i] ?? config.engine;
   else if (arg.startsWith("--engine=")) config.engine = arg.slice("--engine=".length);
   else if (arg.startsWith("--agent-engine=")) config.engine = arg.slice("--agent-engine=".length);
+  else if (arg === "--list-page-size") config.listPageSize = parsePageSize(argv[++i]);
+  else if (arg.startsWith("--list-page-size=")) config.listPageSize = parsePageSize(arg.slice("--list-page-size=".length));
 }
 const isV2 = config.engine === "v2";
+
+function parsePageSize(value) {
+  const n = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(n) && n > 0 ? n : 2;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -587,7 +597,15 @@ if (isV2) {
     const filterCwd = typeof ctx.params?.cwd === "string" ? ctx.params.cwd : null;
     const all = [...sessions.values()].filter((s) => filterCwd === null || s.cwd === filterCwd);
     all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
-    return { sessions: all.map(sessionInfo), nextCursor: null };
+    // Paginated like a real agent: `cursor` is opaque to the client (here the
+    // start index as a string); `nextCursor` is null on the last page.
+    const start = typeof ctx.params?.cursor === "string" ? Number.parseInt(ctx.params.cursor, 10) : 0;
+    if (!Number.isInteger(start) || start < 0 || (start > 0 && start >= all.length)) {
+      throw acp.RequestError.invalidParams(undefined, `unknown cursor ${ctx.params?.cursor}`);
+    }
+    const end = Math.min(start + config.listPageSize, all.length);
+    const page = all.slice(start, end);
+    return { sessions: page.map(sessionInfo), nextCursor: end < all.length ? String(end) : null };
   });
   app.onRequest(acp.methods.agent.session.load, async (ctx) => {
     requireAuth();
