@@ -44,9 +44,14 @@ export interface OpenDiffOptions {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
 
-function makeKey(toolCallId: string, index: number, filePath: string): string {
+/**
+ * Every open gets its own generation segment so a tool call that re-uses an id
+ * (or a slow cleanup of the previous call) can never collide with a fresh
+ * proposal. Nothing parses the path: entries are looked up by it verbatim.
+ */
+function makeKey(toolCallId: string, index: number, filePath: string, generation: number): string {
   const base = path.basename(filePath) || "file";
-  return `/${encodeURIComponent(toolCallId)}/${index}/${base}`;
+  return `/${encodeURIComponent(toolCallId)}/${index}/${generation}/${base}`;
 }
 
 function makeUri(scheme: string, key: string, filePath: string): vscode.Uri {
@@ -66,6 +71,15 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
   private readonly entries = new Map<string, DiffEntry>();
   /** `vscode.diff` opens still in flight, by entry key; awaited before closing. */
   private readonly opening = new Map<string, Promise<void>>();
+  /**
+   * Bumped every time a tool call is finalized. `openDiff` captures the value
+   * on entry and bails after each await if it changed, so a permission that is
+   * answered (e.g. by a policy) while the diff is still being opened can never
+   * leave an orphan editor behind. A later tool call reusing the id starts a
+   * fresh open against the new epoch.
+   */
+  private readonly finalizeEpoch = new Map<string, number>();
+  private generation = 0;
   private readonly state = new DiffState((p) => normalizeFsPath(p));
   private readonly fsEmitter = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
   private readonly originalEmitter = new vscode.EventEmitter<vscode.Uri>();
@@ -100,6 +114,11 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
         this.runCommand(arg, false),
       ),
       vscode.window.onDidChangeActiveTextEditor(() => void this.updateContextKey()),
+      vscode.window.tabGroups.onDidChangeTabs((e) => {
+        if (e.opened.length > 0) {
+          this.closeOrphanTabs();
+        }
+      }),
       permissions.onDidChange(() => void this.updateContextKey()),
       permissions.onDidResolve((res) => {
         if (this.state.hasDiffs(res.toolCallId)) {
@@ -125,12 +144,18 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
     diff: { path: string; oldText: string | null; newText: string },
     options: OpenDiffOptions = {},
   ): Promise<void> {
-    const key = makeKey(toolCallId, index, diff.path);
-    const existing = this.entries.get(key);
-    const original = diff.oldText ?? (await readDisk(diff.path)) ?? "";
+    const epoch = this.finalizeEpoch.get(toolCallId) ?? 0;
+    // Register before the first await so a finalize() racing this open sees the
+    // diff and bumps the epoch, which makes us stop below.
     const spec: DiffSpec = { path: diff.path, oldText: diff.oldText, newText: diff.newText };
     this.state.register(toolCallId, index, spec);
-
+    const original = diff.oldText ?? (await readDisk(diff.path)) ?? "";
+    if ((this.finalizeEpoch.get(toolCallId) ?? 0) !== epoch) {
+      this.logger.info(`diff: ${toolCallId} finalized while opening; not showing the editor`);
+      return;
+    }
+    const existing = this.findEntry(toolCallId, index);
+    const key = existing?.key ?? makeKey(toolCallId, index, diff.path, ++this.generation);
     if (existing) {
       const doc = this.findProposedDocument(key);
       const changed: vscode.FileChangeEvent[] = [];
@@ -424,10 +449,17 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
    * call and drop its in-memory documents. Idempotent.
    */
   private async finalize(toolCallId: string, accepted: boolean): Promise<void> {
-    const entries = this.entriesFor(toolCallId);
-    if (entries.length === 0 && !this.state.hasDiffs(toolCallId)) {
+    if (this.entriesFor(toolCallId).length === 0 && !this.state.hasDiffs(toolCallId)) {
       return;
     }
+    this.finalizeEpoch.set(toolCallId, (this.finalizeEpoch.get(toolCallId) ?? 0) + 1);
+    // Let any in-flight vscode.diff for this call finish so its tab exists and
+    // can be closed below (entries may still be missing while it runs).
+    const prefix = `/${encodeURIComponent(toolCallId)}/`;
+    await Promise.allSettled(
+      [...this.opening.entries()].filter(([key]) => key.startsWith(prefix)).map(([, open]) => open),
+    );
+    const entries = this.entriesFor(toolCallId);
     if (accepted) {
       for (const entry of entries) {
         const spec = this.state.diffAt(toolCallId, entry.index);
@@ -443,10 +475,11 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
       }
     }
     this.state.remove(toolCallId);
-    await Promise.allSettled(entries.map((e) => this.opening.get(e.key) ?? Promise.resolve()));
     await this.closeEditors(entries);
     for (const entry of entries) {
-      this.entries.delete(entry.key);
+      if (this.entries.get(entry.key) === entry) {
+        this.entries.delete(entry.key);
+      }
     }
     if (entries.length > 0) {
       this.fsEmitter.fire(
@@ -473,6 +506,27 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
         }
       }
     }
+    // `vscode.diff` can resolve before its tab shows up in `tabGroups`, so
+    // keep looking for a short grace period and close whatever appears.
+    const deadline = Date.now() + 1500;
+    let closedAny = false;
+    for (;;) {
+      const tabs = this.findTabs(isOurs);
+      if (tabs.length > 0) {
+        closedAny = true;
+        try {
+          await vscode.window.tabGroups.close(tabs, true);
+        } catch (err) {
+          this.logger.warn(`diff: could not close editors: ${String(err)}`);
+        }
+      } else if (closedAny || Date.now() > deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  private findTabs(isOurs: (uri: vscode.Uri) => boolean): vscode.Tab[] {
     const tabs: vscode.Tab[] = [];
     for (const group of vscode.window.tabGroups.all) {
       for (const tab of group.tabs) {
@@ -486,12 +540,17 @@ export class DiffManager implements vscode.Disposable, vscode.FileSystemProvider
         }
       }
     }
+    return tabs;
+  }
+
+  /** Safety net: a proposal tab whose entry is gone (finalized) is closed as soon as it appears. */
+  private closeOrphanTabs(): void {
+    const orphan = (uri: vscode.Uri) =>
+      (uri.scheme === PROPOSED_SCHEME || uri.scheme === ORIGINAL_SCHEME) && !this.entries.has(uri.path);
+    const tabs = this.findTabs(orphan);
     if (tabs.length > 0) {
-      try {
-        await vscode.window.tabGroups.close(tabs, true);
-      } catch (err) {
-        this.logger.warn(`diff: could not close editors: ${String(err)}`);
-      }
+      this.logger.info(`diff: closing ${tabs.length} orphan proposal tab(s)`);
+      void vscode.window.tabGroups.close(tabs, true).then(undefined, () => undefined);
     }
   }
 

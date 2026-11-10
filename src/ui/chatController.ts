@@ -475,6 +475,8 @@ export class ChatController implements vscode.Disposable {
   private async maybeOpenDiffs(toolCallId: string, diffs: ToolDiffContent[]): Promise<void> {
     const auto = vscode.workspace.getConfiguration("kiroAcp").get<boolean>("autoOpenDiffs", true);
     if (!auto) return;
+    const status = this.transcript.toolCalls[toolCallId]?.status;
+    if (status === "completed" || status === "failed" || status === "cancelled") return;
     for (let index = 0; index < diffs.length; index++) {
       const key = `${toolCallId}#${index}`;
       if (this.openedDiffs.has(key)) continue;
