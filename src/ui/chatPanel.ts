@@ -65,7 +65,10 @@ export class ChatPanelManager implements vscode.Disposable {
   private adopt(panel: vscode.WebviewPanel): void {
     this.panel?.dispose();
     this.panel = panel;
-    panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "media", "kiro.svg");
+    panel.iconPath = {
+      light: vscode.Uri.joinPath(this.extensionUri, "media", "kiro-color-light.svg"),
+      dark: vscode.Uri.joinPath(this.extensionUri, "media", "kiro-color.svg"),
+    };
     const webview = panel.webview;
     webview.options = {
       enableScripts: true,

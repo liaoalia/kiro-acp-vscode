@@ -58,7 +58,16 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     else view.reveal();
   };
 
+  // Status bar entry (bottom right) that opens the chat, like other assistants do.
+  const statusItem = vscode.window.createStatusBarItem("kiroAcp.status", vscode.StatusBarAlignment.Right, 100);
+  statusItem.name = "Kiro Chat";
+  statusItem.text = "$(comment-discussion) Kiro";
+  statusItem.tooltip = "Open Kiro Chat";
+  statusItem.command = "kiroAcp.focus";
+  statusItem.show();
+
   context.subscriptions.push(
+    statusItem,
     panel,
     output,
     permissions,

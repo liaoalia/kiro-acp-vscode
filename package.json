@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -92,8 +92,11 @@
       },
       {
         "command": "kiroAcp.openInEditor",
-        "title": "Kiro: Open Chat in Editor",
-        "icon": "$(open-preview)"
+        "title": "Kiro: Open Chat",
+        "icon": {
+          "light": "media/kiro-color-light.svg",
+          "dark": "media/kiro-color.svg"
+        }
       }
     ],
     "keybindings": [
@@ -138,6 +141,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "kiroAcp.openInEditor",
+          "when": "activeWebviewPanelId != 'kiroAcp.chatPanel'",
+          "group": "navigation@0"
+        },
         {
           "command": "kiroAcp.acceptDiff",
           "when": "resourceScheme == kiro-proposed && kiroAcp.diffPending",

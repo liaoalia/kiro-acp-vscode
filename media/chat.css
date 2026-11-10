@@ -1381,3 +1381,9 @@ summary:focus-visible {
     right: 0;
   }
 }
+
+/* Settings card: wrap the pickers instead of overflowing the column */
+.pickers {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
