@@ -208,7 +208,10 @@ export function renderPickers(el: HTMLElement, state: UiState): void {
 
   const kids: HTMLElement[] = [];
 
-  if (state.modes && state.modes.availableModes.length > 0) {
+  // Kiro V3 advertises the mode both as `modes` and as a config option with
+  // category "mode"; render only the config option to avoid two "Mode" pickers.
+  const hasModeOption = state.configOptions.some((o) => o.category === "mode" || o.id === "mode");
+  if (state.modes && state.modes.availableModes.length > 0 && !hasModeOption) {
     const currentModeId = state.modes.currentModeId;
     const sel = h("select", { class: "picker-select", "aria-label": "Mode" });
     for (const m of state.modes.availableModes) {

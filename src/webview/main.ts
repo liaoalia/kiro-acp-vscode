@@ -75,6 +75,8 @@ const transcriptRenderer = new TranscriptRenderer(items, local);
 let stuckToBottom = true;
 
 function nearBottom(): boolean {
+  // Nothing to scroll (or the view is hidden and has no height) counts as "at bottom".
+  if (transcript.clientHeight === 0 || transcript.scrollHeight <= transcript.clientHeight + 1) return true;
   return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 24;
 }
 
@@ -93,8 +95,13 @@ function scrollToBottom(): void {
 if (typeof ResizeObserver !== "undefined") {
   new ResizeObserver(() => {
     if (stuckToBottom) transcript.scrollTop = transcript.scrollHeight;
+    jump.hidden = stuckToBottom || nearBottom();
   }).observe(items);
 }
+window.addEventListener("resize", () => {
+  if (stuckToBottom) transcript.scrollTop = transcript.scrollHeight;
+  jump.hidden = stuckToBottom || nearBottom();
+});
 
 // ---------------------------------------------------------------------------
 // Rendering
