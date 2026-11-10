@@ -8,6 +8,7 @@ import { PlanDocument } from "./features/plan.js";
 import { createClientServices } from "./features/services.js";
 import { TerminalService } from "./features/terminal.js";
 import { ChatController } from "./ui/chatController.js";
+import { ChatPanelManager } from "./ui/chatPanel.js";
 import { CHAT_VIEW_ID, ChatViewProvider } from "./ui/chatView.js";
 
 /** Exposed via `vscode.extensions.getExtension("liaoalia.kiro-acp").exports` for integration tests. */
@@ -48,8 +49,17 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     contextTracker,
   });
   const view = new ChatViewProvider(context.extensionUri, controller);
+  const panel = new ChatPanelManager(context.extensionUri, controller);
+  const chatInEditor = (): boolean =>
+    vscode.workspace.getConfiguration("kiroAcp").get<string>("chatLocation", "editor") === "editor";
+  /** Reveal the chat where the user configured it (editor tab by default). */
+  const focusChat = (): void => {
+    if (chatInEditor()) panel.open();
+    else view.reveal();
+  };
 
   context.subscriptions.push(
+    panel,
     output,
     permissions,
     diff,
@@ -61,7 +71,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     vscode.window.registerWebviewViewProvider(CHAT_VIEW_ID, view, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
-    vscode.commands.registerCommand("kiroAcp.focus", () => view.reveal()),
+    vscode.commands.registerCommand("kiroAcp.focus", () => focusChat()),
+    vscode.commands.registerCommand("kiroAcp.openInEditor", () => panel.open()),
     vscode.commands.registerCommand("kiroAcp.newSession", () => controller.newSession()),
     vscode.commands.registerCommand("kiroAcp.cancel", () => controller.cancel()),
     vscode.commands.registerCommand("kiroAcp.restart", () => controller.restart()),
@@ -72,7 +83,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
         void vscode.window.showInformationMessage("Open a file and select some text first.");
         return;
       }
-      view.focusInput();
+      if (chatInEditor()) panel.focusInput();
+      else view.focusInput();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("kiroAcp.cliPath") || e.affectsConfiguration("kiroAcp.cliArgs")) {

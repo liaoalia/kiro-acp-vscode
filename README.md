@@ -53,8 +53,12 @@ The extension is distributed as a `.vsix` file, not through the Marketplace.
    produces `kiro-acp-<version>.vsix`.
 2. In VS Code: **Extensions** view → `…` menu → **Install from VSIX…**, or run
    `code --install-extension kiro-acp-<version>.vsix`.
-3. Open the **Kiro** view in the secondary side bar (View → Appearance →
-   Secondary Side Bar, or `Ctrl+Alt+B`), or run `Kiro: Focus Chat`.
+3. Run `Kiro: Focus Chat` (or `Kiro: Open Chat in Editor`): the chat opens as
+   a tab in the editor area. Prefer a side panel? Set `kiroAcp.chatLocation`
+   to `sidebar` and use the **Kiro** view in the secondary side bar
+   (View → Appearance → Secondary Side Bar, `Ctrl+Alt+B`).
+4. Mode, model and other agent options are behind the ⚙ button in the chat
+   header; press it to show or hide them.
 
 ## Settings
 
@@ -62,6 +66,8 @@ The extension is distributed as a `.vsix` file, not through the Marketplace.
 |---------|---------|-------------|
 | `kiroAcp.cliPath` | `kiro-cli` | Path to the `kiro-cli` executable. A bare name is looked up on `PATH` and then in the default install locations (`C:\Program Files\Kiro-Cli\kiro-cli.exe`, `~/.local/bin/kiro-cli`, `/usr/local/bin/kiro-cli`, `/opt/homebrew/bin/kiro-cli`). Use a full path if VS Code does not see your shell's `PATH`. |
 | `kiroAcp.cliArgs` | `[]` | Extra arguments appended after `acp`, e.g. `["--agent-engine=v2"]` to force the CLI v2 harness. |
+| `kiroAcp.chatLocation` | `editor` | `editor`: the chat opens as a tab in the editor area (`Kiro: Focus Chat`, permission requests, `Send Selection`). `sidebar`: it opens in the **Kiro** view of the secondary side bar. Both can be open at once. |
+| `kiroAcp.showSettingsByDefault` | `false` | Show the mode / model / option pickers without pressing the ⚙ button in the chat header. |
 | `kiroAcp.attachActiveFile` | `true` | Attach the active editor file to each prompt as a removable chip. |
 | `kiroAcp.autoOpenDiffs` | `true` | Open the diff editor automatically when a tool call proposes a file change. |
 | `kiroAcp.terminal.outputByteLimit` | `1048576` | Bytes of terminal output retained for the agent when it does not specify a limit. |

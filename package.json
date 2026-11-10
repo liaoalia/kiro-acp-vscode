@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -14,7 +14,8 @@
     "Chat"
   ],
   "activationEvents": [
-    "onView:kiroAcp.chat"
+    "onView:kiroAcp.chat",
+    "onWebviewPanel:kiroAcp.chatPanel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -88,6 +89,11 @@
       {
         "command": "kiroAcp.focus",
         "title": "Kiro: Focus Chat"
+      },
+      {
+        "command": "kiroAcp.openInEditor",
+        "title": "Kiro: Open Chat in Editor",
+        "icon": "$(open-preview)"
       }
     ],
     "keybindings": [
@@ -100,6 +106,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "kiroAcp.openInEditor",
+          "when": "view == kiroAcp.chat",
+          "group": "navigation@0"
+        },
         {
           "command": "kiroAcp.newSession",
           "when": "view == kiroAcp.chat",
@@ -209,6 +220,24 @@
           "type": "boolean",
           "default": false,
           "description": "Write every JSON-RPC message to the 'Kiro ACP' output channel (useful when reporting bugs)."
+        },
+        "kiroAcp.chatLocation": {
+          "type": "string",
+          "enum": [
+            "editor",
+            "sidebar"
+          ],
+          "enumDescriptions": [
+            "Open the chat as a tab in the editor area (default).",
+            "Open the chat in the Kiro view of the secondary side bar."
+          ],
+          "default": "editor",
+          "description": "Where `Kiro: Focus Chat`, permission requests and `Send Selection` open the chat."
+        },
+        "kiroAcp.showSettingsByDefault": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the mode / model / option pickers without pressing the settings button in the chat."
         }
       }
     }

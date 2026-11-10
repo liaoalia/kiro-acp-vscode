@@ -105,3 +105,16 @@ closing for a short grace period, a `tabGroups.onDidChangeTabs` listener closes
 any proposal tab whose entry is gone, and the controller never opens a diff for
 a tool call that has already ended. Do not simplify these away: the flake was
 ~1 in 5 runs locally and consistent on Linux CI.
+
+## D16. Chat lives in the editor area by default; pickers are hidden by default
+The user asked for the chat to open where they work rather than in a side
+panel, and for the mode/model/option pickers not to take space until needed.
+The same webview is therefore hosted two ways: a `WebviewPanel`
+(`kiroAcp.chatPanel`, restored after reload via a serializer) that
+`Kiro: Focus Chat` opens in the active editor group when
+`kiroAcp.chatLocation` is `editor` (default), and the original `WebviewView`
+in the secondary side bar. `ChatController` fans messages out to every
+attached webview, so both can be open at once. The pickers sit behind a ⚙
+toggle in the header; the host default comes from
+`kiroAcp.showSettingsByDefault` and the user's toggle is persisted per
+webview with `setState`.

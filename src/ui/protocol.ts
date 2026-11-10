@@ -190,6 +190,11 @@ export interface UiState {
   chips: ContextChip[];
   /** Transient notices (errors, refusal, max_tokens, ...). */
   notices: NoticeView[];
+  /** Host-side display preferences (defaults; the webview may override locally). */
+  prefs?: {
+    /** Show the mode/model/config pickers without pressing the settings toggle. */
+    showSettings: boolean;
+  };
 }
 
 export interface NoticeView {

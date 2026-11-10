@@ -25,6 +25,7 @@ import "./f3-plan.e2e.js";
 import "./f4-context.e2e.js";
 import "./f6-fs-terminal.e2e.js";
 import "./f7-permissions.e2e.js";
+import "./f8-panel.e2e.js";
 import "./f5-selection.e2e.js";
 
 const TEST_TIMEOUT_MS = 60_000;

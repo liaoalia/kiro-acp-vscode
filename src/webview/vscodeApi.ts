@@ -15,6 +15,7 @@ declare function acquireVsCodeApi(): {
 
 interface PersistedState {
   draft?: string;
+  showSettings?: boolean;
 }
 
 const api = acquireVsCodeApi();
@@ -23,19 +24,38 @@ export function post(message: FromWebview): void {
   api.postMessage(message);
 }
 
-export function loadDraft(): string {
+function readState(): PersistedState {
   try {
-    const s = api.getState() as PersistedState | undefined;
-    return typeof s?.draft === "string" ? s.draft : "";
+    const s = api.getState();
+    return s && typeof s === "object" ? (s as PersistedState) : {};
   } catch {
-    return "";
+    return {};
   }
 }
 
-export function saveDraft(draft: string): void {
+function writeState(patch: PersistedState): void {
   try {
-    api.setState({ draft } satisfies PersistedState);
+    api.setState({ ...readState(), ...patch } satisfies PersistedState);
   } catch {
-    // Persisting the draft is a convenience only.
+    // Persisting UI state is a convenience only.
   }
+}
+
+export function loadDraft(): string {
+  const s = readState();
+  return typeof s.draft === "string" ? s.draft : "";
+}
+
+export function saveDraft(draft: string): void {
+  writeState({ draft });
+}
+
+/** `undefined` when the user never toggled the settings pane in this webview. */
+export function loadShowSettings(): boolean | undefined {
+  const s = readState();
+  return typeof s.showSettings === "boolean" ? s.showSettings : undefined;
+}
+
+export function saveShowSettings(showSettings: boolean): void {
+  writeState({ showSettings });
 }

@@ -19,13 +19,19 @@ import {
   type LocalUi,
 } from "./render";
 import { clearsSession, initialState, reduce } from "./state";
-import { post } from "./vscodeApi";
+import { loadShowSettings, post, saveShowSettings } from "./vscodeApi";
 
 const app = document.getElementById("app");
 if (!app) throw new Error("#app missing");
 
 let state = initialState();
-const local: LocalUi = { dismissedNotices: new Set(), toolOpen: new Map(), localChips: [] };
+const local: LocalUi = {
+  dismissedNotices: new Set(),
+  toolOpen: new Map(),
+  localChips: [],
+  showSettings: loadShowSettings() ?? false,
+};
+let settingsPrefApplied = loadShowSettings() !== undefined;
 
 // ---------------------------------------------------------------------------
 // Skeleton
@@ -119,12 +125,19 @@ function scheduleRender(): void {
 }
 
 function render(): void {
-  renderHeader(header, state);
+  // The host default applies once, until the user toggles (then the local choice is persisted).
+  if (!settingsPrefApplied && state.prefs) {
+    local.showSettings = state.prefs.showSettings;
+    settingsPrefApplied = true;
+  }
+  renderHeader(header, state, local);
   renderBanners(banners, state);
   renderNotices(notices, state, local);
   transcriptRenderer.render(state);
   renderPlanBar(planBar, state);
   renderPickers(pickers, state);
+  if (!local.showSettings) pickers.hidden = true;
+  else if (pickers.childElementCount > 0) pickers.hidden = false;
   renderChips(composer.chipsEl, effectiveChips(state, local));
   composer.setTurnActive(state.turnActive);
   if (stuckToBottom) scrollToBottom();
@@ -262,6 +275,12 @@ app.addEventListener("click", (event) => {
       scheduleRender();
       break;
     }
+    case "toggle-settings":
+      local.showSettings = !local.showSettings;
+      settingsPrefApplied = true;
+      saveShowSettings(local.showSettings);
+      scheduleRender();
+      return;
     case "jump-bottom":
       scrollToBottom();
       break;

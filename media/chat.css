@@ -1005,3 +1005,9 @@ summary:focus-visible {
     transition: none;
   }
 }
+
+/* Settings toggle in the header */
+.btn-ghost.is-active {
+  background: var(--vscode-toolbar-activeBackground, var(--vscode-list-activeSelectionBackground));
+  color: var(--vscode-foreground);
+}

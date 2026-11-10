@@ -75,7 +75,7 @@ export class ChatController implements vscode.Disposable {
   private readonly openedDiffs = new Set<string>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly unsubscribers: Array<() => void> = [];
-  private poster: ((message: ToWebview) => void) | null = null;
+  private readonly posters = new Set<(message: ToWebview) => void>();
   private starting: Promise<void> | null = null;
 
   constructor(private readonly deps: ChatControllerDeps) {
@@ -89,13 +89,27 @@ export class ChatController implements vscode.Disposable {
   // Webview binding
   // ---------------------------------------------------------------------
 
-  /** Called by the view provider whenever a webview is (re)created. */
-  attach(poster: (message: ToWebview) => void): void {
-    this.poster = poster;
+  /**
+   * Register a webview (sidebar view or editor tab). Several can be attached
+   * at once; every `ToWebview` message is fanned out to all of them. Returns
+   * the unsubscribe function.
+   */
+  attach(poster: (message: ToWebview) => void): () => void {
+    this.posters.add(poster);
+    return () => {
+      this.posters.delete(poster);
+    };
   }
 
-  detach(): void {
-    this.poster = null;
+  /** Remove one poster, or all of them when called without arguments. */
+  detach(poster?: (message: ToWebview) => void): void {
+    if (poster) this.posters.delete(poster);
+    else this.posters.clear();
+  }
+
+  /** True when at least one webview is attached. */
+  get hasView(): boolean {
+    return this.posters.size > 0;
   }
 
   snapshot(): UiState {
@@ -112,14 +126,15 @@ export class ChatController implements vscode.Disposable {
     for (const [id, call] of Object.entries(state.toolCalls)) {
       toolCalls[id] = this.withTerminalOutput(call);
     }
-    return { ...state, toolCalls };
+    const showSettings = vscode.workspace.getConfiguration("kiroAcp").get<boolean>("showSettingsByDefault", false);
+    return { ...state, toolCalls, prefs: { showSettings } };
   }
 
   private post(message: ToWebview): void {
     if (message.type === "toolCall") {
       message = { type: "toolCall", call: this.withTerminalOutput(message.call) };
     }
-    this.poster?.(message);
+    for (const poster of this.posters) poster(message);
   }
 
   /**
@@ -514,7 +529,7 @@ export class ChatController implements vscode.Disposable {
       if (entry && entry.diffs.length > 0) {
         void this.maybeOpenDiffs(request.toolCallId, entry.diffs);
       }
-      if (this.poster === null) {
+      if (this.posters.size === 0) {
         void vscode.commands.executeCommand("kiroAcp.focus");
       }
     }

@@ -41,6 +41,8 @@ export interface LocalUi {
   toolOpen: Map<string, boolean>;
   /** `@` chips added locally and not yet echoed by the extension. */
   localChips: ContextChip[];
+  /** Whether the mode/model/option pickers are shown (settings toggle). */
+  showSettings: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,9 +75,11 @@ export function statusAnnouncement(state: UiState): string {
   return state.turnActive ? `${base} Working on your request.` : `${base} Ready for input.`;
 }
 
-export function renderHeader(el: HTMLElement, state: UiState): void {
+export function renderHeader(el: HTMLElement, state: UiState, local: LocalUi): void {
   const c = state.connection;
   const text = statusText(c);
+  const hasSettings =
+    (state.modes?.availableModes.length ?? 0) > 0 || state.configOptions.length > 0 || state.models !== null;
   setChildren(el, [
     h(
       "div",
@@ -96,6 +100,14 @@ export function renderHeader(el: HTMLElement, state: UiState): void {
       title: "Start a new session",
       ariaLabel: "Start a new session",
     }),
+    hasSettings
+      ? actionButton("toggle-settings", [icon("gear")], {
+          cls: `btn btn-ghost btn-sm btn-icon${local.showSettings ? " is-active" : ""}`,
+          title: local.showSettings ? "Hide session settings" : "Show session settings (mode, model, options)",
+          ariaLabel: "Toggle session settings",
+          pressed: local.showSettings,
+        })
+      : null,
   ]);
 }
 
