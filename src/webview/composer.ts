@@ -98,7 +98,7 @@ export class Composer {
     this.stopBtn = actionButton("cancel", [icon("stop")], {
       cls: "send-btn is-stop composer-stop",
       ariaLabel: "Cancel the current turn",
-      title: "Stop (cancel the current turn)",
+      title: "Stop (Esc)",
     });
     this.stopBtn.hidden = true;
 
@@ -290,7 +290,7 @@ export class Composer {
       btn.dataset.action = "cancel";
       btn.className = "send-btn is-stop";
       btn.disabled = false;
-      btn.title = "Stop (cancel the current turn)";
+      btn.title = "Stop (Esc)";
       btn.setAttribute("aria-label", "Cancel the current turn");
       setChildren(btn, [icon("stop")]);
     } else {

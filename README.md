@@ -49,8 +49,9 @@ network access happens inside `kiro-cli`, which inherits your environment
   is handed to the running turn (`_session/steer`, badge *steering* until
   the agent takes it in); when the agent cannot steer, the message waits with
   a *queued* badge and goes out by itself when the turn ends, one per turn.
-  Stop / `/cancel` discards the queue (a notice says how many). Slash
-  commands run immediately mid-turn.
+  Stop / `/cancel` ends the current answer only: queued messages still go
+  out, one turn each (closing the session or losing the agent discards
+  them; a notice says how many). Slash commands run immediately mid-turn.
 - Sessions live as long as the `kiro-cli acp` process; restarting the agent
   ends them (restore a past session to pick one up again).
 
@@ -120,7 +121,7 @@ The extension is distributed as a `.vsix` file, not through the Marketplace.
 The composer at the bottom has `+` (attach a workspace file, same as typing
 `@`), `/` (slash commands advertised by the agent), the current model and
 mode as pills, and a send button that turns into **Stop** while Kiro is
-working. In the narrow secondary-sidebar layout the same controls collapse
+working (Esc anywhere in the chat does the same). In the narrow secondary-sidebar layout the same controls collapse
 into a compact header.
 
 ## Settings

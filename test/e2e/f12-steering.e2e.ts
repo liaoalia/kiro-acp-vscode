@@ -5,8 +5,6 @@ import {
   freshSession,
   lastStopReason,
   messagesOf,
-  runPrompt,
-  sleep,
   test,
   textOf,
   waitFor,
@@ -136,7 +134,7 @@ test("F12.2 without steering, mid-turn prompts queue and are sent one per turn a
   assert(firstCleared < secondCleared, "queued prompts were sent in order");
 });
 
-test("F12.3 cancelling the turn discards the queue and says so", async ({ api, recorder }) => {
+test("F12.3 cancelling the turn keeps the queue: the queued prompt starts the next turn", async ({ api, recorder }) => {
   const sessionId = await freshSession(api);
   api.controller.setSteerUnsupportedForTests(sessionId, true);
   const mark = recorder.mark();
@@ -150,32 +148,41 @@ test("F12.3 cancelling the turn discards the queue and says so", async ({ api, r
   await withTimeout(turn, 15_000, "prompt() to resolve after cancel");
   assertEqual(lastStopReason(recorder, mark), "cancelled", "stop reason");
 
+  // Stop ends the current answer only: the queued prompt goes out as the next turn.
+  await waitFor(
+    () => recorder.ofType("messageDelivery", mark).some((m) => m.messageId === queued.id && m.delivery === null),
+    15_000,
+    "the queued badge to clear",
+  );
   assert(
-    recorder.ofType("messageDelivery", mark).some((m) => m.messageId === queued.id && m.delivery === null),
-    "the queued badge was cleared",
+    !recorder.ofType("notice", mark).some((n) => n.notice.text.includes("discarded")),
+    `no 'discarded' notice: ${JSON.stringify(recorder.ofType("notice", mark))}`,
+  );
+  await waitFor(
+    () =>
+      messagesOf(api.controller.snapshot()).some((m) => m.role === "agent" && textOf(m) === "The answer is 42.") &&
+      !api.controller.snapshot().turnActive,
+    15_000,
+    "the queued prompt's answer",
   );
   assertEqual(userMessage(api, "/scenario chat later")?.delivery, undefined, "transcript carries no badge");
-  const notice = recorder.ofType("notice", mark).find((n) => n.notice.text.includes("discarded"));
-  assert(notice, "a notice mentions the discarded message");
-  assert(notice.notice.text.includes("1 queued message"), `notice counts the dropped prompt: ${notice.notice.text}`);
-
-  await sleep(500);
-  assertEqual(api.controller.snapshot().turnActive, false, "no turn was started for the discarded prompt");
-  assert(
-    !messagesOf(api.controller.snapshot()).some((m) => m.role === "agent" && textOf(m) === "The answer is 42."),
-    "the discarded prompt was never sent",
+  assertEqual(
+    messagesOf(api.controller.snapshot()).filter((m) => m.role === "user" && textOf(m) === "/scenario chat later").length,
+    1,
+    "the queued prompt was echoed once",
   );
+  assertEqual(recorder.ofType("turn", mark).filter((t) => t.active).length, 2, "the cancelled turn and the queued one");
 });
 
-test("F12.5 a steer refused after the turn was cancelled is dropped, not queued into a new turn", async ({ api, recorder }) => {
+test("F12.5 a steer refused after the turn was cancelled is sent as the next turn", async ({ api, recorder }) => {
   const sessionId = await freshSession(api);
   api.controller.setSteerUnsupportedForTests(sessionId, false);
   const mark = recorder.mark();
   // `slow-steer`: the fake agent refuses `_session/steer` only after 1.5 s.
   const { turn } = await startSlowTurn(api, recorder, mark, "slow-steer");
 
-  const steerPrompt = api.controller.prompt("late steer", []);
-  const steered = await waitFor(() => userMessage(api, "late steer"), 15_000, "the mid-turn prompt to be echoed");
+  const steerPrompt = api.controller.prompt("/scenario chat late steer", []);
+  const steered = await waitFor(() => userMessage(api, "/scenario chat late steer"), 15_000, "the mid-turn prompt to be echoed");
   assertEqual(steered.delivery, "steering", "badge while the steer request is in flight");
 
   // Stop the turn before the agent answers the steer.
@@ -184,34 +191,38 @@ test("F12.5 a steer refused after the turn was cancelled is dropped, not queued 
   assertEqual(lastStopReason(recorder, mark), "cancelled", "stop reason");
   assertEqual(api.controller.snapshot().turnActive, false, "turnActive after cancel");
 
-  // The late refusal arrives: the message is dropped with a notice, not queued.
+  // The late refusal arrives: the message was typed and never delivered, so it goes out as a prompt of its own.
   await withTimeout(steerPrompt, 15_000, "prompt() of the steered message to settle");
-  await sleep(2000);
+  await waitFor(
+    () =>
+      messagesOf(api.controller.snapshot()).some((m) => m.role === "agent" && textOf(m) === "The answer is 42.") &&
+      !api.controller.snapshot().turnActive,
+    15_000,
+    "the re-sent message's answer",
+  );
   const starts = recorder.ofType("turn", mark).filter((t) => t.active);
-  assertEqual(starts.length, 1, `only the cancelled turn started (${JSON.stringify(recorder.ofType("turn", mark))})`);
-  assertEqual(api.controller.snapshot().turnActive, false, "no new turn is running");
-  assertEqual(userMessage(api, "late steer")?.delivery, undefined, "the steering badge is cleared");
+  assertEqual(starts.length, 2, `the cancelled turn and the re-sent one (${JSON.stringify(recorder.ofType("turn", mark))})`);
+  assertEqual(userMessage(api, "/scenario chat late steer")?.delivery, undefined, "the badge is cleared");
   assert(
     recorder.ofType("messageDelivery", mark).some((m) => m.messageId === steered.id && m.delivery === null),
     "a messageDelivery null post cleared the badge",
   );
-  const notice = recorder.ofType("notice", mark).find((n) => n.notice.text.startsWith("Message not sent"));
-  assert(notice, `a notice says the message was not sent: ${JSON.stringify(recorder.ofType("notice", mark))}`);
   assert(
-    !messagesOf(api.controller.snapshot()).some((m) => m.role === "agent" && textOf(m).includes("Steered:")),
-    "the agent never answered the dropped message",
+    !recorder.ofType("notice", mark).some((n) => n.notice.text.startsWith("Message not sent")),
+    `no 'Message not sent' notice: ${JSON.stringify(recorder.ofType("notice", mark))}`,
   );
   assertEqual(
-    messagesOf(api.controller.snapshot()).filter((m) => m.role === "user" && textOf(m) === "late steer").length,
+    messagesOf(api.controller.snapshot()).filter((m) => m.role === "user" && textOf(m) === "/scenario chat late steer").length,
     1,
-    "the dropped prompt was echoed once",
+    "the re-sent prompt was echoed once",
   );
 
-  // The queue is empty: the next turn ends without another one starting.
+  // A late refusal says nothing about steering support: the next mid-turn prompt is steered again.
   const mark2 = recorder.mark();
-  await runPrompt(api, "/scenario chat");
-  await sleep(500);
-  assertEqual(recorder.ofType("turn", mark2).filter((t) => t.active).length, 1, "exactly one turn followed; nothing was drained");
+  const { turn: turn2 } = await startSlowTurn(api, recorder, mark2);
+  await withTimeout(api.controller.prompt("steer again", []), 15_000, "prompt() while steering");
+  assertEqual(userMessage(api, "steer again")?.delivery, "steering", "steering is still attempted");
+  await withTimeout(turn2, 15_000, "the second slow turn");
   assertEqual(api.controller.snapshot().turnActive, false, "idle after the follow-up turn");
 });
 

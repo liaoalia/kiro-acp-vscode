@@ -258,24 +258,27 @@ badge and handled one of two ways:
   session's queue (`{ text, chips, messageId }` plus the prompt blocks built
   when it was typed) and `steerUnsupported` is remembered for that session so
   later mid-turn prompts queue directly instead of retrying. When the turn
-  ends with any stop reason other than `cancelled`, the first queued prompt
+  ends with any stop reason, `cancelled` included, the first queued prompt
   starts the next turn as a normal `session/prompt` (its badge clears, the
   message is not echoed again); the next queued one follows after that turn.
-  A `cancelled` turn (Stop, `/cancel`, closing the session) and a turn that
-  failed or lost its agent drop the whole queue: every badge clears and an
-  info notice says "N queued message(s) discarded". Nothing is sent that the
-  user did not see go.
+  Stop / `/cancel` ends the current answer only: the user queued those
+  messages deliberately and expects them to run (changed 2026-11-11; until
+  0.3.5 a cancel dropped the queue). A turn that failed or lost its agent,
+  and closing the session (`/clear`, the tab's close), drop the whole queue:
+  every badge clears and an info notice says "N queued message(s)
+  discarded". Nothing is sent that the user did not see go.
 - **Turn generation.** Each session counts turn starts and ends
   (`ChatSession.turnGeneration`, bumped in `runTurn` and `endTurn`). The
-  steer call captures the generation before it goes out; its refusal only
-  falls back to the queue when the generation is unchanged and the turn is
+  steer call captures the generation before it goes out; its refusal marks
+  `steerUnsupported` only when the generation is unchanged and the turn is
   still active. A refusal that lands after the turn ended — Stop, `/cancel`,
-  `/clear` (which cancels), an error, or a normal end while the agent was
-  slow to answer — clears the `steering` badge and posts the info notice
-  "Message not sent: the turn ended before it was delivered." instead of
-  queueing: `enqueue` on an idle session drains at once, which would start a
-  turn the user had just stopped. Such a refusal also does not set
-  `steerUnsupported`, since it says nothing about steering support.
+  an error, or a normal end while the agent was slow to answer — says
+  nothing about steering support, so it leaves `steerUnsupported` alone; the
+  message is still undelivered and the user typed it, so it is queued like
+  any other (`enqueue` on an idle session drains at once: it becomes the
+  next turn). A refusal for a session closed meanwhile (`/clear`) is
+  ignored. (Until 0.3.5 such a message was dropped with the notice "Message
+  not sent: the turn ended before it was delivered.")
 
 Badge semantics in one line: `steering` = the agent has it, not yet acted on;
 `queued` = still on the client, will go when the turn ends; no badge =

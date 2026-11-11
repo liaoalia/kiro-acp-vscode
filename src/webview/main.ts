@@ -150,6 +150,12 @@ window.addEventListener("resize", () => {
   if (stuckToBottom) transcript.scrollTop = transcript.scrollHeight;
   jump.hidden = stuckToBottom || nearBottom();
 });
+// Esc while Kiro works = Stop (the composer's own Escape, closing its popup, wins: it prevents the default).
+window.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || event.defaultPrevented || !state.turnActive) return;
+  event.preventDefault();
+  post({ type: "cancel" });
+});
 
 // ---------------------------------------------------------------------------
 // Rendering

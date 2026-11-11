@@ -1543,10 +1543,10 @@ export class ChatController implements vscode.Disposable {
    * send it through `_session/steer`; when the agent refuses (method unknown,
    * no turn, …) the message becomes `queued` and goes out as a normal prompt
    * once the turn ends. A session whose steer failed once queues directly.
-   * A refusal that lands after the steered turn ended (Stop, `/cancel`,
-   * `/clear`, an error, or a normal end) is not queued: queueing then would
-   * start a turn the user already stopped, so the message is dropped with a
-   * notice instead.
+   * A refusal that lands after the steered turn ended (Stop, `/cancel`, an
+   * error, or a normal end) still queues the message, so it goes out as the
+   * next turn like any other queued prompt; it just does not mark steering
+   * as unsupported, since such a refusal says nothing about that.
    */
   private async promptDuringTurn(
     agent: KiroAgent,
@@ -1578,15 +1578,14 @@ export class ChatController implements vscode.Disposable {
       session.steering.delete(messageId);
       if (!this.sessions.has(session.id)) return;
       if (session.turnGeneration !== generation || !session.turnActive) {
-        // The steered turn is over (cancelled, cleared, failed or ended): the
-        // refusal says nothing about steering support, and queueing now would
-        // start a new turn the user did not ask for.
-        this.deps.output.appendLine(`[info] steer ${session.id}: the turn ended before the refusal; message dropped`);
-        this.setDelivery(session, messageId, null);
-        this.notice(session, "info", "Message not sent: the turn ended before it was delivered.");
-        return;
+        // The steered turn is over (cancelled, failed or ended): the refusal
+        // says nothing about steering support. The message was typed and is
+        // still undelivered, so it goes out as the next turn (Stop ends the
+        // current answer only; what the user typed is not lost).
+        this.deps.output.appendLine(`[info] steer ${session.id}: the turn ended before the refusal; sending as a prompt`);
+      } else {
+        session.steerUnsupported = true;
       }
-      session.steerUnsupported = true;
       this.setDelivery(session, messageId, "queued");
       this.enqueue(session, { text, chips, blocks, messageId });
     }
@@ -1635,14 +1634,15 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * The turn of `session` is over (`session/prompt` answered, failed, or the
-   * agent went away): badges go, and the queue is dropped after a cancel or
-   * an error, else its first prompt starts the next turn (D22).
+   * agent went away): badges go, and the queue is dropped after an error,
+   * else its first prompt starts the next turn (D22). A cancel (Stop,
+   * `/cancel`) ends the current answer only: queued prompts still go out.
    */
   private endTurn(session: ChatSession, stopReason: acp.StopReason | "error"): void {
     session.turnGeneration++;
     this.setTurnActive(session, false, stopReason);
     this.clearSteering(session);
-    if (stopReason === "cancelled" || stopReason === "error") {
+    if (stopReason === "error") {
       this.discardQueue(session, this.discardRemaining(session));
     }
   }
