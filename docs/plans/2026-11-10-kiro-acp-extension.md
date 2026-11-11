@@ -131,7 +131,7 @@
 - [x] tests: `test/features-contextResult.test.ts`, `test/webview-composer.test.ts`, webview-state `lastActivityAt`, e2e F12.8 / F12.9 / F15.2
 - [x] docs: README, DECISIONS D22 note + D26 poll + D27, protocol-notes (real-CLI observations: steer -32603, `_kiro/terminal/shell_type`, `_kiro/sessions/changed`, HTTP 407)
 - [x] revmux 17 (comprehensive): 1 major (the snapshot did not carry `lastActivityAt`, so a re-sent snapshot hid "no reply for N min") + minors (watchdog checks the same `ChatSession` object, `closeSession` clears it, late updates of the abandoned turn dropped while idle, D5 exception, D26/README wording, F12.10 late-settlement test, F15.2 counts the calls, POSIX process-group kill, timestamps in the log)
-- [ ] revmux final round
+- [x] revmux 18 (final): clean
 
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] `_kiro/terminal/shell_type`: implement once its params/reply are recorded from the log
