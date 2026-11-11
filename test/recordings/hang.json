@@ -1,0 +1,20 @@
+{
+  "name": "hang",
+  "description": "A stuck agent: streams one chunk, then never answers the prompt, not even after session/cancel (D27 Stop watchdog).",
+  "steps": [
+    {
+      "kind": "update",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "m1",
+        "content": {
+          "type": "text",
+          "text": "Thinking very hard… "
+        }
+      }
+    },
+    {
+      "kind": "hang"
+    }
+  ]
+}

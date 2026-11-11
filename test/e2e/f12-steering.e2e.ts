@@ -8,6 +8,7 @@ import {
   test,
   textOf,
   sleep,
+  toolCall,
   waitFor,
   withTimeout,
   type Recorder,
@@ -295,4 +296,65 @@ test("F12.4 /cancel typed mid-turn runs immediately", async ({ api, recorder }) 
   assert(!userMessage(api, "/cancel"), "/cancel is not echoed as a prompt");
   const chunks = recorder.ofType("chunk", mark).filter((c) => c.role === "agent").length;
   assert(chunks < 20, `the turn was cut short (${chunks} chunks)`);
+});
+
+test("F12.8 Stop ends the turn locally when the agent never answers session/cancel (D27)", async ({ api, recorder }) => {
+  await freshSession(api);
+  const mark = recorder.mark();
+  const turn = api.controller.prompt("/scenario hang", []);
+  await waitFor(
+    () => recorder.ofType("chunk", mark).some((c) => c.role === "agent"),
+    15_000,
+    "the stuck agent's first chunk",
+  );
+  assertEqual(api.controller.snapshot().turnActive, true, "turnActive while the agent hangs");
+
+  const stopped = Date.now();
+  await api.controller.cancel();
+  await waitFor(() => !api.controller.snapshot().turnActive, 15_000, "the turn to end without the agent's answer");
+  const took = Date.now() - stopped;
+  assert(took >= 4_000 && took < 12_000, `ended by the watchdog, not at once nor never (${took} ms)`);
+  assertEqual(lastStopReason(recorder, mark), "cancelled", "ended as cancelled");
+  assert(
+    recorder.ofType("notice", mark).some((n) => n.notice.text.includes("did not confirm the stop")),
+    `a notice explains the local stop: ${JSON.stringify(recorder.ofType("notice", mark))}`,
+  );
+
+  // The session is usable again: the next prompt runs as a new turn.
+  await withTimeout(api.controller.prompt("/scenario chat", []), 15_000, "a prompt after the local stop");
+  await waitFor(
+    () => messagesOf(api.controller.snapshot()).some((m) => m.role === "agent" && textOf(m) === "The answer is 42."),
+    15_000,
+    "the next turn's answer",
+  );
+  void turn; // the hung prompt() never resolves in this fake; nothing awaits it
+});
+
+test("F12.9 Stop kills the session's running command, so an agent waiting on it can end the turn (D27)", async ({ api, recorder }) => {
+  await freshSession(api);
+  const mark = recorder.mark();
+  const turn = api.controller.prompt("/scenario hang-terminal", []);
+  await waitFor(
+    () => recorder.ofType("toolCall", mark).some((t) => t.call.content.some((c) => c.type === "terminal")),
+    15_000,
+    "the tool card to show its terminal",
+  );
+  await sleep(300); // let the command start
+  assertEqual(api.controller.snapshot().turnActive, true, "turnActive while the command runs");
+
+  const stopped = Date.now();
+  await api.controller.cancel();
+  await withTimeout(turn, 15_000, "prompt() to resolve after Stop");
+  const took = Date.now() - stopped;
+  assert(took < 4_000, `the agent ended the turn itself once its wait returned (${took} ms), before the watchdog`);
+  assertEqual(lastStopReason(recorder, mark), "cancelled", "the agent's own stop reason");
+  assert(
+    !recorder.ofType("notice", mark).some((n) => n.notice.text.includes("did not confirm")),
+    "no watchdog notice: the agent confirmed the stop",
+  );
+  // The snapshot resolves the card's terminal against the (released) terminal: the kill left an exit status.
+  const card = toolCall(api.controller.snapshot(), "call-service");
+  const term = card.content.find((c) => c.type === "terminal");
+  assert(term && term.type === "terminal", "the card keeps its terminal");
+  assert(term.exitCode !== undefined, `the killed command has an exit status (${JSON.stringify(term)})`);
 });

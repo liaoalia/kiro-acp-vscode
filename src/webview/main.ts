@@ -435,9 +435,11 @@ sessionPanel.addEventListener("keydown", (event) => {
   }
 });
 
-// Relative times in the panel ("5m") drift; refresh them once a minute.
+// Relative times in the panel ("5m") and the working strip's "no reply for
+// N min" drift; refresh them once a minute.
 window.setInterval(() => {
-  if (state.sessions.length > 0) scheduleRender("sessions");
+  if (state.turnActive) scheduleRender("all");
+  else if (state.sessions.length > 0) scheduleRender("sessions");
 }, 60_000);
 
 // ---------------------------------------------------------------------------

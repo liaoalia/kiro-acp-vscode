@@ -121,7 +121,19 @@
 - [x] tests: `test/features-usage.test.ts`, webview-state reducer, e2e F15
 - [x] docs: README, protocol-notes (shapes to confirm on the real CLI), DECISIONS D26
 
+### ➕ Task 19: Stuck turns: Stop that sticks, quiet counter, context poll, prompt history (0.3.7)
+- [x] `TerminalService.killSession`; `cancel()` kills the session's running commands and arms a 5 s watchdog that ends the turn locally (`armCancelWatchdog`, `runTurn` generation check) — DECISIONS D27
+- [x] working strip "no reply for N min" (`src/webview/quiet.ts`, `UiState.lastActivityAt`, reducer stamps session messages, minute tick re-renders)
+- [x] kiro-cli stderr `[ERROR]` lines become a throttled notice in running sessions (`noteAgentStderr`); unknown agent requests logged with params
+- [x] `_kiro/session/context` polled after a turn without a percentage (`pollContextUsage`, `contextFromResult`); one example of every `session_info_update` kind logged
+- [x] composer Up / Down recall sent prompts (`src/webview/promptHistory.ts`, persisted in webview state)
+- [x] fake agent: `hang` step, `hang` / `hang-terminal` recordings, `_kiro/session/context` reports a percentage
+- [x] tests: `test/features-contextResult.test.ts`, `test/webview-composer.test.ts`, webview-state `lastActivityAt`, e2e F12.8 / F12.9 / F15.2
+- [x] docs: README, DECISIONS D22 note + D26 poll + D27, protocol-notes (real-CLI observations: steer -32603, `_kiro/terminal/shell_type`, `_kiro/sessions/changed`, HTTP 407)
+- [ ] revmux review round
+
 ## Follow-ups (from revmux rounds, not blocking)
+- [ ] `_kiro/terminal/shell_type`: implement once its params/reply are recorded from the log
 - [ ] `src/features/diff.ts:405` — diff entries and permission selection are keyed by tool-call id only; add the session id so two sessions reusing an id can never resolve each other's proposal
 - [ ] `src/ui/chatController.ts:1384` — automatic diff opening indexes the filtered diff list while card links use content indexes; use one indexing scheme
 - [ ] protocol-notes: capture a raw `initialize`/`session/new` exchange with `scripts/record-acp.mjs` on a machine with kiro-cli (sections still marked [unverified])

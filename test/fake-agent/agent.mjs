@@ -26,6 +26,7 @@
  *       -> reject: runs `reject` steps then emits tool_call_update failed (_meta.kiro.failureReason "denied")
  *       -> cancelled: emits tool_call_update failed ("cancelled") and ends the turn with stopReason cancelled
  *   { "kind": "delay", "ms": 10 }
+ *   { "kind": "hang" }                   -> never returns, even after session/cancel (a stuck agent)
  *   { "kind": "stderr", "text": "..." }
  *   { "kind": "repeat", "times": 40, "steps": [ ...steps using {{i}}... ] }
  *   { "kind": "exit", "code": 3 }          -> the process exits mid-turn
@@ -377,6 +378,11 @@ async function sendUpdate(ctx, session, update) {
     session.history.push(update);
     session.updatedAt = new Date().toISOString();
   }
+  // `_kiro/session/context` reports the last percentage a recording announced.
+  const kiro = update?._meta?.kiro;
+  if (update?.sessionUpdate === "session_info_update" && kiro?.kind === "context_usage" && typeof kiro.usagePercentage === "number") {
+    session.contextPercent = kiro.usagePercentage;
+  }
   await ctx.client.notify(acp.methods.client.session.update, { sessionId: session.id, update });
 }
 
@@ -394,6 +400,10 @@ async function runSteps(ctx, session, turn, steps) {
         break;
       case "delay":
         await sleep(step.ms ?? 10, turn.signal);
+        break;
+      case "hang":
+        // A stuck agent: the prompt never answers, not even after session/cancel.
+        await new Promise(() => {});
         break;
       case "stderr":
         process.stderr.write(`${step.text}\n`);
@@ -653,7 +663,12 @@ if (isV2) {
     (params) => params,
     (ctx) => {
       requireAuth();
-      return { ok: true, echoed: ctx.params };
+      // The real reply shape is unknown; the extension reads it defensively
+      // (nested keys). 7% is what a session that never announced a
+      // `context_usage` reports.
+      const session = sessions.get(ctx.params?.sessionId);
+      const usagePercentage = session?.contextPercent ?? 7;
+      return { ok: true, echoed: ctx.params, contextWindow: { usagePercentage, contextWindowSize: 200000 } };
     },
   );
   app.onRequest(

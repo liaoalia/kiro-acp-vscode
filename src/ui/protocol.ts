@@ -262,6 +262,13 @@ export interface UiState {
   notices: NoticeView[];
   /** Usage of the displayed session once the agent reported any (D26); absent/null until then. */
   usage?: SessionUsage | null;
+  /**
+   * When the displayed session last changed (ms since the epoch): a prompt
+   * sent, a chunk, a tool call, a permission request. The working strip shows
+   * "no reply for N min" from it while a turn runs. The webview stamps it on
+   * every incremental session message.
+   */
+  lastActivityAt?: number | null;
   /** Host-side display preferences (defaults; the webview may override locally). */
   prefs?: {
     /** Show the mode/model/config pickers without pressing the settings toggle. */

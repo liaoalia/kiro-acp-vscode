@@ -32,6 +32,7 @@ export function initialState(): UiState {
     chips: [],
     notices: [],
     usage: null,
+    lastActivityAt: null,
   };
 }
 
@@ -57,6 +58,7 @@ function normalizeSnapshot(s: Partial<UiState> | null | undefined): UiState {
     chips: Array.isArray(s.chips) ? s.chips.slice() : [],
     notices: Array.isArray(s.notices) ? s.notices.slice() : [],
     usage: s.usage ?? null,
+    lastActivityAt: typeof s.lastActivityAt === "number" ? s.lastActivityAt : null,
     // Host display defaults; applied once by main.ts until the user toggles.
     prefs: s.prefs && typeof s.prefs === "object" ? { ...s.prefs } : undefined,
   };
@@ -96,6 +98,7 @@ function clearedSession(state: UiState, sessionId: string | null): UiState {
     permissions: [],
     notices: [],
     usage: null,
+    lastActivityAt: null,
   };
 }
 
@@ -104,7 +107,25 @@ export function clearsSession(state: UiState, msg: ToWebview): boolean {
   return msg.type === "session" && (msg.sessionId === null || msg.sessionId !== state.sessionId);
 }
 
-export function reduce(state: UiState, msg: ToWebview): UiState {
+/** Session messages that count as activity: they restamp `lastActivityAt`. */
+const ACTIVITY_MESSAGES = new Set<ToWebview["type"]>([
+  "turn",
+  "chunk",
+  "messageDelivery",
+  "toolCall",
+  "plan",
+  "permission",
+  "permissionResolved",
+  "usage",
+]);
+
+export function reduce(state: UiState, msg: ToWebview, now: number = Date.now()): UiState {
+  const next = reduceMessage(state, msg);
+  if (next === state || !ACTIVITY_MESSAGES.has(msg.type)) return next;
+  return { ...next, lastActivityAt: now };
+}
+
+function reduceMessage(state: UiState, msg: ToWebview): UiState {
   switch (msg.type) {
     case "state":
       return normalizeSnapshot(msg.state);

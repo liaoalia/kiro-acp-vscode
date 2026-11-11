@@ -6,7 +6,10 @@
  * - Kiro V3 `session_info_update` with `_meta.kiro.kind = "context_usage"`
  *   (`usagePercentage`);
  * - Kiro V3 `session_info_update` with `_meta.kiro.kind = "turn_completion"`
- *   (`promptTurnSummaries`, the turn's metering; token fields are summed).
+ *   (`promptTurnSummaries`, the turn's metering; token fields are summed);
+ * - the reply of `_kiro/session/context` (polled after a turn when the agent
+ *   never reported a percentage itself), read defensively: numbers under
+ *   the usual keys at any depth, else "NN%" / "A of B tokens" in its text.
  *
  * Only `usagePercentage` is documented by Kiro; the other Kiro fields are read
  * defensively (any numeric `...tokens` field) until a real exchange is
@@ -142,5 +145,96 @@ export function applyUsageUpdate(usage: SessionUsage, update: unknown): SessionU
     }
   }
 
+  return same(next, usage) ? null : next;
+}
+
+const PERCENT_KEYS = ["usagePercentage", "usagePercent", "contextUsagePercent", "percentage", "percent"];
+const USED_KEYS = ["usedTokens", "tokensUsed", "contextTokens", "contextUsed", "used", "totalTokens", "tokens"];
+const SIZE_KEYS = ["contextWindow", "contextWindowSize", "contextWindowTokens", "maxTokens", "contextSize", "size", "limit"];
+
+/** Breadth-first: the first finite number stored under `key`, four levels deep. */
+function deepFind(root: unknown, key: string): number | null {
+  let level: unknown[] = [root];
+  for (let depth = 0; depth <= 4 && level.length > 0; depth++) {
+    const next: unknown[] = [];
+    for (const node of level) {
+      if (!isRecord(node)) continue;
+      const n = finiteNumber(node[key]);
+      if (n !== null) return n;
+      for (const value of Object.values(node)) {
+        if (isRecord(value)) next.push(value);
+        else if (Array.isArray(value)) next.push(...value);
+      }
+    }
+    level = next;
+  }
+  return null;
+}
+
+/** The first of `keys` (in priority order) found anywhere in `root`: a specific key beats a generic one. */
+function deepPick(root: unknown, keys: string[]): number | null {
+  for (const key of keys) {
+    const n = deepFind(root, key);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+/** Every string four levels deep, joined, for the textual fallback. */
+function deepText(root: unknown, depth = 0): string {
+  if (typeof root === "string") return root;
+  if (depth > 4) return "";
+  if (Array.isArray(root)) return root.map((v) => deepText(v, depth + 1)).join("\n");
+  if (isRecord(root)) return Object.values(root).map((v) => deepText(v, depth + 1)).join("\n");
+  return "";
+}
+
+/** "12k", "12,345", "1.2M" → a token count. */
+function parseCount(text: string): number | null {
+  const m = /^([\d.,]+)\s*([kKmM])?$/.exec(text.trim());
+  if (!m) return null;
+  const base = Number(m[1]!.replace(/,/g, ""));
+  if (!Number.isFinite(base)) return null;
+  const unit = (m[2] ?? "").toLowerCase();
+  return Math.round(unit === "k" ? base * 1_000 : unit === "m" ? base * 1_000_000 : base);
+}
+
+/**
+ * Context numbers found in a `_kiro/session/context` reply (or any similar
+ * object): structured keys first, then the text ("42% used", "84k of 200k
+ * tokens"). Null when it holds nothing usable.
+ */
+export function contextFromResult(result: unknown): Pick<SessionUsage, "contextPercent" | "contextUsed" | "contextSize"> | null {
+  let percent = deepPick(result, PERCENT_KEYS);
+  let used = deepPick(result, USED_KEYS);
+  let size = deepPick(result, SIZE_KEYS);
+  if (percent === null && (used === null || size === null)) {
+    const text = deepText(result);
+    const pm = /(\d{1,3}(?:\.\d+)?)\s*%/.exec(text);
+    if (pm) percent = Number(pm[1]);
+    const tm = /([\d.,]+\s*[kKmM]?)\s*(?:of|\/)\s*([\d.,]+\s*[kKmM]?)\s*tokens/.exec(text);
+    if (tm) {
+      used = used ?? parseCount(tm[1]!);
+      size = size ?? parseCount(tm[2]!);
+    }
+  }
+  if (size !== null && size <= 0) size = null;
+  if (percent === null && used !== null && size !== null) percent = (used / size) * 100;
+  if (percent === null && used === null && size === null) return null;
+  return {
+    contextPercent: percent === null ? null : clampPercent(Math.round(percent)),
+    contextUsed: used,
+    contextSize: size,
+  };
+}
+
+/** Fold a `_kiro/session/context` reply into `usage`; null when nothing changed. */
+export function applyContextResult(usage: SessionUsage, result: unknown): SessionUsage | null {
+  const found = contextFromResult(result);
+  if (!found) return null;
+  const next: SessionUsage = { ...usage };
+  if (found.contextPercent !== null) next.contextPercent = found.contextPercent;
+  if (found.contextUsed !== null) next.contextUsed = found.contextUsed;
+  if (found.contextSize !== null) next.contextSize = found.contextSize;
   return same(next, usage) ? null : next;
 }

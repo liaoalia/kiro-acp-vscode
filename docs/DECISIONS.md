@@ -278,6 +278,10 @@ badge and handled one of two ways:
   re-sends to the new session (revmux round 15). `/new` no longer touches
   the session it leaves behind. Nothing is sent that the user did not see
   go.
+- **Real CLI (2026-11-11).** `_session/steer` answered `-32603 Internal
+  error` on Kiro CLI V3; the message was queued as designed. Whether the
+  method exists with another parameter shape is unknown
+  (`docs/protocol-notes.md`); steering stays opportunistic.
 - **Turn generation.** Each session counts turn starts and ends
   (`ChatSession.turnGeneration`, bumped in `runTurn` and `endTurn`). The
   steer call captures the generation before it goes out; its refusal marks
@@ -475,3 +479,46 @@ Only changes are posted (`{ type: "usage" }`), the snapshot carries the
 current value, and a new session starts with nothing (no pill). Nothing is
 estimated client-side: when the agent reports neither, the pill stays
 hidden rather than guessing from text length.
+
+**After-turn poll (0.3.7).** On the real CLI no `context_usage` had shown
+up by the end of a long session, so when a turn ends and the session still
+has no percentage, the controller calls the advertised `_kiro/session/context`
+once (`pollContextUsage`) and reads its reply defensively
+(`contextFromResult`: the usual keys at any depth, then "42%" / "84k of 200k
+tokens" in its text). The first reply per session and one example of every
+`session_info_update` kind are logged to the Kiro ACP channel, so the real
+shapes can be recorded. An agent that rejects the method is not polled again
+until the next restart. The fake agent reports 7% for a session that never
+announced a `context_usage` (e2e F15.2).
+
+## D27. Stop is local-first: kill the session's commands, then end the turn without the agent
+A real session hung for an hour at "thinking": the agent had started a
+service (`run_service_sit.bat`) through `terminal/create` and was waiting in
+`terminal/wait_for_exit` for a process that never exits; `session/cancel`
+did not get it out of that wait, and kiro-cli's stderr showed its backend
+calls failing with `HTTP 407 Proxy Authorization Required` meanwhile. Only
+the `session/prompt` response ends a turn (D22), so the UI stayed "working"
+and Stop looked broken.
+
+Stop (`cancel()`) therefore does three things:
+
+- sends `session/cancel` as before;
+- kills every command still running for the session
+  (`TerminalService.killSession`: `taskkill /T /F` on Windows, SIGTERM
+  elsewhere): their `wait_for_exit` resolve, so an agent blocked on one can
+  honour the cancel and answer `cancelled` itself (e2e F12.9). Stop means
+  the running command too; the terminal stays valid for output/wait like
+  after `terminal/kill`;
+- arms a watchdog (`CANCEL_GRACE_MS` = 5 s): when the turn is still active,
+  it is ended locally as `cancelled` with a notice ("Kiro did not confirm the
+  stop…"). `runTurn` compares the session's turn generation when the
+  `session/prompt` promise finally settles and ignores a late answer (e2e
+  F12.8). The queue is kept (Stop never discards it, D22).
+
+Diagnostics that come with it: the working strip shows "no reply for N min"
+from the webview's `lastActivityAt` (stamped on every session message, kept
+from the snapshot's `updatedAt`), and `[ERROR]` lines on kiro-cli's stderr
+are turned into one notice per distinct error per minute in every session
+whose turn is running (`noteAgentStderr`). Unknown agent requests are logged
+with their params (`_kiro/terminal/shell_type` was seen and answered
+`-32601`, as the Kiro docs require).

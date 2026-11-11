@@ -1,0 +1,73 @@
+{
+  "name": "hang-terminal",
+  "description": "A tool that waits for a command that never exits (a started service); the agent honours session/cancel once the wait returns (D27: Stop kills the session's terminals).",
+  "steps": [
+    {
+      "kind": "update",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call-service",
+        "title": "Start the service",
+        "kind": "execute",
+        "status": "in_progress"
+      }
+    },
+    {
+      "kind": "client_request",
+      "method": "terminal/create",
+      "params": {
+        "sessionId": "{{sessionId}}",
+        "command": "node",
+        "args": [
+          "-e",
+          "setTimeout(() => {}, 600000)"
+        ],
+        "cwd": "{{cwd}}"
+      },
+      "save": {
+        "terminalId": "terminalId"
+      }
+    },
+    {
+      "kind": "update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-service",
+        "content": [
+          {
+            "type": "terminal",
+            "terminalId": "{{terminalId}}"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "client_request",
+      "method": "terminal/wait_for_exit",
+      "params": {
+        "sessionId": "{{sessionId}}",
+        "terminalId": "{{terminalId}}"
+      }
+    },
+    {
+      "kind": "client_request",
+      "method": "terminal/release",
+      "params": {
+        "sessionId": "{{sessionId}}",
+        "terminalId": "{{terminalId}}"
+      }
+    },
+    {
+      "kind": "update",
+      "update": {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "call-service",
+        "status": "completed"
+      }
+    },
+    {
+      "kind": "stop",
+      "stopReason": "end_turn"
+    }
+  ]
+}

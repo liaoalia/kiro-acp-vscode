@@ -666,7 +666,15 @@ export class KiroAgentImpl implements KiroAgent {
         },
       )
       .onRequest("*", (ctx) => {
-        logger.warn(`Unknown request from agent: ${ctx.method}`);
+        // The params are logged (truncated) so an unknown Kiro request can be
+        // recorded in docs/protocol-notes.md and implemented later.
+        let params = "";
+        try {
+          params = JSON.stringify(ctx.params) ?? "";
+        } catch {
+          params = String(ctx.params);
+        }
+        logger.warn(`Unknown request from agent: ${ctx.method} ${params.length > 500 ? `${params.slice(0, 500)}…` : params}`);
         throw acp.RequestError.methodNotFound(ctx.method);
       })
       // `session/update` and `_…` notifications are consumed by the stream

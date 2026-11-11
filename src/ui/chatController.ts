@@ -16,7 +16,7 @@
  * The webview only ever sees `ToWebview` messages produced here; the agent
  * process only ever sees ACP requests issued through the `KiroAgent` facade.
  */
-import { EMPTY_USAGE, applyUsageUpdate } from "../features/pure/usage.js";
+import { EMPTY_USAGE, applyContextResult, applyUsageUpdate } from "../features/pure/usage.js";
 import type { SessionUsage } from "./protocol.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -48,6 +48,7 @@ import {
 import { buildPromptBlocks } from "../features/pure/contentBlocks.js";
 import {
   describeOptions,
+  findExtension,
   formatExtensionResult,
   mergeCommands,
   parseSlash,
@@ -170,6 +171,10 @@ export const SESSION_OPTIONS_KEY = "kiroAcp.sessionOptions";
  * `[info] steer` output-channel lines show what was sent and answered).
  */
 const STEER_METHOD = "_session/steer";
+/** Stop: how long the agent gets to end the turn after `session/cancel` before it is ended locally (D27). */
+const CANCEL_GRACE_MS = 5_000;
+/** One notice per distinct kiro-cli stderr error per this interval. */
+const STDERR_NOTICE_INTERVAL_MS = 60_000;
 
 /** A prompt typed mid-turn and held until the turn ends (steering unavailable, see D22). */
 interface QueuedPrompt {
@@ -246,8 +251,12 @@ class ChatSession {
   turnGeneration = 0;
   /** Context / token usage reported by the agent so far (D26). */
   usage: SessionUsage = EMPTY_USAGE;
-  /** The session's first `turn_completion` meta is logged once, to record its real shape. */
-  turnCompletionLogged = false;
+  /** `_meta.kiro.kind`s of `session_info_update` already logged for this session (one example each). */
+  readonly loggedInfoKinds = new Set<string>();
+  /** The first `_kiro/session/context` reply is logged once, to record its real shape. */
+  contextReplyLogged = false;
+  /** Armed by Stop: ends the turn locally when the agent never answers `session/cancel` (D27). */
+  cancelTimer: ReturnType<typeof setTimeout> | null = null;
   updatedAt = Date.now();
 
   constructor(
@@ -341,6 +350,10 @@ function asBinding(view: ViewHandle | undefined): ViewBinding | undefined {
 export class ChatController implements vscode.Disposable {
   private agent: KiroAgent | null = null;
   private agentInfo: AgentInfo | null = null;
+  /** `_kiro/session/context` rejected the after-turn poll (D26): not asked again until a restart. */
+  private contextPollUnsupported = false;
+  /** Last time a given kiro-cli stderr error was turned into a notice (throttling). */
+  private readonly stderrNoticedAt = new Map<string, number>();
   private connection: ConnectionView = { status: "stopped" };
   private readonly sessions = new Map<string, ChatSession>();
   private focusedId: string | null = null;
@@ -757,8 +770,36 @@ export class ChatController implements vscode.Disposable {
         if (direction === "stderr" || traceEnabled()) {
           out.appendLine(`[${direction}] ${payload}`);
         }
+        if (direction === "stderr") this.noteAgentStderr(payload);
       },
     };
+  }
+
+  /**
+   * kiro-cli logs its backend failures only to stderr (`[ERROR] [KRS] HTTP 407
+   * …`), while the turn may stay open: the error is shown in every session
+   * whose turn is running, so the user knows why nothing arrives (D27).
+   */
+  private noteAgentStderr(line: string): void {
+    const m = /\[ERROR\]\s*(?:\[[^\]]*\]\s*)?(.*)/.exec(line);
+    if (!m) return;
+    let detail = m[1]!.trim();
+    const http = /HTTP\s+(\d{3})(?:.*?<TITLE>([^<]*)<\/TITLE>)?/i.exec(detail);
+    if (http) detail = `HTTP ${http[1]}${http[2] ? ` (${http[2]!.trim()})` : ""}`;
+    else detail = detail.replace(/\s*body=.*$/s, "").slice(0, 160);
+    if (!detail) return;
+    const now = Date.now();
+    const last = this.stderrNoticedAt.get(detail);
+    if (last !== undefined && now - last < STDERR_NOTICE_INTERVAL_MS) return;
+    this.stderrNoticedAt.set(detail, now);
+    for (const session of this.sessions.values()) {
+      if (!session.turnActive) continue;
+      this.notice(
+        session,
+        "warning",
+        `kiro-cli reported ${detail} while talking to its backend. If the turn does not finish, press Esc and send the message again.`,
+      );
+    }
   }
 
   private workspaceRoot(): string {
@@ -842,6 +883,7 @@ export class ChatController implements vscode.Disposable {
     const restore = options.restoreSessions ? this.displayedSessions() : [];
     this.endAllSessions();
     await this.teardownAgent();
+    this.contextPollUnsupported = false;
     this.setConnection({ status: "stopped" });
     await this.ensureStarted();
     if (restore.length === 0 || this.agentInfo?.agentCapabilities.loadSession !== true) return;
@@ -1428,12 +1470,44 @@ export class ChatController implements vscode.Disposable {
   async cancel(sessionId?: string): Promise<void> {
     const id = sessionId ?? this.focusedId;
     if (!id || !this.agent || !this.sessions.has(id)) return;
+    const session = this.sessions.get(id) ?? null;
     this.deps.permissions.cancelAll(id);
+    if (session?.turnActive) this.armCancelWatchdog(session);
     try {
       await this.agent.cancel(id);
     } catch (error) {
-      this.notice(this.sessions.get(id) ?? null, "warning", `Cancel failed: ${errorMessage(error)}`);
+      this.notice(session, "warning", `Cancel failed: ${errorMessage(error)}`);
     }
+    // Stop means the running command too (D27): a tool waiting on a service
+    // that never exits would otherwise keep the turn open for ever.
+    const killed = await this.deps.terminal.killSession(id);
+    if (killed.length > 0) {
+      this.deps.output.appendLine(`[info] session ${id} stop: killed running terminal(s) ${killed.join(", ")}`);
+    }
+  }
+
+  /**
+   * Stop was pressed: when the agent has not ended the turn (answered the
+   * pending `session/prompt`) within {@link CANCEL_GRACE_MS}, end it locally
+   * so the composer is usable again; the late answer, if any, is ignored
+   * by {@link runTurn}'s generation check (D27).
+   */
+  private armCancelWatchdog(session: ChatSession): void {
+    if (session.cancelTimer) return;
+    const generation = session.turnGeneration;
+    session.cancelTimer = setTimeout(() => {
+      session.cancelTimer = null;
+      if (!session.turnActive || session.turnGeneration !== generation || !this.sessions.has(session.id)) return;
+      this.deps.output.appendLine(
+        `[warn] session ${session.id}: the agent did not end the turn within ${CANCEL_GRACE_MS} ms of session/cancel; ending it locally`,
+      );
+      this.notice(
+        session,
+        "warning",
+        "Kiro did not confirm the stop; the turn was ended here. Its late reply, if any, is ignored.",
+      );
+      this.handleStopReason(session, "cancelled");
+    }, CANCEL_GRACE_MS);
   }
 
   private setTurnActive(session: ChatSession, active: boolean, stopReason?: string): void {
@@ -1525,12 +1599,22 @@ export class ChatController implements vscode.Disposable {
    */
   private async runTurn(agent: KiroAgent, session: ChatSession, blocks: acp.ContentBlock[]): Promise<void> {
     session.turnGeneration++;
+    const generation = session.turnGeneration;
     this.setTurnActive(session, true);
     try {
       const response = await agent.prompt(session.id, blocks);
+      if (session.turnGeneration !== generation) {
+        // Ended locally by the Stop watchdog (D27): a later turn may be running.
+        this.deps.output.appendLine(`[info] session ${session.id}: late prompt response (${response.stopReason}) ignored`);
+        return;
+      }
       this.handleStopReason(session, response.stopReason);
     } catch (error) {
       const message = errorMessage(error);
+      if (session.turnGeneration !== generation) {
+        this.deps.output.appendLine(`[info] session ${session.id}: late prompt failure ignored: ${message}`);
+        return;
+      }
       if (agent.status === "auth_required") {
         // The sign-in banner (with the login button) already shows the reason.
         this.deps.output.appendLine(`[warn] session ${session.id} prompt rejected, sign-in required: ${message}`);
@@ -1683,6 +1767,10 @@ export class ChatController implements vscode.Disposable {
    */
   private endTurn(session: ChatSession, stopReason: acp.StopReason | "error"): void {
     session.turnGeneration++;
+    if (session.cancelTimer) {
+      clearTimeout(session.cancelTimer);
+      session.cancelTimer = null;
+    }
     this.setTurnActive(session, false, stopReason);
     this.clearSteering(session);
     if (stopReason === "error") {
@@ -1707,6 +1795,38 @@ export class ChatController implements vscode.Disposable {
     }
     this.deps.permissions.cancelAll(session.id);
     this.drainQueue(session);
+    void this.pollContextUsage(session);
+  }
+
+  /**
+   * After a turn, ask `_kiro/session/context` for the context-window numbers
+   * when the agent never reported a percentage itself (D26). The first reply
+   * per session is logged, to record its real shape; an agent that rejects
+   * the method is not asked again until the next restart.
+   */
+  private async pollContextUsage(session: ChatSession): Promise<void> {
+    const agent = this.agent;
+    const method = this.agentInfo ? findExtension(this.slashContext(session.transcript), "context") : undefined;
+    if (!agent || !method || this.contextPollUnsupported || session.closing) return;
+    if (session.usage.contextPercent !== null) return;
+    let result: unknown;
+    try {
+      result = await agent.callExtension(method, { sessionId: session.id });
+    } catch (error) {
+      this.contextPollUnsupported = true;
+      this.deps.output.appendLine(`[info] ${method} after the turn failed: ${errorMessage(error)}; not polling again`);
+      return;
+    }
+    if (!this.sessions.has(session.id)) return;
+    if (!session.contextReplyLogged) {
+      session.contextReplyLogged = true;
+      this.deps.output.appendLine(`[info] session ${session.id} ${method} reply: ${truncate(safeJson(result), 2000)}`);
+    }
+    const usage = applyContextResult(session.usage, result);
+    if (usage) {
+      session.usage = usage;
+      this.postTo(session.id, { type: "usage", usage });
+    }
   }
 
   /** Test hook: pretend `_session/steer` already failed for `sessionId`, so mid-turn prompts queue (D22). */
@@ -1746,9 +1866,14 @@ export class ChatController implements vscode.Disposable {
           session.usage = usage;
           this.postTo(session.id, { type: "usage", usage });
         }
-        if (update.sessionUpdate === "session_info_update" && kiroKind(update._meta) === "turn_completion" && !session.turnCompletionLogged) {
-          session.turnCompletionLogged = true;
-          this.deps.output.appendLine(`[info] session ${session.id} turn_completion meta: ${safeJson(update._meta)}`);
+        if (update.sessionUpdate === "session_info_update" && !replay) {
+          // One example of every kind per session, to record the real shapes
+          // (usage, turn metering, ...): the docs name the kinds, not the fields.
+          const kind = kiroKind(update._meta) ?? (typeof update.title === "string" ? "title" : "untyped");
+          if (!session.loggedInfoKinds.has(kind)) {
+            session.loggedInfoKinds.add(kind);
+            this.deps.output.appendLine(`[info] session ${session.id} session_info_update (${kind}): ${truncate(safeJson(update), 2000)}`);
+          }
         }
         if (update.sessionUpdate === "user_message_chunk") {
           // Live user chunks are echoed locally by prompt() (D13); replayed history must be rendered (D21).
@@ -2437,4 +2562,8 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}… (${text.length} chars)` : text;
 }

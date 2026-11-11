@@ -8,7 +8,8 @@
  */
 import type { CommandView, ContextChip, FileSuggestion } from "../ui/protocol";
 import { actionButton, h, icon, setChildren, shortPath } from "./dom";
-import { loadDraft, post, saveDraft } from "./vscodeApi";
+import { PromptHistory } from "./promptHistory";
+import { loadDraft, loadHistory, post, saveDraft, saveHistory } from "./vscodeApi";
 
 export interface ComposerHost {
   /** Chips to send with the prompt (extension chips + local `@` chips). */
@@ -68,6 +69,8 @@ export class Composer {
   private awaitingQuery = false;
   private queryTimer: number | undefined;
   private draftTimer: number | undefined;
+  /** Sent prompts, recalled with Up / Down when the caret is on the first / last line. */
+  private readonly history = new PromptHistory(loadHistory());
   private turnActive = false;
   /** The host accepts prompts while a turn runs (`UiState.acceptsPromptsDuringTurn`). */
   private composableDuringTurn = false;
@@ -250,6 +253,8 @@ export class Composer {
     const text = this.textarea.value.replace(/\s+$/, "");
     if (text.trim().length === 0) return;
     post({ type: "prompt", text, chips: this.host.getChips() });
+    this.history.push(text);
+    saveHistory(this.history.list());
     this.textarea.value = "";
     this.closePopup();
     this.autoGrow();
@@ -263,6 +268,8 @@ export class Composer {
   // -------------------------------------------------------------------------
 
   private onInput(): void {
+    // Typing leaves history browsing: the next Up starts again from the newest prompt.
+    this.history.reset();
     this.autoGrow();
     this.updateSendState();
     window.clearTimeout(this.draftTimer);
@@ -441,7 +448,39 @@ export class Composer {
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       this.send();
+      return;
     }
+
+    // Up on the first line / Down on the last line walk the sent prompts (like a shell).
+    if (!open && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.isComposing) {
+      if (e.key === "ArrowUp" && this.caretOnFirstLine() && this.recall(-1)) e.preventDefault();
+      else if (e.key === "ArrowDown" && this.caretOnLastLine() && this.recall(1)) e.preventDefault();
+    }
+  }
+
+  private caretOnFirstLine(): boolean {
+    const ta = this.textarea;
+    return !ta.value.slice(0, ta.selectionStart ?? 0).includes("\n");
+  }
+
+  private caretOnLastLine(): boolean {
+    const ta = this.textarea;
+    return !ta.value.slice(ta.selectionEnd ?? ta.value.length).includes("\n");
+  }
+
+  /** Show the previous (`-1`) or next (`+1`) sent prompt; false at either end. */
+  private recall(direction: -1 | 1): boolean {
+    const ta = this.textarea;
+    const text = this.history.recall(direction, ta.value);
+    if (text === null) return false;
+    ta.value = text;
+    ta.setSelectionRange(text.length, text.length);
+    this.closePopup();
+    this.autoGrow();
+    this.updateSendState();
+    window.clearTimeout(this.draftTimer);
+    saveDraft(text);
+    return true;
   }
 
   private select(index: number): void {

@@ -125,6 +125,11 @@ no auth method the client synthesises the terminal method `kiro-cli-login`
 
 ### Steering **[unverified]**
 
+- **Real CLI, 2026-11-11:** `_session/steer { sessionId, prompt }` during a
+  turn answered `-32603 Internal error` (not `-32601`): the method is
+  dispatched but fails. The parameter shape may be wrong; the message was
+  queued and sent after the turn, as designed (D22).
+
 - The extension sends a prompt typed while a turn runs as the extension
   request `_session/steer { sessionId, prompt: ContentBlock[] }` (the method
   keeps its `_session/` prefix, like `_session/terminate`; it is **not**
@@ -143,6 +148,33 @@ no auth method the client synthesises the terminal method `kiro-cli-login`
   the `steering` badge) or `steering_cleared` (dropped; badge cleared too).
   The injected text's answer arrives as normal `agent_message_chunk`s of the
   running turn; the `session/prompt` response still ends the turn.
+
+## Observed on the real CLI (2026-11-11, V3)
+
+- `_kiro/sessions/changed` notifications carry `upserted[]` entries with
+  `sessionId`, `title` (the agent names the session after the first prompt,
+  e.g. "Настроить Maven В IntelliJ IDEA"), `updatedAt`, `cwd`, `source`,
+  `executionTarget` and a `status` of `idle` | `in_progress` |
+  `waiting_on_user`. Not consumed yet (titles already arrive through
+  `session_info_update`).
+- Agent → client request `_kiro/terminal/shell_type` (params not yet
+  recorded; the extension now logs them). Undocumented; answered `-32601`.
+  **[record the params and the expected reply here]**
+- Other notifications seen: `_kiro/mcp/status`, `_kiro/tools/didChange`,
+  `_kiro/governance/state`, `_kiro/powers/items_changed`,
+  `_kiro/progressive_context/items_changed`,
+  `_kiro/steering/documents_changed`, `_kiro/policy/changed`.
+- kiro-cli stderr: `[INFO] [KRS] <-- GenerateAssistantResponseCommand done
+  totalEvents=N` per model round trip; `[ERROR] [KRS] HTTP 407
+  requestId=(none) body=<HEAD><TITLE>Proxy Authorization Required…` when the
+  corporate proxy rejects a backend call. The turn stayed open afterwards
+  (no `session/prompt` response, no error update); see D27.
+- A turn whose tool waits in `terminal/wait_for_exit` for a service that
+  never exits is not ended by `session/cancel` alone; the extension kills
+  the session's commands on Stop (D27).
+- `_kiro/session/context` is polled after a turn when no `context_usage`
+  arrived; its reply shape is **[to record]** (first reply per session is
+  logged as `[info] session <id> _kiro/session/context reply: …`).
 
 ## Permissions
 

@@ -15,6 +15,8 @@ declare function acquireVsCodeApi(): {
 
 interface PersistedState {
   draft?: string;
+  /** Prompts sent from this webview, oldest first (Up / Down recall them). */
+  history?: string[];
   showSettings?: boolean;
   sessionPanelCollapsed?: boolean;
 }
@@ -49,6 +51,15 @@ export function loadDraft(): string {
 
 export function saveDraft(draft: string): void {
   writeState({ draft });
+}
+
+export function loadHistory(): string[] {
+  const s = readState();
+  return Array.isArray(s.history) ? s.history.filter((e): e is string => typeof e === "string") : [];
+}
+
+export function saveHistory(history: readonly string[]): void {
+  writeState({ history: [...history] });
 }
 
 /** `undefined` when the user never toggled the settings pane in this webview. */

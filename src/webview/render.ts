@@ -8,6 +8,7 @@
  * Interactive elements carry `data-action` and are handled by delegation in
  * `main.ts`, except pickers whose `<select>` elements get direct listeners.
  */
+import { quietLabel, quietTitle } from "./quiet.js";
 import { usageText } from "./usageText.js";
 import type {
   ConnectionView,
@@ -778,7 +779,12 @@ export function renderWorkingStrip(el: HTMLElement, state: UiState): void {
   }
   const lead = activityOf(state) === "needs_input" ? "Kiro needs your input" : "Kiro is working…";
   const queued = queuedCount(state);
-  const step = queued > 0 ? `${workingStep(state)} · ${queued} queued` : workingStep(state);
+  const now = Date.now();
+  const parts = [workingStep(state)];
+  if (queued > 0) parts.push(`${queued} queued`);
+  const quiet = quietLabel(state.lastActivityAt, now);
+  if (quiet) parts.push(quiet);
+  const step = parts.join(" · ");
   if (el.childElementCount === 0) {
     setChildren(el, [
       h("span", { class: "working-dots", "aria-hidden": "true" }, h("i"), h("i"), h("i")),
@@ -795,7 +801,7 @@ export function renderWorkingStrip(el: HTMLElement, state: UiState): void {
     if (text) text.textContent = lead;
     if (stepEl) {
       stepEl.textContent = step;
-      stepEl.title = step;
+      stepEl.title = `${step}\n${quietTitle(state.lastActivityAt, now)}`;
     }
   }
   el.hidden = false;

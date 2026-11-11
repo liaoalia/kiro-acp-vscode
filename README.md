@@ -41,7 +41,13 @@ network access happens inside `kiro-cli`, which inherits your environment
   answer streams, and "Working…" / "Needs input" in the header.
 - **Context and tokens**: once the agent reports them, a pill in the header
   shows the context window in use and the tokens the session has spent
-  ("42% ctx · 12k tokens"); hover it for the exact numbers.
+  ("42% ctx · 12k tokens"); hover it for the exact numbers. When a turn ends
+  without the agent having reported a percentage, the extension asks
+  `_kiro/session/context` for it once.
+- **Stuck turns**: the "Kiro is working…" strip adds "no reply for N min"
+  once nothing has arrived for a minute (hover it for the time of the last
+  event). Errors kiro-cli prints while a turn runs (a proxy answering HTTP
+  407, say) show up as a notice in the running sessions.
 - **Past sessions**: when the agent can list and load sessions (Kiro CLI
   V3), the history button in the chat header (and the sidebar title), or
   `Kiro: Open Past Session…`, lists the sessions recorded for this workspace
@@ -55,6 +61,14 @@ network access happens inside `kiro-cli`, which inherits your environment
   Stop / `/cancel` ends the current answer only: queued messages still go
   out, one turn each (closing the session or losing the agent discards
   them; a notice says how many). Slash commands run immediately mid-turn.
+- **Stop that sticks**: Stop (Esc) also kills the commands the turn is still
+  running in the session's terminal, so an agent waiting for a service that
+  never exits can finish; if the agent still has not ended the turn five
+  seconds later, the turn is ended locally (a notice says so) and its late
+  reply is ignored.
+- **Prompt history**: Up on the first line of the input recalls the previous
+  message you sent from this chat, Down walks forward again (back to what
+  you were typing); the history survives switching tabs.
 - Sessions live as long as the `kiro-cli acp` process; restarting the agent
   ends them (restore a past session to pick one up again).
 
@@ -125,7 +139,9 @@ The extension is distributed as a `.vsix` file, not through the Marketplace.
 The composer at the bottom has `+` (attach a workspace file, same as typing
 `@`), `/` (slash commands advertised by the agent), the current model and
 mode as pills, and a send button that turns into **Stop** while Kiro is
-working (Esc anywhere in the chat does the same). In the narrow secondary-sidebar layout the same controls collapse
+working (Esc anywhere in the chat does the same; Stop also kills the
+session's running commands). Up / Down on the first / last line recall sent
+messages. In the narrow secondary-sidebar layout the same controls collapse
 into a compact header.
 
 ## Settings

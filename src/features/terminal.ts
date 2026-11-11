@@ -269,6 +269,18 @@ export class TerminalService implements vscode.Disposable {
   }
 
   /**
+   * Stop every command still running for `sessionId` (the user pressed Stop,
+   * D27): their `terminal/wait_for_exit` resolve, so an agent waiting on one
+   * can end the turn. The terminals stay valid for output/wait like after
+   * `terminal/kill`. Returns the ids that were killed.
+   */
+  async killSession(sessionId: string): Promise<string[]> {
+    const running = [...this.active.values()].filter((e) => e.sessionId === sessionId && !e.exit && !e.killed);
+    await Promise.all(running.map((e) => this.killEntry(e)));
+    return running.map((e) => e.id);
+  }
+
+  /**
    * ClientServices.releaseTerminal — kills if running; the VS Code terminal
    * stays open. In `shared` mode nothing the process (or a survivor of the
    * kill) still writes reaches the session's terminal afterwards; only the
