@@ -774,9 +774,11 @@ export class ChatController implements vscode.Disposable {
       { command, args, cwd: this.workspaceRoot(), env: process.env, logger, clientVersion: version },
       this.deps.services,
     );
-    // Sessions belong to the process; a new process starts without any.
+    // Sessions belong to the process; a new process starts without any, and
+    // the old capabilities / auth methods must not leak into its `starting` view.
     this.endAllSessions();
     await this.teardownAgent();
+    this.agentInfo = null;
     this.agent = agent;
     this.unsubscribers.push(
       agent.onConnectionChange((change) => this.onConnectionChange(change)),
@@ -1441,6 +1443,11 @@ export class ChatController implements vscode.Disposable {
       (viewSessionId ? this.sessions.get(viewSessionId) : undefined) ??
       (this.focusedId ? this.sessions.get(this.focusedId) : undefined);
     if (!agent || !session || agent.status !== "ready") {
+      // `/login` and `/restart` exist for exactly this state (signed out, crashed):
+      // run them without a session or a ready agent.
+      const early = parseSlash(text.trim());
+      if (early?.name === "login") return this.login();
+      if (early?.name === "restart") return this.restart();
       this.notice(null, "warning", "No active session. Sign in or restart the agent, then try again.");
       return;
     }

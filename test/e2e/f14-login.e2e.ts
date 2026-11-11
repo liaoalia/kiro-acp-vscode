@@ -36,17 +36,31 @@ test("F14.1 expired token: the prompt failure offers the kiro-cli login fallback
     "no duplicate 'Prompt failed' notice next to the sign-in banner",
   );
 
-  // The sign-in dialog asks the user to click Reconnect; answer it for them.
+  // `/login` typed in the chat must work in this very state (no ready agent):
+  // the sign-in dialog asks the user to click Reconnect; answer it for them.
   const win = vscode.window as unknown as Record<string, unknown>;
   const original = win.showInformationMessage;
   win.showInformationMessage = () => Promise.resolve("Reconnect");
+  // VS Code renames the terminal after the (fake) `login` command exits, so
+  // remember the terminals opened during the sign-in instead of filtering by name.
+  const opened: vscode.Terminal[] = [];
+  const openedNames: string[] = [];
+  const sub = vscode.window.onDidOpenTerminal((t) => {
+    opened.push(t);
+    openedNames.push(t.name); // the name at creation time; `t.name` changes later
+  });
   try {
-    await withTimeout(api.controller.login(), 30_000, "login()");
+    await withTimeout(api.controller.prompt("/login", []), 30_000, "/login");
   } finally {
     win.showInformationMessage = original;
+    sub.dispose();
   }
-  assert(loginTerminals().length >= 1, "a 'Kiro login' terminal was opened");
-  for (const t of loginTerminals()) t.dispose();
+  assert(openedNames.includes("Kiro login"), `a 'Kiro login' terminal was opened (opened: ${JSON.stringify(openedNames)})`);
+  assert(
+    !api.controller.snapshot().notices.some((n) => n.text.startsWith("No active session")),
+    "/login was not refused with 'No active session'",
+  );
+  for (const t of [...opened, ...loginTerminals()]) t.dispose();
 
   const ready = await ensureReady(api);
   assertEqual(ready.connection.status, "ready", "reconnected after login");
