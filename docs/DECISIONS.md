@@ -272,8 +272,12 @@ badge and handled one of two ways:
   its queue is discarded *before* its turn is cancelled, so the cancel's
   own end-of-turn cannot drain a queued prompt into the session the user is
   leaving, and a late steer refusal for it is dropped silently (revmux
-  round 14). `/new` no longer touches the session it leaves behind. Nothing
-  is sent that the user did not see go.
+  round 14). A prompt typed while `/clear` still awaits `session/new` would
+  resolve to the closing session (the view switches only when the new one
+  exists); `prompt()` therefore waits for `ChatSession.replacement` and
+  re-sends to the new session (revmux round 15). `/new` no longer touches
+  the session it leaves behind. Nothing is sent that the user did not see
+  go.
 - **Turn generation.** Each session counts turn starts and ends
   (`ChatSession.turnGeneration`, bumped in `runTurn` and `endTurn`). The
   steer call captures the generation before it goes out; its refusal marks

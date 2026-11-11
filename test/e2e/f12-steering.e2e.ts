@@ -261,6 +261,23 @@ test("F12.6 /clear mid-turn discards the queue and never starts a turn on the cl
   assertEqual(api.controller.snapshot().turnActive, false, "the new session is idle");
 });
 
+test("F12.7 a prompt typed while /clear is replacing the session goes to the new session", async ({ api }) => {
+  const before = await freshSession(api);
+  const clear = api.controller.prompt("/clear", []);
+  const question = api.controller.prompt("/scenario chat", []);
+  await withTimeout(Promise.all([clear, question]), 15_000, "/clear and the prompt typed right after it");
+
+  const s = api.controller.snapshot();
+  assert(s.sessionId && s.sessionId !== before, "the view shows the replacement session");
+  assert(!s.sessions.some((x) => x.id === before), "the cleared session is gone");
+  const msgs = messagesOf(s);
+  const users = msgs.filter((m) => m.role === "user");
+  assertEqual(users.length, 1, `the new session holds just the typed question (${JSON.stringify(users.map(textOf))})`);
+  assertEqual(textOf(users[0]!), "/scenario chat", "the question text");
+  assert(msgs.some((m) => m.role === "agent" && textOf(m) === "The answer is 42."), "it was answered in the new session");
+  assertEqual(s.turnActive, false, "idle afterwards");
+});
+
 test("F12.4 /cancel typed mid-turn runs immediately", async ({ api, recorder }) => {
   await freshSession(api);
   const mark = recorder.mark();

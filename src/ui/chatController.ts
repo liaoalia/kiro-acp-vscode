@@ -233,6 +233,12 @@ class ChatSession {
    */
   closing = false;
   /**
+   * While `/clear` replaces the session: resolves with the replacement's id
+   * once it displays (null when the replacement failed). A prompt typed in
+   * that window waits for it and goes to the new session (revmux round 15).
+   */
+  replacement: Promise<string | null> | null = null;
+  /**
    * Bumped whenever a turn starts or ends (D22): a steer rejection that
    * arrives after its turn ended compares this to the value it captured and
    * drops the message instead of queueing it into a new turn.
@@ -1468,6 +1474,17 @@ export class ChatController implements vscode.Disposable {
       this.notice(null, "warning", "No active session. Sign in or restart the agent, then try again.");
       return;
     }
+    if (session.closing) {
+      // `/clear` is replacing this session: the message was typed for the
+      // replacement, so it waits for it and goes there. Nothing may be sent
+      // to a closing session (D22).
+      const replacement = session.replacement ? await session.replacement : null;
+      if (replacement === null) {
+        this.notice(session, "warning", "The session is closing; send the message again in a new one.");
+        return;
+      }
+      return this.prompt(text, chips, replacement, view);
+    }
     this.focus(session.id);
     if (session.loading) {
       // The client still flags the session's updates as replay until `session/load`
@@ -2096,15 +2113,27 @@ export class ChatController implements vscode.Disposable {
           v && !v.follows && v.displayed === sessionId ? v : undefined;
         const view =
           displays(sender) ?? displays(this.focusedView) ?? [...this.views].find((v) => displays(v) !== undefined);
-        if (action.replace) {
-          session.closing = true;
-          this.discardQueue(session, this.discardRemaining(session));
-          if (session.turnActive) await this.cancel(sessionId);
+        if (!action.replace) {
+          await this.newSession(view);
+          return true;
         }
-        const created = await this.newSession(view);
-        if (action.replace) {
-          if (created !== null && created !== sessionId) await this.closeSession(sessionId);
-          else session.closing = false; // the replacement failed: the session stays usable
+        session.closing = true;
+        this.discardQueue(session, this.discardRemaining(session));
+        if (session.turnActive) await this.cancel(sessionId);
+        const replacement = (async (): Promise<string | null> => {
+          const created = await this.newSession(view);
+          if (created !== null && created !== sessionId) {
+            await this.closeSession(sessionId);
+            return created;
+          }
+          session.closing = false; // the replacement failed: the session stays usable
+          return null;
+        })();
+        session.replacement = replacement;
+        try {
+          await replacement;
+        } finally {
+          session.replacement = null;
         }
         return true;
       }
