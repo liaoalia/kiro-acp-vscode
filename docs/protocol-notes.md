@@ -64,9 +64,16 @@ When signed out, `initialize` succeeds and returns one `authMethods` entry;
 every other request returns an authentication-required JSON-RPC error. Because
 we declare `auth.terminal: true` (and the pre-standard
 `_meta["terminal-auth"]`), the method is a `type: "terminal"` one named
-"Log in to Kiro" carrying `args`/`env` to run with the kiro-cli executable.
-After the terminal login completes the client must **reconnect** (spawn a new
-process). The exact error code is **[unverified]**; the extension treats any
+"Log in to Kiro" carrying `args`/`env`. **Verified 2026-11-11 on the real
+CLI:** the method's `args` are `["--login"]` and, per the ACP spec, they are
+*appended to the configured agent invocation*: the client must run
+`kiro-cli acp [cliArgs…] --login` (the sign-in flag of the `acp` subcommand,
+documented as "run the Kiro sign-in in the terminal, then exit without
+starting the server"). Running `kiro-cli --login` (executable + args, without
+`acp`) is an error; 0.3.4 did that, fixed in 0.3.5. The standalone
+`kiro-cli login` subcommand also works and is what the extension's own
+fallback method runs. After the terminal login completes the client must
+**reconnect** (spawn a new process). The exact error code is **[unverified]**; the extension treats any
 `session/new` failure while `authMethods` is non-empty as "auth required".
 
 **Observed 2026-11-11 (Kiro CLI 3.x, V3, cached token expired):** `initialize`

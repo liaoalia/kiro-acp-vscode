@@ -100,6 +100,8 @@
 - [x] fake agent: `login` subcommand exits 0; `/scenario auth-expired` rejects the prompt like the real CLI
 - [x] tests: `test/acp-client.test.ts` (3 new), slash tests, `test/e2e/f14-login.e2e.ts`
 - [x] docs: README (auth, settings, commands), protocol-notes (observed error), DECISIONS D25
+- [x] ➕ 0.3.5: agent-advertised terminal auth args are appended to `kiro-cli acp …` (Kiro advertises `--login`; `kiro-cli --login` failed on the real CLI); fake agent advertises `--login` and accepts `acp --login`
+- [x] ➕ 0.3.5: the login terminal runs the sign-in as its own process; exit 0 (or closing it) reconnects automatically, Reconnect button kept
 
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] `src/features/diff.ts:405` — diff entries and permission selection are keyed by tool-call id only; add the session id so two sessions reusing an id can never resolve each other's proposal

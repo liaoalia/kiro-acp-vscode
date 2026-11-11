@@ -63,13 +63,18 @@ export interface ClientServices {
   openExternalUrl?(url: string): Promise<void>;
   /**
    * Run a terminal-type auth method (e.g. Kiro's "Log in to Kiro") in a
-   * terminal the user can see. `executable` is the resolved kiro-cli path;
-   * `method.args`/`method.env` come from the agent. Resolves when the user
-   * acknowledges completion (the host then restarts the agent process).
+   * terminal the user can see. The command line is `invocation.command`
+   * followed by `invocation.args` and then `method.args`: per the ACP spec
+   * the method's args are *appended to the configured agent invocation*, so
+   * Kiro's advertised `args: ["--login"]` runs `kiro-cli acp --login` (the
+   * sign-in flag of the `acp` subcommand; `kiro-cli --login` is an error).
+   * For the standalone fallback (`kiro-cli login`) `invocation.args` is empty.
+   * `method.env` comes from the agent. Resolves when the user acknowledges
+   * completion (the host then restarts the agent process).
    */
   runTerminalAuth?(
     method: acp.AuthMethodTerminal & { type: "terminal" },
-    executable: string,
+    invocation: { command: string; args: readonly string[] },
   ): Promise<void>;
 }
 
@@ -222,7 +227,8 @@ export const AUTH_REQUIRED_CODE = -32000;
  * advertising an auth method. Kiro V3 keeps `authMethods` empty while a stale
  * token exists and only fails later, on `session/prompt`, with
  * "Auth refresh callback failed: … You are not logged in. Please log in with
- * `kiro-cli login`" (observed 2026-11-11). Runs `<cliPath> login` (D25).
+ * `kiro-cli login`" (observed 2026-11-11). Runs the standalone `<cliPath> login`
+ * (not appended to the `acp` invocation, unlike agent-advertised methods) (D25).
  */
 export const FALLBACK_LOGIN_METHOD: acp.AuthMethodTerminal & { type: "terminal" } = {
   id: "kiro-cli-login",

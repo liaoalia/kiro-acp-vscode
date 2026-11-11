@@ -36,23 +36,19 @@ test("F14.1 expired token: the prompt failure offers the kiro-cli login fallback
     "no duplicate 'Prompt failed' notice next to the sign-in banner",
   );
 
-  // `/login` typed in the chat must work in this very state (no ready agent):
-  // the sign-in dialog asks the user to click Reconnect; answer it for them.
-  const win = vscode.window as unknown as Record<string, unknown>;
-  const original = win.showInformationMessage;
-  win.showInformationMessage = () => Promise.resolve("Reconnect");
-  // VS Code renames the terminal after the (fake) `login` command exits, so
-  // remember the terminals opened during the sign-in instead of filtering by name.
+  // `/login` typed in the chat must work in this very state (no ready agent).
+  // The sign-in dialog is left unanswered (the harness stub dismisses it): the
+  // fake `login` process exits 0, the terminal closes and the chat reconnects
+  // by itself.
   const opened: vscode.Terminal[] = [];
   const openedNames: string[] = [];
   const sub = vscode.window.onDidOpenTerminal((t) => {
     opened.push(t);
-    openedNames.push(t.name); // the name at creation time; `t.name` changes later
+    openedNames.push(t.name); // the name at creation time; `t.name` may change later
   });
   try {
-    await withTimeout(api.controller.prompt("/login", []), 30_000, "/login");
+    await withTimeout(api.controller.prompt("/login", []), 30_000, "/login (auto-reconnect on exit 0)");
   } finally {
-    win.showInformationMessage = original;
     sub.dispose();
   }
   assert(openedNames.includes("Kiro login"), `a 'Kiro login' terminal was opened (opened: ${JSON.stringify(openedNames)})`);

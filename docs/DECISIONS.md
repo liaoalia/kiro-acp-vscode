@@ -422,3 +422,19 @@ Independently, `kiroAcp.attachActiveFile` now defaults to `false`: the
 implicit active-file chip surprised users (the file they happened to have
 open was sent with every prompt). Files are attached explicitly with `@` or
 **Send Selection**; the setting still enables the old behaviour.
+
+**Addendum (0.3.5):** an agent-advertised terminal method's `args` are
+appended to the *configured agent invocation* (`<cliPath> acp [cliArgs…]`),
+as the ACP spec says. Kiro advertises `args: ["--login"]`, which is the
+sign-in flag of the `acp` subcommand; 0.3.4 ran `kiro-cli --login` (executable
+plus args) and the CLI rejected it. `runTerminalAuth` now receives the whole
+invocation; only the extension's own fallback runs standalone (`kiro-cli
+login`), because that is the command Kiro's error message names.
+
+The sign-in process is the terminal's own process (`shellPath`/`shellArgs`,
+a `.cmd` launcher wrapped in `cmd.exe`), not a line typed into a shell, so
+its exit is observable: `onDidCloseTerminal` with exit code 0 (or a terminal
+the user closed) resolves the login and the agent reconnects at once; a
+non-zero exit fails it with the code. The "Reconnect" notification remains
+the manual shortcut. `isTransient: true` keeps the terminal out of VS Code's
+session restore.

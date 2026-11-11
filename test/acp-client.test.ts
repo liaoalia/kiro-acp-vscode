@@ -10,7 +10,7 @@ import {
   type SessionEvent,
   type SessionState,
 } from "../src/acp/index.js";
-import { chunkText, launch, makeServices, rejectFirst, toolUpdates, updatesOf, waitFor } from "./harness.js";
+import { chunkText, FAKE_AGENT, launch, makeServices, rejectFirst, toolUpdates, updatesOf, waitFor } from "./harness.js";
 
 const text = (value: string): acp.ContentBlock[] => [{ type: "text", text: value }];
 
@@ -82,8 +82,13 @@ test("signed-out agent: session/new failure maps to auth_required and terminal a
 
     await h.agent.authenticate("kiro-login");
     assert.equal(h.services.terminalAuthRuns.length, 1);
-    assert.equal(h.services.terminalAuthRuns[0]?.method.id, "kiro-login");
-    assert.equal(h.services.terminalAuthRuns[0]?.executable, process.execPath);
+    const advertised = h.services.terminalAuthRuns[0]!;
+    assert.equal(advertised.method.id, "kiro-login");
+    assert.equal(advertised.command, process.execPath);
+    // The method's args extend the configured invocation: `<cli> acp … --login`.
+    assert.deepEqual(advertised.args, [FAKE_AGENT, "acp", "--scenario", "chat", "--auth-required"]);
+    assert.ok("args" in advertised.method);
+    assert.deepEqual(advertised.method.args, ["--login"]);
     await assert.rejects(() => h.agent.authenticate("nope"), /Unknown auth method/);
   } finally {
     await h.agent.stop();
@@ -133,7 +138,9 @@ test("expired token: a prompt rejected as signed out maps to auth_required with 
     assert.equal(run.method.id, "kiro-cli-login");
     assert.ok("args" in run.method);
     assert.deepEqual(run.method.args, ["login"]);
-    assert.equal(run.executable, process.execPath);
+    assert.equal(run.command, process.execPath);
+    // The fallback is standalone: `<cli> login`, not `<cli> acp … login`.
+    assert.deepEqual(run.args, []);
   } finally {
     await h.agent.stop();
   }

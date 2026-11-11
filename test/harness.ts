@@ -31,7 +31,7 @@ export interface MockServices extends ClientServices {
   /** Replace to control permission answers; default picks the first allow_* option. */
   decidePermission: PermissionDecider;
   openedUrls: string[];
-  terminalAuthRuns: Array<{ method: acp.AuthMethod; executable: string }>;
+  terminalAuthRuns: Array<{ method: acp.AuthMethod; command: string; args: string[] }>;
 }
 
 export function allowFirst(request: acp.RequestPermissionRequest): acp.RequestPermissionResponse {
@@ -89,8 +89,8 @@ export function makeServices(): MockServices {
       calls.push({ method: "_kiro/openExternalUrl", params: { url } });
       services.openedUrls.push(url);
     },
-    async runTerminalAuth(method, executable) {
-      services.terminalAuthRuns.push({ method, executable });
+    async runTerminalAuth(method, invocation) {
+      services.terminalAuthRuns.push({ method, command: invocation.command, args: [...invocation.args] });
     },
   };
   return services;

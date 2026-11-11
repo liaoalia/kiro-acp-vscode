@@ -95,9 +95,11 @@ Then run `kiro-cli login` once in a terminal. The extension can also start the
 login for you: when the agent reports that you are signed out (at startup, or
 later with "Auth refresh callback failed: … You are not logged in" when a
 cached token expired), the chat shows a **Log in to Kiro** button that opens a
-terminal running `kiro-cli login`. Click **Reconnect** when the terminal says
-you are signed in: the agent is respawned and the sessions shown in the chat
-tabs are restored. `/login` and `Kiro: Log In` do the same at any time.
+terminal running the sign-in (`kiro-cli acp --login` when Kiro advertises the
+method, `kiro-cli login` otherwise). When that process exits successfully the
+chat reconnects by itself (click **Reconnect** in the notification to do it
+sooner): the agent is respawned and the sessions shown in the chat tabs are
+restored. `/login` and `Kiro: Log In` do the same at any time.
 
 ## Install the extension (VSIX)
 
@@ -181,7 +183,7 @@ from `kiro-cli` (proxy errors appear there).
 | `Kiro: Open Past Session…` | Pick one of the agent's past sessions for this workspace and restore it |
 | `Kiro: Cancel Current Turn` | Send `session/cancel` |
 | `Kiro: Restart Agent Process` | Kill and respawn `kiro-cli acp` |
-| `Kiro: Log In (runs kiro-cli login)` | Open a terminal running `kiro-cli login`; after **Reconnect** the agent is respawned and the open sessions restored |
+| `Kiro: Log In (runs kiro-cli login)` | Open a terminal running the sign-in; when it exits (or on **Reconnect**) the agent is respawned and the open sessions restored |
 | `Kiro: Send Selection to Kiro Chat` | Attach the current selection as a chip |
 | `Kiro: Open Plan` | Open (or re-open) the live plan document |
 | `Kiro: Accept Proposed Change` / `Reject Proposed Change` | Answer a pending diff permission |

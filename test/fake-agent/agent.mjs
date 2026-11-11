@@ -59,9 +59,11 @@ const recordingsDir = join(here, "..", "recordings");
 // ---------------------------------------------------------------------------
 
 const argv = process.argv.slice(2);
+const standaloneLogin = argv[0] === "login";
 if (argv[0] === "acp") argv.shift();
-// `kiro-cli login` stand-in: the terminal auth fallback runs `<cliPath> login`.
-if (argv[0] === "login") {
+// Sign-in stand-ins: the fallback runs `<cliPath> login`; the advertised terminal
+// method appends `--login` to the agent invocation (`<cliPath> acp … --login`).
+if (standaloneLogin || argv.includes("--login")) {
   process.stdout.write("fake kiro-cli: logged in\n");
   process.exit(0);
 }
@@ -502,7 +504,7 @@ const app = acp
         ctx.params.clientCapabilities?.auth?.terminal === true ||
         ctx.params.clientCapabilities?._meta?.["terminal-auth"] === true;
       response.authMethods = terminalAuth
-        ? [{ id: "kiro-login", name: "Log in to Kiro", type: "terminal", args: ["login"] }]
+        ? [{ id: "kiro-login", name: "Log in to Kiro", type: "terminal", args: ["--login"] }]
         : [{ id: "kiro-login-manual", name: "Run `kiro-cli login`", description: "Sign in from a terminal" }];
     }
     return response;

@@ -606,7 +606,13 @@ export class KiroAgentImpl implements KiroAgent {
       if (!this.services.runTerminalAuth) {
         throw new AcpError(`Auth method '${methodId}' requires a terminal, which the host does not provide`);
       }
-      await this.services.runTerminalAuth(method, this.resolvedCommand ?? this.options.command);
+      // Agent-advertised args extend the configured invocation (`kiro-cli acp … --login`);
+      // the standalone fallback runs `kiro-cli login` on its own.
+      const standalone = method === FALLBACK_LOGIN_METHOD;
+      await this.services.runTerminalAuth(method, {
+        command: this.resolvedCommand ?? this.options.command,
+        args: standalone ? [] : this.options.args,
+      });
       return;
     }
     const agent = this.requireAgent();
