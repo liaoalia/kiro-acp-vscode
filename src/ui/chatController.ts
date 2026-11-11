@@ -16,6 +16,8 @@
  * The webview only ever sees `ToWebview` messages produced here; the agent
  * process only ever sees ACP requests issued through the `KiroAgent` facade.
  */
+import { EMPTY_USAGE, applyUsageUpdate } from "../features/pure/usage.js";
+import type { SessionUsage } from "./protocol.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type * as acp from "@agentclientprotocol/sdk";
@@ -230,6 +232,10 @@ class ChatSession {
    * drops the message instead of queueing it into a new turn.
    */
   turnGeneration = 0;
+  /** Context / token usage reported by the agent so far (D26). */
+  usage: SessionUsage = EMPTY_USAGE;
+  /** The session's first `turn_completion` meta is logged once, to record its real shape. */
+  turnCompletionLogged = false;
   updatedAt = Date.now();
 
   constructor(
@@ -459,6 +465,7 @@ export class ChatController implements vscode.Disposable {
     return {
       ...state,
       acceptsPromptsDuringTurn: true,
+      usage: session && session.usage !== EMPTY_USAGE ? session.usage : null,
       toolCalls,
       commands: mergeCommands(transcript.commands, this.slashContext(transcript)),
       prefs: { showSettings, sessionPanelCollapsed },
@@ -1698,6 +1705,15 @@ export class ChatController implements vscode.Disposable {
         this.scheduleSessions();
         const update = event.update;
         const replay = event.replay === true;
+        const usage = applyUsageUpdate(session.usage, update);
+        if (usage) {
+          session.usage = usage;
+          this.postTo(session.id, { type: "usage", usage });
+        }
+        if (update.sessionUpdate === "session_info_update" && kiroKind(update._meta) === "turn_completion" && !session.turnCompletionLogged) {
+          session.turnCompletionLogged = true;
+          this.deps.output.appendLine(`[info] session ${session.id} turn_completion meta: ${safeJson(update._meta)}`);
+        }
         if (update.sessionUpdate === "user_message_chunk") {
           // Live user chunks are echoed locally by prompt() (D13); replayed history must be rendered (D21).
           if (!replay) return;
@@ -2050,15 +2066,18 @@ export class ChatController implements vscode.Disposable {
       case "forward":
         return false;
       case "new_session": {
-        // `/clear`: a new session in the view the command came from (else the
-        // focused view, else any view) when it displays this session. Typed
-        // mid-turn it also stops the turn it leaves behind (D22).
+        // `/clear` and `/new`: a new session in the view the command came from
+        // (else the focused view, else any view) when it displays this session.
+        // Typed mid-turn they also stop the turn left behind (D22). `/clear`
+        // then forgets the old session locally, so the tab starts over with a
+        // single clean session (the agent keeps its history, D20).
         const displays = (v: ViewBinding | null | undefined): ViewBinding | undefined =>
           v && !v.follows && v.displayed === sessionId ? v : undefined;
         const view =
           displays(sender) ?? displays(this.focusedView) ?? [...this.views].find((v) => displays(v) !== undefined);
         if (session.turnActive) await this.cancel(sessionId);
-        await this.newSession(view);
+        const created = await this.newSession(view);
+        if (action.replace && created !== null && created !== sessionId) await this.closeSession(sessionId);
         return true;
       }
       case "capabilities":

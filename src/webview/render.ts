@@ -8,6 +8,7 @@
  * Interactive elements carry `data-action` and are handled by delegation in
  * `main.ts`, except pickers whose `<select>` elements get direct listeners.
  */
+import { usageText } from "./usageText.js";
 import type {
   ConnectionView,
   ContextChip,
@@ -238,7 +239,8 @@ function renderBrand(dom: HeaderDom, state: UiState): void {
   const text = pillText(state);
   const title = displayedSessionTitle(state);
   const activity = activityOf(state);
-  const key = [text, c.status, c.message ?? "", activity ?? "", title].join(SEP);
+  const usage = usageText(state.usage);
+  const key = [text, c.status, c.message ?? "", activity ?? "", title, usage?.label ?? ""].join(SEP);
   if (key === dom.brandKey) return;
   dom.brandKey = key;
   setChildren(dom.brand, [
@@ -252,6 +254,8 @@ function renderBrand(dom: HeaderDom, state: UiState): void {
       h("span", { class: "dot", "aria-hidden": "true" }),
       h("span", { class: "status-text" }, text),
     ),
+    // Context / token usage of the displayed session (D26); nothing until the agent reports some.
+    usage ? h("span", { class: "usage-pill", title: usage.title }, usage.label) : null,
   ]);
 }
 

@@ -31,7 +31,8 @@ export interface UnavailableCommand {
 }
 
 export type SlashAction =
-  | { kind: "new_session" }
+  /** `/new` keeps the current session in the list; `/clear` (replace) forgets it. */
+  | { kind: "new_session"; replace: boolean }
   | { kind: "cancel" }
   | { kind: "restart" }
   /** Sign in (the agent's first auth method, else the `kiro-cli login` terminal fallback) and reconnect. */
@@ -139,8 +140,9 @@ export function routeSlash(parsed: ParsedSlash, ctx: SlashContext): SlashAction 
   const { name, args } = parsed;
   switch (name) {
     case "clear":
+      return { kind: "new_session", replace: true };
     case "new":
-      return { kind: "new_session" };
+      return { kind: "new_session", replace: false };
     case "cancel":
     case "stop":
       return { kind: "cancel" };
@@ -191,7 +193,8 @@ export function routeSlash(parsed: ParsedSlash, ctx: SlashContext): SlashAction 
 /** Built-in commands to merge into the `/` popup, in display order. */
 export function builtinCommands(ctx: SlashContext): CommandView[] {
   const list: CommandView[] = [
-    { name: "clear", description: "Start a new session" },
+    { name: "clear", description: "Start over: a fresh session replaces this one" },
+    { name: "new", description: "Start a new session alongside this one" },
     { name: "help", description: "List available commands" },
     { name: "capabilities", description: "Show what the connected agent advertises" },
   ];

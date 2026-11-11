@@ -196,7 +196,9 @@ sidebar is the `sidebar` group, and sessions created without a view (the
 auto-created first session, the API, tests) live in `default`. A grouped
 view lists only the sessions of its group (`UiState.sessions`, the
 `sessions` updates and their dedupe key are computed per group) and only
-switches within it; `newSession` / `/clear` create in the sender's group;
+switches within it; `newSession`, `/new` and `/clear` create in the sender's
+group (`/clear` then forgets the session it replaces, so the tab starts over
+with one clean session; `/new` keeps the old one in the list);
 a new tab takes a spare idle session of its own group or of `default`
 (adopting it) and otherwise creates one. Plain `attach()` views have no group
 and see everything, which keeps the test harness semantics. Closing a tab
@@ -441,3 +443,26 @@ the user closed) resolves the login and the agent reconnects at once; a
 non-zero exit fails it with the code. The "Reconnect" notification remains
 the manual shortcut. `isTransient: true` keeps the terminal out of VS Code's
 session restore.
+
+## D26. Context and token usage come from whatever the agent reports
+The header shows a usage pill ("42% ctx · 12k tokens", tooltip with the
+exact numbers) once anything is known about the displayed session. The
+numbers are folded by the pure `applyUsageUpdate` (`src/features/pure/usage.ts`)
+from three sources, in whichever order they arrive:
+
+- ACP `usage_update` (`used` / `size` tokens in context, optional `cost`):
+  sets the context numbers and the percentage.
+- Kiro V3 `session_info_update` with `_meta.kiro.kind = "context_usage"`:
+  `usagePercentage` (the only field Kiro documents) sets the percentage;
+  token counts under a few plausible names are read when present.
+- Kiro V3 `session_info_update` with `_meta.kiro.kind = "turn_completion"`:
+  `promptTurnSummaries` is the turn's metering; every numeric `...tokens`
+  field (or `totalTokens` when present) is summed and added to the session's
+  running `tokensSpent`. Its real shape is not documented, so the first
+  `turn_completion` meta of each session is written to the Kiro ACP output
+  channel for recording in `docs/protocol-notes.md`.
+
+Only changes are posted (`{ type: "usage" }`), the snapshot carries the
+current value, and a new session starts with nothing (no pill). Nothing is
+estimated client-side: when the agent reports neither, the pill stays
+hidden rather than guessing from text length.

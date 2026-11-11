@@ -1,0 +1,11 @@
+{
+  "name": "usage",
+  "description": "Context / token usage updates: ACP usage_update, Kiro context_usage and turn_completion (D26).",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "usage_update", "used": 8400, "size": 200000 } },
+    { "kind": "update", "update": { "sessionUpdate": "session_info_update", "_meta": { "kiro": { "kind": "context_usage", "usagePercentage": 42 } } } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Usage noted." } } },
+    { "kind": "update", "update": { "sessionUpdate": "session_info_update", "_meta": { "kiro": { "kind": "turn_completion", "promptTurnSummaries": [{ "inputTokens": 1200, "outputTokens": 300 }] } } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

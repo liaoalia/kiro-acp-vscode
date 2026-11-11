@@ -32,6 +32,7 @@ import "./f11-history.e2e.js";
 import "./f12-steering.e2e.js";
 import "./f13-remember.e2e.js";
 import "./f14-login.e2e.js";
+import "./f15-usage.e2e.js";
 import "./f5-selection.e2e.js";
 
 const TEST_TIMEOUT_MS = 60_000;

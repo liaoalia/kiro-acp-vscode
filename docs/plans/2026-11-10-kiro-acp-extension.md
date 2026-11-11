@@ -109,14 +109,15 @@
 - [x] Esc anywhere in the chat posts `cancel` while a turn runs (`src/webview/main.ts`); Stop buttons titled "Stop (Esc)"
 - [x] e2e F12.3 / F12.5 rewritten for the new semantics
 - [x] docs: README, DECISIONS D22
+- [x] `/clear` replaces the session in its tab (the old one is forgotten locally); `/new` still adds one alongside (e2e F9.1)
 
 ### ➕ Task 18: Context and token usage in the header (0.3.6)
-- [ ] `src/features/pure/usage.ts`: `SessionUsage` + `applyUsageUpdate` for ACP `usage_update` (`used`/`size`/`cost`), Kiro `session_info_update` `context_usage` (`usagePercentage`) and `turn_completion` (`promptTurnSummaries` token fields, summed per session)
-- [ ] controller keeps `session.usage`, posts `{ type: "usage" }`, includes it in the `state` snapshot; logs the raw `turn_completion` meta once per session so its real shape can be recorded
-- [ ] webview: usage pill next to the status pill ("42% ctx · 12.3k tokens", tooltip with the numbers); reducer `usage`
-- [ ] fake agent `usage` scenario emits all three updates
-- [ ] tests: `test/features-usage.test.ts`, webview-state reducer, e2e F15
-- [ ] docs: README, protocol-notes (shapes to confirm on the real CLI), DECISIONS D26
+- [x] `src/features/pure/usage.ts`: `SessionUsage` + `applyUsageUpdate` for ACP `usage_update` (`used`/`size`/`cost`), Kiro `session_info_update` `context_usage` (`usagePercentage`) and `turn_completion` (`promptTurnSummaries` token fields, summed per session)
+- [x] controller keeps `session.usage`, posts `{ type: "usage" }`, includes it in the `state` snapshot; logs the raw `turn_completion` meta once per session so its real shape can be recorded
+- [x] webview: usage pill next to the status pill ("42% ctx · 12.3k tokens", tooltip with the numbers); reducer `usage`
+- [x] fake agent `usage` scenario (`test/recordings/usage.json`) emits all three updates
+- [x] tests: `test/features-usage.test.ts`, webview-state reducer, e2e F15
+- [x] docs: README, protocol-notes (shapes to confirm on the real CLI), DECISIONS D26
 
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] `src/features/diff.ts:405` — diff entries and permission selection are keyed by tool-call id only; add the session id so two sessions reusing an id can never resolve each other's proposal

@@ -39,6 +39,9 @@ network access happens inside `kiro-cli`, which inherits your environment
   strip under the transcript, running cards with a blue edge and spinner,
   finished cards dimmed with ✓, failed ones red, a blinking caret while the
   answer streams, and "Working…" / "Needs input" in the header.
+- **Context and tokens**: once the agent reports them, a pill in the header
+  shows the context window in use and the tokens the session has spent
+  ("42% ctx · 12k tokens"); hover it for the exact numbers.
 - **Past sessions**: when the agent can list and load sessions (Kiro CLI
   V3), the history button in the chat header (and the sidebar title), or
   `Kiro: Open Past Session…`, lists the sessions recorded for this workspace
@@ -62,7 +65,8 @@ commands sent as text, so the extension routes them itself:
 
 | Command | What happens |
 |---------|--------------|
-| `/clear`, `/new` | Start a new session |
+| `/clear` | Start over in this tab: a fresh session replaces the current one |
+| `/new` | Start a new session alongside (the current one stays in the tab's list) |
 | `/help` | List the commands available with the connected agent |
 | `/mode <id>`, `/agent <id>` | Switch the session mode (`session/set_mode`); no argument lists the modes |
 | `/plan [text]` | Switch to the planner mode (when the agent has one) and send the text |

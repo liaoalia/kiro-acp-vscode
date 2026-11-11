@@ -268,6 +268,18 @@ summary:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Context / token usage of the displayed session, next to the status pill (D26). */
+.usage-pill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  white-space: nowrap;
+  color: var(--vscode-descriptionForeground);
+  background: var(--vscode-badge-background);
+  border: 1px solid var(--vscode-contrastBorder, transparent);
+}
 .status-pill .dot {
   width: 7px;
   height: 7px;

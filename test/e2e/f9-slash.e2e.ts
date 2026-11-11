@@ -1,7 +1,7 @@
 /** F9 — slash commands are routed on the client (Kiro V3 does not execute them from prompt text). */
 import { assert, assertEqual, ensureReady, freshSession, messagesOf, runPrompt, test, textOf, waitFor } from "./harness.js";
 
-test("F9.1 /clear starts a new session", async ({ api }) => {
+test("F9.1 /clear replaces the session with a fresh one in the same tab", async ({ api }) => {
   const before = await freshSession(api);
   await runPrompt(api, "/scenario chat");
   await runPrompt(api, "/clear");
@@ -9,6 +9,7 @@ test("F9.1 /clear starts a new session", async ({ api }) => {
     const s = api.controller.snapshot();
     return s.sessionId && s.sessionId !== before && s.items.length === 0 ? true : undefined;
   }, 15_000, "a fresh, empty session after /clear");
+  assert(!api.controller.snapshot().sessions.some((s) => s.id === before), "the cleared session is gone from the session list");
 });
 
 test("F9.2 /usage calls the advertised _kiro/account/getUsage and shows the result locally", async ({ api }) => {

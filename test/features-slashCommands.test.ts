@@ -58,8 +58,8 @@ test("parseSlash splits name and args, ignores non-commands", () => {
 });
 
 test("session commands are client-side", () => {
-  assert.deepEqual(routeSlash(parseSlash("/clear")!, bare), { kind: "new_session" });
-  assert.deepEqual(routeSlash(parseSlash("/new")!, bare), { kind: "new_session" });
+  assert.deepEqual(routeSlash(parseSlash("/clear")!, bare), { kind: "new_session", replace: true });
+  assert.deepEqual(routeSlash(parseSlash("/new")!, bare), { kind: "new_session", replace: false });
   assert.deepEqual(routeSlash(parseSlash("/cancel")!, bare), { kind: "cancel" });
   assert.deepEqual(routeSlash(parseSlash("/restart")!, bare), { kind: "restart" });
   assert.deepEqual(routeSlash(parseSlash("/login")!, bare), { kind: "login" });
@@ -114,7 +114,7 @@ test("extension-backed commands match advertised methods by pattern, not by exac
   assert.equal(findExtension({ ...bare, extensionMethods: ["_kiro/account/getCredits"] }, "usage"), "_kiro/account/getCredits");
   assert.deepEqual(
     builtinCommands(renamed).map((c) => c.name),
-    ["clear", "help", "capabilities", "usage", "context", "compact", "cancel", "restart", "login"],
+    ["clear", "new", "help", "capabilities", "usage", "context", "compact", "cancel", "restart", "login"],
   );
   assert.deepEqual(unavailableCommands(renamed).map((u) => u.name), ["effort", "model"]);
   const help = routeSlash(parseSlash("/help")!, bare);
@@ -165,6 +165,7 @@ test("builtinCommands and mergeCommands reflect capabilities and keep agent comm
   const names = builtinCommands(v3).map((c) => c.name);
   assert.deepEqual(names, [
     "clear",
+    "new",
     "help",
     "capabilities",
     "mode",
@@ -179,7 +180,7 @@ test("builtinCommands and mergeCommands reflect capabilities and keep agent comm
   ]);
   assert.deepEqual(
     builtinCommands(bare).map((c) => c.name),
-    ["clear", "help", "capabilities", "cancel", "restart", "login"],
+    ["clear", "new", "help", "capabilities", "cancel", "restart", "login"],
   );
   const merged = mergeCommands([{ name: "clear", description: "agent's own clear" }, ...v3.agentCommands], v3);
   assert.equal(merged[0].description, "agent's own clear");

@@ -195,6 +195,23 @@ export type SessionStatus =
   /** The agent process is stopped or crashed; every session is unusable until restart. */
   | "error";
 
+/**
+ * Context-window / token usage of a session, from whichever updates the agent
+ * sends (ACP `usage_update`, Kiro `context_usage` / `turn_completion`; D26).
+ * Every field is `null` until reported.
+ */
+export interface SessionUsage {
+  /** Share of the context window in use, 0-100. */
+  contextPercent: number | null;
+  /** Tokens currently in context / the window size. */
+  contextUsed: number | null;
+  contextSize: number | null;
+  /** Tokens spent by the session so far (summed over the agent's turn summaries). */
+  tokensSpent: number | null;
+  /** Cumulative cost reported by the agent (`usage_update.cost`). */
+  cost: { amount: number; currency: string } | null;
+}
+
 export interface SessionSummary {
   id: string;
   /** First user message (truncated) or the title the agent reported; "New session" until then. */
@@ -243,6 +260,8 @@ export interface UiState {
   chips: ContextChip[];
   /** Transient notices (errors, refusal, max_tokens, ...). */
   notices: NoticeView[];
+  /** Usage of the displayed session once the agent reported any (D26); absent/null until then. */
+  usage?: SessionUsage | null;
   /** Host-side display preferences (defaults; the webview may override locally). */
   prefs?: {
     /** Show the mode/model/config pickers without pressing the settings toggle. */
@@ -293,6 +312,8 @@ export type ToWebview =
   | { type: "fileSuggestions"; query: string; items: FileSuggestion[] }
   | { type: "notice"; notice: NoticeView }
   | { type: "clearNotice"; id: string }
+  /** Context / token usage of the displayed session changed (D26). */
+  | { type: "usage"; usage: SessionUsage | null }
   | { type: "focusInput" };
 
 // ---------------------------------------------------------------------------

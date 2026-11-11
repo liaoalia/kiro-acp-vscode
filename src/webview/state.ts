@@ -31,6 +31,7 @@ export function initialState(): UiState {
     commands: [],
     chips: [],
     notices: [],
+    usage: null,
   };
 }
 
@@ -55,6 +56,7 @@ function normalizeSnapshot(s: Partial<UiState> | null | undefined): UiState {
     commands: Array.isArray(s.commands) ? s.commands.slice() : [],
     chips: Array.isArray(s.chips) ? s.chips.slice() : [],
     notices: Array.isArray(s.notices) ? s.notices.slice() : [],
+    usage: s.usage ?? null,
     // Host display defaults; applied once by main.ts until the user toggles.
     prefs: s.prefs && typeof s.prefs === "object" ? { ...s.prefs } : undefined,
   };
@@ -93,6 +95,7 @@ function clearedSession(state: UiState, sessionId: string | null): UiState {
     plan: [],
     permissions: [],
     notices: [],
+    usage: null,
   };
 }
 
@@ -121,6 +124,9 @@ export function reduce(state: UiState, msg: ToWebview): UiState {
 
     case "turn":
       return state.turnActive === msg.active ? state : { ...state, turnActive: msg.active };
+
+    case "usage":
+      return { ...state, usage: msg.usage ?? null };
 
     case "chunk": {
       const idx = findMessageIndex(state.items, msg.messageId);

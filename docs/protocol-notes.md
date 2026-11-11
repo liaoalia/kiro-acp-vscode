@@ -112,6 +112,10 @@ no auth method the client synthesises the terminal method `kiro-cli-login`
   (`usagePercentage`), `turn_completion`, `steering_queued`,
   `steering_injected`, `steering_cleared`, `turn_end`. **`turn_end` is not a
   completion signal** – only the `session/prompt` response ends a turn.
+- Usage (D26): the extension reads ACP `usage_update` (`used`, `size`, `cost`), `context_usage`
+  (`usagePercentage`) and `turn_completion` (`promptTurnSummaries`: token fields summed). The
+  `turn_completion` shape is undocumented; the first one per session is logged as
+  `[info] session <id> turn_completion meta: ...` in the Kiro ACP output channel - **paste one here**.
 - `_meta.kiro.replay: true` marks replayed updates; `_meta.kiro.failureReason`
   on failed tool calls is `cancelled` | `denied` | `error`.
 - Content-filtered responses end with `stopReason: "refusal"` (v2).
