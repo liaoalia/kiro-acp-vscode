@@ -1691,7 +1691,10 @@ export class ChatController implements vscode.Disposable {
       case "update": {
         const session = this.sessions.get(event.sessionId);
         if (!session) return;
-        session.touch();
+        // Only activity (messages, tool calls, plan) counts as "recent": the
+        // metadata updates an agent sends right after `session/new` (available
+        // commands, mode, config options) must not reorder the session list.
+        if (isActivityUpdate(event.update)) session.touch();
         this.scheduleSessions();
         const update = event.update;
         const replay = event.replay === true;
@@ -2262,6 +2265,19 @@ function flattenValues(option: acp.SessionConfigOption): string[] {
     }
   }
   return out;
+}
+
+/** Session-metadata updates that say nothing about when the session was last used. */
+const METADATA_UPDATES = new Set<string>([
+  "available_commands_update",
+  "current_mode_update",
+  "config_option_update",
+  "session_info_update",
+  "usage_update",
+]);
+
+function isActivityUpdate(update: acp.SessionUpdate): boolean {
+  return !METADATA_UPDATES.has(update.sessionUpdate);
 }
 
 function toAuthMethodView(method: acp.AuthMethod): AuthMethodView {
