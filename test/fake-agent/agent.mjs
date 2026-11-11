@@ -60,6 +60,11 @@ const recordingsDir = join(here, "..", "recordings");
 
 const argv = process.argv.slice(2);
 if (argv[0] === "acp") argv.shift();
+// `kiro-cli login` stand-in: the terminal auth fallback runs `<cliPath> login`.
+if (argv[0] === "login") {
+  process.stdout.write("fake kiro-cli: logged in\n");
+  process.exit(0);
+}
 /** `listPageSize`: `session/list` pages of this many entries (`--list-page-size N`, default 2). */
 const config = { scenario: "tour", authRequired: false, engine: "v3", listPageSize: 2 };
 for (let i = 0; i < argv.length; i++) {
@@ -528,6 +533,14 @@ const app = acp
     let scenario = config.scenario;
     const selector = /^\/scenario\s+([\w-]+)/.exec(text.trim());
     if (selector) scenario = selector[1];
+    // Signed-in agent whose token expired: the real CLI accepts session/new and
+    // rejects the prompt with this message (no authMethods were advertised).
+    if (scenario === "auth-expired") {
+      throw new acp.RequestError(
+        -32603,
+        "Auth refresh callback failed: Internal error: You are not logged in. Please log in with `kiro-cli login`.",
+      );
+    }
 
     // Remember the user turn (not echoed live; replayed by session/load).
     session.history.push({

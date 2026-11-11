@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -63,6 +63,10 @@
       {
         "command": "kiroAcp.restart",
         "title": "Kiro: Restart Agent Process"
+      },
+      {
+        "command": "kiroAcp.login",
+        "title": "Kiro: Log In (runs kiro-cli login)"
       },
       {
         "command": "kiroAcp.sendSelection",
@@ -242,8 +246,8 @@
         },
         "kiroAcp.attachActiveFile": {
           "type": "boolean",
-          "default": true,
-          "description": "Attach the active editor file to each prompt as a resource link (shown as a removable chip)."
+          "default": false,
+          "description": "Attach the active editor file to each prompt as a resource link (shown as a removable chip). Off by default: add files explicitly with @ or the Send Selection command."
         },
         "kiroAcp.autoOpenDiffs": {
           "type": "string",

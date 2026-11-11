@@ -216,3 +216,26 @@ export class AcpError extends Error {
 
 /** JSON-RPC error code Kiro returns while signed out (recorded from the real CLI if different). */
 export const AUTH_REQUIRED_CODE = -32000;
+
+/**
+ * Terminal login offered when the agent says the user is signed out without
+ * advertising an auth method. Kiro V3 keeps `authMethods` empty while a stale
+ * token exists and only fails later, on `session/prompt`, with
+ * "Auth refresh callback failed: … You are not logged in. Please log in with
+ * `kiro-cli login`" (observed 2026-11-11). Runs `<cliPath> login` (D25).
+ */
+export const FALLBACK_LOGIN_METHOD: acp.AuthMethodTerminal & { type: "terminal" } = {
+  id: "kiro-cli-login",
+  name: "Log in to Kiro",
+  description: "Runs `kiro-cli login` in a terminal",
+  type: "terminal",
+  args: ["login"],
+};
+
+const AUTH_MESSAGE =
+  /not logged in|kiro-cli login|authentication required|not authenticated|unauthenticated|auth refresh/i;
+
+/** Does a failed request mean the user must sign in (by error code, or by Kiro's message)? */
+export function isAuthRequiredError(error: { code?: number | null; message: string }): boolean {
+  return error.code === AUTH_REQUIRED_CODE || AUTH_MESSAGE.test(error.message);
+}

@@ -69,6 +69,7 @@ commands sent as text, so the extension routes them itself:
 | `/usage`, `/context`, `/compact` | Call the matching advertised extension method (e.g. `_kiro/account/getUsage`, `_kiro/session/context`, `_kiro/session/compact`; matched by name pattern) and show the result in the chat |
 | `/capabilities`, `/caps` | Show what the connected agent advertises: extension methods, capabilities, modes, options, commands |
 | `/cancel`, `/restart` | Cancel the turn / restart `kiro-cli` |
+| `/login` | Sign in: runs `kiro-cli login` in a terminal, then reconnects and restores the open sessions |
 | anything else | Sent to the agent as a prompt (agent-advertised commands and custom prompts) |
 
 ## Requirements
@@ -91,8 +92,12 @@ curl -fsSL https://cli.kiro.dev/install | bash
 ```
 
 Then run `kiro-cli login` once in a terminal. The extension can also start the
-login for you: when the agent reports that you are signed out, the chat shows a
-**Log in to Kiro** button that opens a terminal running the sign-in flow.
+login for you: when the agent reports that you are signed out (at startup, or
+later with "Auth refresh callback failed: … You are not logged in" when a
+cached token expired), the chat shows a **Log in to Kiro** button that opens a
+terminal running `kiro-cli login`. Click **Reconnect** when the terminal says
+you are signed in: the agent is respawned and the sessions shown in the chat
+tabs are restored. `/login` and `Kiro: Log In` do the same at any time.
 
 ## Install the extension (VSIX)
 
@@ -124,7 +129,7 @@ into a compact header.
 | `kiroAcp.cliArgs` | `[]` | Extra arguments appended after `acp`, e.g. `["--agent-engine=v2"]` to force the CLI v2 harness. |
 | `kiroAcp.chatLocation` | `editor` | `editor`: the chat opens as a tab in the editor area (`Kiro: Focus Chat`, permission requests, `Send Selection`). `sidebar`: it opens in the **Kiro** view of the secondary side bar. Both can be open at once. |
 | `kiroAcp.showSettingsByDefault` | `false` | Show the mode / model / option pickers without pressing the ⚙ button in the chat header. |
-| `kiroAcp.attachActiveFile` | `true` | Attach the active editor file to each prompt as a removable chip. |
+| `kiroAcp.attachActiveFile` | `false` | Attach the active editor file to each prompt as a removable chip. Off by default: add files with `@` or **Send Selection**. |
 | `kiroAcp.autoOpenDiffs` | `whenPermissionRequired` | `whenPermissionRequired`: open the diff editor (in the editor group beside the chat) only when Kiro asks for permission for that change; `always`: on every proposed change (noisy in Autopilot mode); `never`: only via the card's Open diff button. |
 | `kiroAcp.terminal.mode` | `shared` | How agent commands are shown: `shared`: one terminal per Kiro session; `perCommand`: one terminal per command; `hidden`: no terminal, output only in the chat card. |
 | `kiroAcp.terminal.outputByteLimit` | `1048576` | Bytes of terminal output retained for the agent when it does not specify a limit. |
@@ -176,6 +181,7 @@ from `kiro-cli` (proxy errors appear there).
 | `Kiro: Open Past Session…` | Pick one of the agent's past sessions for this workspace and restore it |
 | `Kiro: Cancel Current Turn` | Send `session/cancel` |
 | `Kiro: Restart Agent Process` | Kill and respawn `kiro-cli acp` |
+| `Kiro: Log In (runs kiro-cli login)` | Open a terminal running `kiro-cli login`; after **Reconnect** the agent is respawned and the open sessions restored |
 | `Kiro: Send Selection to Kiro Chat` | Attach the current selection as a chip |
 | `Kiro: Open Plan` | Open (or re-open) the live plan document |
 | `Kiro: Accept Proposed Change` / `Reject Proposed Change` | Answer a pending diff permission |

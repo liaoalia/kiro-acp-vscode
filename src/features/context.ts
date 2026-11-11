@@ -40,7 +40,7 @@ export class ContextTracker implements vscode.Disposable {
   constructor(options: ContextTrackerOptions = {}) {
     this.attachActiveFile =
       options.attachActiveFile ??
-      (() => vscode.workspace.getConfiguration("kiroAcp").get<boolean>("attachActiveFile", true));
+      (() => vscode.workspace.getConfiguration("kiroAcp").get<boolean>("attachActiveFile", false));
     this.disposables.push(
       vscode.window.onDidChangeActiveTextEditor((editor) => this.trackEditor(editor)),
       vscode.workspace.onDidChangeConfiguration((e) => {

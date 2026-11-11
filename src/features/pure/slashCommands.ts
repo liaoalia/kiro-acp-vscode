@@ -34,6 +34,8 @@ export type SlashAction =
   | { kind: "new_session" }
   | { kind: "cancel" }
   | { kind: "restart" }
+  /** Sign in (the agent's first auth method, else the `kiro-cli login` terminal fallback) and reconnect. */
+  | { kind: "login" }
   | { kind: "help"; commands: CommandView[]; unavailable: UnavailableCommand[] }
   /** Call an advertised Kiro extension method and show its result. */
   | { kind: "extension"; method: string; label: string }
@@ -144,6 +146,8 @@ export function routeSlash(parsed: ParsedSlash, ctx: SlashContext): SlashAction 
       return { kind: "cancel" };
     case "restart":
       return { kind: "restart" };
+    case "login":
+      return { kind: "login" };
     case "help":
     case "?":
       return { kind: "help", commands: builtinCommands(ctx), unavailable: unavailableCommands(ctx) };
@@ -198,7 +202,11 @@ export function builtinCommands(ctx: SlashContext): CommandView[] {
   if (findExtension(ctx, "usage")) list.push({ name: "usage", description: "Show account usage" });
   if (findExtension(ctx, "context")) list.push({ name: "context", description: "Show the session context" });
   if (findExtension(ctx, "compact")) list.push({ name: "compact", description: "Compact the conversation" });
-  list.push({ name: "cancel", description: "Cancel the current turn" }, { name: "restart", description: "Restart the agent process" });
+  list.push(
+    { name: "cancel", description: "Cancel the current turn" },
+    { name: "restart", description: "Restart the agent process" },
+    { name: "login", description: "Sign in to Kiro (runs kiro-cli login in a terminal)" },
+  );
   return list;
 }
 

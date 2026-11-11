@@ -390,3 +390,35 @@ setting off nothing is recorded or applied (the stored values stay until
 forgotten). The fake agent ignores `_meta.kiro` on `session/new`, so the
 e2e suite (F13) exercises the post-create `set_config_option` / `set_mode`
 path; whether the real CLI honours the hints is unverified.
+
+## D25. Sign-in is offered from any "not logged in" failure, with a terminal fallback
+The real CLI does not advertise `authMethods` while a cached token exists; it
+accepts `initialize` and `session/new` and only rejects `session/prompt` with
+"Auth refresh callback failed: … You are not logged in. Please log in with
+`kiro-cli login`" (see protocol-notes). Waiting for a `session/new` failure
+with a non-empty `authMethods` (the previous rule) therefore left the user
+with a red "Prompt failed" notice and no way to sign in from the chat.
+
+Now any `session/new`, `session/load` or `session/prompt` failure that is an
+auth error by code (`-32000`) **or by message** (`isAuthRequiredError`)
+switches the connection to `auth_required`. When the agent offered no method,
+the client offers `FALLBACK_LOGIN_METHOD` (`id: kiro-cli-login`, terminal,
+`args: ["login"]`), which the existing terminal-auth path runs as
+`<cliPath> login` in a VS Code terminal; the user confirms with **Reconnect**.
+The fallback is accepted by `authenticate()` even while signed in, so
+`/login` and the `Kiro: Log In` command work at any time (e.g. to switch
+accounts). A prompt rejected this way logs to the output channel instead of
+adding a notice: the sign-in banner already shows the agent's message and the
+button.
+
+After the terminal login the agent is respawned (`restart({ restoreSessions:
+true })`): the sessions the chat views were displaying are loaded back with
+`session/load` into the same views (D21), so signing in does not lose the
+conversation; a session that cannot be restored falls back to a fresh one.
+Whether the running process could instead pick up the new token without a
+restart is unverified; the spec says to reconnect.
+
+Independently, `kiroAcp.attachActiveFile` now defaults to `false`: the
+implicit active-file chip surprised users (the file they happened to have
+open was sent with every prompt). Files are attached explicitly with `@` or
+**Send Selection**; the setting still enables the old behaviour.

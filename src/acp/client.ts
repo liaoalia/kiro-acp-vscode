@@ -19,6 +19,8 @@ import {
   type ClientServices,
   type ConnectionStateChange,
   type ConnectionStatus,
+  FALLBACK_LOGIN_METHOD,
+  isAuthRequiredError,
   type KiroAgent,
   type ModelState,
   type SessionEvent,
@@ -67,6 +69,10 @@ export function toAcpError(error: unknown, fallback = "ACP request failed"): Acp
   }
   if (error instanceof Error) return new AcpError(error.message || fallback);
   return new AcpError(typeof error === "string" && error ? error : fallback);
+}
+
+function isTerminalMethod(method: acp.AuthMethod): method is acp.AuthMethodTerminal & { type: "terminal" } {
+  return "type" in method && method.type === "terminal";
 }
 
 export function readKiroExtensionMethods(capabilities: acp.AgentCapabilities | undefined): string[] {
@@ -399,9 +405,8 @@ export class KiroAgentImpl implements KiroAgent {
       response = await agent.request(acp.methods.agent.session.new, params);
     } catch (error) {
       const err = toAcpError(error, "session/new failed");
-      if (this._agent && this._agent.authMethods.length > 0 && this.connection) {
-        this.options.logger.warn(`session/new rejected (${err.code ?? "no code"}): ${err.message}; sign-in required`);
-        this.setStatus("auth_required", { agent: this._agent, message: err.message });
+      if (this._agent && (this._agent.authMethods.length > 0 || isAuthRequiredError(err))) {
+        this.markAuthRequired("session/new", err);
       }
       throw err;
     }
@@ -471,7 +476,9 @@ export class KiroAgentImpl implements KiroAgent {
       this.loadingSessions.delete(sessionId);
       if (previous) this.sessions.set(sessionId, previous);
       else this.sessions.delete(sessionId);
-      throw toAcpError(error, "session/load failed");
+      const err = toAcpError(error, "session/load failed");
+      if (isAuthRequiredError(err)) this.markAuthRequired("session/load", err);
+      throw err;
     }
     this.loadingSessions.delete(sessionId);
     const current = this.sessions.get(sessionId) ?? placeholder;
@@ -499,6 +506,7 @@ export class KiroAgentImpl implements KiroAgent {
       return response;
     } catch (error) {
       const err = toAcpError(error, "session/prompt failed");
+      if (isAuthRequiredError(err)) this.markAuthRequired("session/prompt", err);
       this.emitSession({ type: "turn_failed", sessionId, error: err.message });
       throw err;
     }
@@ -571,12 +579,30 @@ export class KiroAgentImpl implements KiroAgent {
     }));
   }
 
+  /**
+   * A request was rejected because the user is signed out: switch to
+   * `auth_required` so the host offers a login. Without an advertised auth
+   * method the terminal fallback (`kiro-cli login`) is offered instead, so
+   * the user can still sign in from the chat (D25).
+   */
+  private markAuthRequired(request: string, err: AcpError): void {
+    if (!this._agent || !this.connection) return;
+    this.options.logger.warn(`${request} rejected (${err.code ?? "no code"}): ${err.message}; sign-in required`);
+    if (this._agent.authMethods.length === 0) {
+      this._agent = { ...this._agent, authMethods: [FALLBACK_LOGIN_METHOD] };
+    }
+    this.setStatus("auth_required", { agent: this._agent, message: err.message });
+  }
+
   async authenticate(methodId: string): Promise<void> {
     const info = this._agent;
     if (!info) throw new AcpError("agent is not initialized");
-    const method = info.authMethods.find((m) => m.id === methodId);
+    // The fallback is always accepted (a `/login` typed while still signed in).
+    const method: acp.AuthMethod | undefined =
+      info.authMethods.find((m) => m.id === methodId) ??
+      (methodId === FALLBACK_LOGIN_METHOD.id ? FALLBACK_LOGIN_METHOD : undefined);
     if (!method) throw new AcpError(`Unknown auth method '${methodId}'`);
-    if ("type" in method && method.type === "terminal") {
+    if (isTerminalMethod(method)) {
       if (!this.services.runTerminalAuth) {
         throw new AcpError(`Auth method '${methodId}' requires a terminal, which the host does not provide`);
       }

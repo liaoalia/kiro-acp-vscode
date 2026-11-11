@@ -92,6 +92,15 @@
 - Install Kiro CLI (`irm https://cli.kiro.dev/install.ps1 | iex`), run `kiro-cli login`, then exercise each feature against the real agent and update docs/protocol-notes.md with the recorded `initialize` exchange and any spec deviations.
 - Manual UX pass on Linux and macOS (path resolution defaults, terminal behaviour).
 
+### ➕ Task 16: Sign-in from the chat on expired tokens; no implicit active-file chip (0.3.4)
+- [x] `isAuthRequiredError` + `FALLBACK_LOGIN_METHOD` (`src/acp/types.ts`); `markAuthRequired` on `session/new|load|prompt` failures (`src/acp/client.ts`)
+- [x] `ChatController.login()` (default method or fallback) and `restart({ restoreSessions })`; `/login` slash command; `kiroAcp.login` command
+- [x] no duplicate "Prompt failed" notice when the sign-in banner is shown
+- [x] `kiroAcp.attachActiveFile` default `false` (package.json, context.ts, README)
+- [x] fake agent: `login` subcommand exits 0; `/scenario auth-expired` rejects the prompt like the real CLI
+- [x] tests: `test/acp-client.test.ts` (3 new), slash tests, `test/e2e/f14-login.e2e.ts`
+- [x] docs: README (auth, settings, commands), protocol-notes (observed error), DECISIONS D25
+
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] `src/features/diff.ts:405` — diff entries and permission selection are keyed by tool-call id only; add the session id so two sessions reusing an id can never resolve each other's proposal
 - [ ] `src/ui/chatController.ts:1384` — automatic diff opening indexes the filtered diff list while card links use content indexes; use one indexing scheme

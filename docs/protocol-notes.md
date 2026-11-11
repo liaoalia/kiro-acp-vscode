@@ -69,6 +69,17 @@ After the terminal login completes the client must **reconnect** (spawn a new
 process). The exact error code is **[unverified]**; the extension treats any
 `session/new` failure while `authMethods` is non-empty as "auth required".
 
+**Observed 2026-11-11 (Kiro CLI 3.x, V3, cached token expired):** `initialize`
+returned **no** `authMethods`, `session/new` succeeded, and the first
+`session/prompt` failed with the JSON-RPC error message
+`Auth refresh callback failed: Internal error: You are not logged in. Please log in with `kiro-cli login`.`
+(code not captured). So "signed out" cannot be detected from `initialize`
+alone: `isAuthRequiredError` (`src/acp/types.ts`) also matches the message
+(`not logged in`, `kiro-cli login`, `authentication required`, …) on
+`session/new`, `session/load` and `session/prompt`, and when the agent offered
+no auth method the client synthesises the terminal method `kiro-cli-login`
+(`<cliPath> login`) so the chat can still show a login button (D25).
+
 ## Sessions
 
 - `session/new` `{ cwd, mcpServers: [] }` (+ optional `additionalDirectories`,

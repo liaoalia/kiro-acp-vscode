@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type * as acp from "@agentclientprotocol/sdk";
-import { AcpError, AUTH_REQUIRED_CODE, KiroAgentImpl, type SessionEvent, type SessionState } from "../src/acp/index.js";
+import {
+  AcpError,
+  AUTH_REQUIRED_CODE,
+  FALLBACK_LOGIN_METHOD,
+  isAuthRequiredError,
+  KiroAgentImpl,
+  type SessionEvent,
+  type SessionState,
+} from "../src/acp/index.js";
 import { chunkText, launch, makeServices, rejectFirst, toolUpdates, updatesOf, waitFor } from "./harness.js";
 
 const text = (value: string): acp.ContentBlock[] => [{ type: "text", text: value }];
@@ -77,6 +85,67 @@ test("signed-out agent: session/new failure maps to auth_required and terminal a
     assert.equal(h.services.terminalAuthRuns[0]?.method.id, "kiro-login");
     assert.equal(h.services.terminalAuthRuns[0]?.executable, process.execPath);
     await assert.rejects(() => h.agent.authenticate("nope"), /Unknown auth method/);
+  } finally {
+    await h.agent.stop();
+  }
+});
+
+test("isAuthRequiredError recognises the auth code and Kiro's signed-out messages", () => {
+  assert.equal(isAuthRequiredError({ code: AUTH_REQUIRED_CODE, message: "nope" }), true);
+  assert.equal(
+    isAuthRequiredError({
+      code: -32603,
+      message: "Auth refresh callback failed: Internal error: You are not logged in. Please log in with `kiro-cli login`.",
+    }),
+    true,
+  );
+  assert.equal(isAuthRequiredError({ code: -32603, message: "authentication required" }), true);
+  assert.equal(isAuthRequiredError({ code: -32603, message: "Internal error: model unavailable" }), false);
+  assert.equal(isAuthRequiredError({ message: "session not found" }), false);
+});
+
+test("expired token: a prompt rejected as signed out maps to auth_required with the terminal login fallback", async () => {
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    const info = await h.agent.start();
+    assert.deepEqual(info.authMethods, []);
+    const session = await h.agent.newSession(h.cwd);
+    assert.equal(h.agent.status, "ready");
+
+    await assert.rejects(
+      () => h.agent.prompt(session.sessionId, text("/scenario auth-expired")),
+      (error: unknown) => error instanceof AcpError && /not logged in/.test(error.message),
+    );
+    assert.equal(h.agent.status, "auth_required");
+    const change = h.changes[h.changes.length - 1];
+    assert.equal(change?.status, "auth_required");
+    assert.match(change?.message ?? "", /kiro-cli login/);
+    assert.deepEqual(
+      change?.agent?.authMethods.map((m) => m.id),
+      [FALLBACK_LOGIN_METHOD.id],
+    );
+    assert.ok(h.events.some((e) => e.type === "turn_failed" && e.sessionId === session.sessionId));
+
+    // The fallback runs `<cliPath> login` through the host's terminal auth.
+    await h.agent.authenticate(FALLBACK_LOGIN_METHOD.id);
+    assert.equal(h.services.terminalAuthRuns.length, 1);
+    const run = h.services.terminalAuthRuns[0]!;
+    assert.equal(run.method.id, "kiro-cli-login");
+    assert.ok("args" in run.method);
+    assert.deepEqual(run.method.args, ["login"]);
+    assert.equal(run.executable, process.execPath);
+  } finally {
+    await h.agent.stop();
+  }
+});
+
+test("the terminal login fallback is accepted even while the agent is signed in (/login)", async () => {
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    await h.agent.start();
+    await h.agent.authenticate(FALLBACK_LOGIN_METHOD.id);
+    assert.equal(h.services.terminalAuthRuns.length, 1);
+    assert.equal(h.agent.status, "ready");
   } finally {
     await h.agent.stop();
   }

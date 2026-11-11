@@ -62,6 +62,7 @@ test("session commands are client-side", () => {
   assert.deepEqual(routeSlash(parseSlash("/new")!, bare), { kind: "new_session" });
   assert.deepEqual(routeSlash(parseSlash("/cancel")!, bare), { kind: "cancel" });
   assert.deepEqual(routeSlash(parseSlash("/restart")!, bare), { kind: "restart" });
+  assert.deepEqual(routeSlash(parseSlash("/login")!, bare), { kind: "login" });
   const help = routeSlash(parseSlash("/help")!, bare);
   assert.equal(help.kind, "help");
   if (help.kind === "help") {
@@ -113,7 +114,7 @@ test("extension-backed commands match advertised methods by pattern, not by exac
   assert.equal(findExtension({ ...bare, extensionMethods: ["_kiro/account/getCredits"] }, "usage"), "_kiro/account/getCredits");
   assert.deepEqual(
     builtinCommands(renamed).map((c) => c.name),
-    ["clear", "help", "capabilities", "usage", "context", "compact", "cancel", "restart"],
+    ["clear", "help", "capabilities", "usage", "context", "compact", "cancel", "restart", "login"],
   );
   assert.deepEqual(unavailableCommands(renamed).map((u) => u.name), ["effort", "model"]);
   const help = routeSlash(parseSlash("/help")!, bare);
@@ -174,10 +175,11 @@ test("builtinCommands and mergeCommands reflect capabilities and keep agent comm
     "context",
     "cancel",
     "restart",
+    "login",
   ]);
   assert.deepEqual(
     builtinCommands(bare).map((c) => c.name),
-    ["clear", "help", "capabilities", "cancel", "restart"],
+    ["clear", "help", "capabilities", "cancel", "restart", "login"],
   );
   const merged = mergeCommands([{ name: "clear", description: "agent's own clear" }, ...v3.agentCommands], v3);
   assert.equal(merged[0].description, "agent's own clear");

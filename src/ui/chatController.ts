@@ -23,6 +23,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import {
   AcpError,
   createKiroAgent,
+  FALLBACK_LOGIN_METHOD,
   resolveCliPath,
   type AgentInfo,
   type ClientServices,
@@ -811,11 +812,35 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  async restart(): Promise<void> {
+  /**
+   * Spawn a fresh agent process. With `restoreSessions` the sessions the
+   * views were displaying are loaded back (`session/load`) into the same
+   * views once the new process is ready, so a sign-in does not lose context.
+   */
+  async restart(options: { restoreSessions?: boolean } = {}): Promise<void> {
+    const restore = options.restoreSessions ? this.displayedSessions() : [];
     this.endAllSessions();
     await this.teardownAgent();
     this.setConnection({ status: "stopped" });
     await this.ensureStarted();
+    if (restore.length === 0 || this.agentInfo?.agentCapabilities.loadSession !== true) return;
+    for (const { binding, sessionId } of restore) {
+      await this.openPastSession(sessionId, binding);
+    }
+    // A view whose session could not be restored gets a fresh one.
+    await this.assignPendingViews();
+  }
+
+  /** Views bound to a loaded session, with that session id (for a restore after restart). */
+  private displayedSessions(): Array<{ binding: ViewBinding; sessionId: string }> {
+    const out: Array<{ binding: ViewBinding; sessionId: string }> = [];
+    for (const view of this.views) {
+      if (view.follows || !view.displayed) continue;
+      const session = this.sessions.get(view.displayed);
+      if (!session || session.loading) continue;
+      out.push({ binding: view, sessionId: view.displayed });
+    }
+    return out;
   }
 
   /**
@@ -1465,7 +1490,12 @@ export class ChatController implements vscode.Disposable {
       this.handleStopReason(session, response.stopReason);
     } catch (error) {
       const message = errorMessage(error);
-      this.notice(session, "error", `Prompt failed: ${message}`);
+      if (agent.status === "auth_required") {
+        // The sign-in banner (with the login button) already shows the reason.
+        this.deps.output.appendLine(`[warn] session ${session.id} prompt rejected, sign-in required: ${message}`);
+      } else {
+        this.notice(session, "error", `Prompt failed: ${message}`);
+      }
       this.endTurn(session, "error");
     }
   }
@@ -1928,12 +1958,19 @@ export class ChatController implements vscode.Disposable {
     }
   }
 
-  private async login(methodId: string): Promise<void> {
+  /**
+   * Sign in with `methodId` (default: the first method the agent offers, else
+   * the terminal fallback that runs `kiro-cli login`), then reconnect and
+   * restore the sessions the chat views were showing (D25).
+   */
+  async login(methodId?: string): Promise<void> {
+    await this.ensureStarted();
     const agent = this.agent;
     if (!agent) return;
+    const id = methodId ?? this.agentInfo?.authMethods[0]?.id ?? FALLBACK_LOGIN_METHOD.id;
     try {
-      await agent.authenticate(methodId);
-      await this.restart();
+      await agent.authenticate(id);
+      await this.restart({ restoreSessions: true });
     } catch (error) {
       this.notice(null, "error", `Sign-in failed: ${errorMessage(error)}`);
     }
@@ -2022,6 +2059,9 @@ export class ChatController implements vscode.Disposable {
         return true;
       case "restart":
         await this.restart();
+        return true;
+      case "login":
+        await this.login();
         return true;
       case "help":
         this.localExchange(

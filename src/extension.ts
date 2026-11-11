@@ -103,6 +103,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     vscode.commands.registerCommand("kiroAcp.openPastSessionInSidebar", () => view.browsePastSessions()),
     vscode.commands.registerCommand("kiroAcp.cancel", () => controller.cancel()),
     vscode.commands.registerCommand("kiroAcp.restart", () => controller.restart()),
+    // Terminal sign-in (`kiro-cli login`), then reconnect keeping the displayed sessions.
+    vscode.commands.registerCommand("kiroAcp.login", () => controller.login()),
     vscode.commands.registerCommand("kiroAcp.openPlan", () => plan.open()),
     vscode.commands.registerCommand("kiroAcp.showLog", () => output.show(true)),
     vscode.commands.registerCommand("kiroAcp.forgetSessionOptions", async () => {
