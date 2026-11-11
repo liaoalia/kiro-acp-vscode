@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { stampedOutput } from "./ui/stampedOutput.js";
 
 import { ContextTracker } from "./features/context.js";
 import { DiffManager } from "./features/diff.js";
@@ -24,7 +25,7 @@ export interface KiroAcpApi {
 }
 
 export function activate(context: vscode.ExtensionContext): KiroAcpApi {
-  const output = vscode.window.createOutputChannel("Kiro ACP");
+  const output = stampedOutput(vscode.window.createOutputChannel("Kiro ACP"));
   const logger = {
     info: (m: string) => output.appendLine(`[info] ${m}`),
     warn: (m: string) => output.appendLine(`[warn] ${m}`),

@@ -41,13 +41,14 @@ network access happens inside `kiro-cli`, which inherits your environment
   answer streams, and "Working…" / "Needs input" in the header.
 - **Context and tokens**: once the agent reports them, a pill in the header
   shows the context window in use and the tokens the session has spent
-  ("42% ctx · 12k tokens"); hover it for the exact numbers. When a turn ends
-  without the agent having reported a percentage, the extension asks
-  `_kiro/session/context` for it once.
+  ("42% ctx · 12k tokens"); hover it for the exact numbers. While the agent has
+  not reported a percentage, the extension asks `_kiro/session/context` for
+  it after each turn (not again once the agent rejects the method).
 - **Stuck turns**: the "Kiro is working…" strip adds "no reply for N min"
   once nothing has arrived for a minute (hover it for the time of the last
   event). Errors kiro-cli prints while a turn runs (a proxy answering HTTP
-  407, say) show up as a notice in the running sessions.
+  407, say) show up as a notice in the running sessions. Every line of the
+  Kiro ACP log carries the local time.
 - **Past sessions**: when the agent can list and load sessions (Kiro CLI
   V3), the history button in the chat header (and the sidebar title), or
   `Kiro: Open Past Session…`, lists the sessions recorded for this workspace

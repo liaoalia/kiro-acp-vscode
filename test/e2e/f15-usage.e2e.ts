@@ -1,5 +1,5 @@
 /** F15 — context / token usage reported by the agent reaches the state and the views (D26). */
-import { assert, assertEqual, freshSession, runPrompt, test, waitFor } from "./harness.js";
+import { assert, assertEqual, freshSession, messagesOf, runPrompt, test, textOf, waitFor } from "./harness.js";
 
 test("F15.1 usage_update, context_usage and turn_completion fill the session's usage", async ({ api, recorder }) => {
   await freshSession(api);
@@ -41,9 +41,16 @@ test("F15.2 after a turn without a usage report, _kiro/session/context is polled
   assertEqual(usage?.contextSize, 200_000, "the polled context window");
   assertEqual(usage?.tokensSpent, null, "nothing known about tokens spent");
 
-  // Known percentage: no second poll changes anything.
+  // Known percentage: the next turn does not poll again. `/context` calls the
+  // same method and its reply counts the calls so far (the poll, then itself).
   await runPrompt(api, "/scenario chat");
   await new Promise((r) => setTimeout(r, 300));
   const posts = recorder.ofType("usage", mark);
   assertEqual(posts.length, 1, `one usage post in all: ${JSON.stringify(posts)}`);
+  await runPrompt(api, "/context");
+  const reply = messagesOf(api.controller.snapshot())
+    .filter((m) => m.role === "agent")
+    .map(textOf)
+    .find((t) => t.includes('"calls"'));
+  assert(reply && reply.includes('"calls": 2'), `the method was called once by the poll and once by /context: ${reply}`);
 });

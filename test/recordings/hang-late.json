@@ -1,0 +1,25 @@
+{
+  "name": "hang-late",
+  "description": "An agent that ignores session/cancel for 6.5 s (past the 5 s Stop watchdog) and only then answers cancelled: the late settlement must be ignored (D27).",
+  "steps": [
+    {
+      "kind": "update",
+      "update": {
+        "sessionUpdate": "agent_message_chunk",
+        "messageId": "m1",
+        "content": {
+          "type": "text",
+          "text": "Busy\u2026 "
+        }
+      }
+    },
+    {
+      "kind": "delay_uncancellable",
+      "ms": 6500
+    },
+    {
+      "kind": "stop",
+      "stopReason": "end_turn"
+    }
+  ]
+}

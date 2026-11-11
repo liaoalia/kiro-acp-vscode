@@ -265,8 +265,10 @@ export interface UiState {
   /**
    * When the displayed session last changed (ms since the epoch): a prompt
    * sent, a chunk, a tool call, a permission request. The working strip shows
-   * "no reply for N min" from it while a turn runs. The webview stamps it on
-   * every incremental session message.
+   * "no reply for N min" from it while a turn runs. The snapshot carries the
+   * host's `ChatSession.updatedAt`; the webview restamps it on the session
+   * messages that changed its state (chunks, tool calls, plan, permissions,
+   * turn, usage, delivery) and clears it when the session switches.
    */
   lastActivityAt?: number | null;
   /** Host-side display preferences (defaults; the webview may override locally). */

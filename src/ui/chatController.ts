@@ -257,6 +257,14 @@ class ChatSession {
   contextReplyLogged = false;
   /** Armed by Stop: ends the turn locally when the agent never answers `session/cancel` (D27). */
   cancelTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The Stop watchdog ended a turn whose `session/prompt` has not settled
+   * yet (D27): until it does, streamed updates that arrive while no turn
+   * runs belong to that abandoned turn and are dropped.
+   */
+  abandonedTurn = false;
+  /** The drop above is logged once per session. */
+  abandonedDropLogged = false;
   updatedAt = Date.now();
 
   constructor(
@@ -491,6 +499,7 @@ export class ChatController implements vscode.Disposable {
       ...state,
       acceptsPromptsDuringTurn: true,
       usage: session && session.usage !== EMPTY_USAGE ? session.usage : null,
+      lastActivityAt: session ? session.updatedAt : null,
       toolCalls,
       commands: mergeCommands(transcript.commands, this.slashContext(transcript)),
       prefs: { showSettings, sessionPanelCollapsed },
@@ -1421,6 +1430,10 @@ export class ChatController implements vscode.Disposable {
     // Nothing queued may start a turn on a session that is going away; the
     // notice is posted now, while a view may still display it.
     session.closing = true;
+    if (session.cancelTimer) {
+      clearTimeout(session.cancelTimer);
+      session.cancelTimer = null;
+    }
     this.discardQueue(session, this.discardRemaining(session));
     if (session.turnActive && this.agent) {
       try {
@@ -1497,10 +1510,12 @@ export class ChatController implements vscode.Disposable {
     const generation = session.turnGeneration;
     session.cancelTimer = setTimeout(() => {
       session.cancelTimer = null;
-      if (!session.turnActive || session.turnGeneration !== generation || !this.sessions.has(session.id)) return;
+      // The same ChatSession object only: the id may have been closed and restored meanwhile.
+      if (!session.turnActive || session.turnGeneration !== generation || this.sessions.get(session.id) !== session) return;
       this.deps.output.appendLine(
         `[warn] session ${session.id}: the agent did not end the turn within ${CANCEL_GRACE_MS} ms of session/cancel; ending it locally`,
       );
+      session.abandonedTurn = true;
       this.notice(
         session,
         "warning",
@@ -1605,6 +1620,7 @@ export class ChatController implements vscode.Disposable {
       const response = await agent.prompt(session.id, blocks);
       if (session.turnGeneration !== generation) {
         // Ended locally by the Stop watchdog (D27): a later turn may be running.
+        session.abandonedTurn = false;
         this.deps.output.appendLine(`[info] session ${session.id}: late prompt response (${response.stopReason}) ignored`);
         return;
       }
@@ -1612,6 +1628,7 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       const message = errorMessage(error);
       if (session.turnGeneration !== generation) {
+        session.abandonedTurn = false;
         this.deps.output.appendLine(`[info] session ${session.id}: late prompt failure ignored: ${message}`);
         return;
       }
@@ -1857,10 +1874,19 @@ export class ChatController implements vscode.Disposable {
         // Only activity (messages, tool calls, plan) counts as "recent": the
         // metadata updates an agent sends right after `session/new` (available
         // commands, mode, config options) must not reorder the session list.
-        if (isActivityUpdate(event.update)) session.touch();
-        this.scheduleSessions();
         const update = event.update;
         const replay = event.replay === true;
+        if (session.abandonedTurn && !session.turnActive && !replay && isActivityUpdate(update)) {
+          // The agent resumed streaming the turn the Stop watchdog ended (D27):
+          // with no turn running, this is that turn's late output, not a reply.
+          if (!session.abandonedDropLogged) {
+            session.abandonedDropLogged = true;
+            this.deps.output.appendLine(`[info] session ${session.id}: dropping late ${update.sessionUpdate} of the stopped turn`);
+          }
+          return;
+        }
+        if (isActivityUpdate(update)) session.touch();
+        this.scheduleSessions();
         const usage = applyUsageUpdate(session.usage, update);
         if (usage) {
           session.usage = usage;

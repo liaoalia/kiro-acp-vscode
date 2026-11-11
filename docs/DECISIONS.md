@@ -32,7 +32,9 @@ gates every optional behaviour on advertised capabilities, never on the engine.
 ## D5. Turn completion
 A prompt turn ends only when `session/prompt` returns. Kiro's `session_info_update`
 with `_meta.kiro.kind: "turn_end"` is ignored for completion (per Kiro's V3
-migration guide).
+migration guide). Exception (D27): after Stop, a turn the agent has not ended
+within 5 s is ended locally as `cancelled`; the late `session/prompt`
+settlement is then ignored.
 
 ## D6. Permissions
 Only the options supplied by the agent are shown. "Always allow for this
@@ -483,13 +485,20 @@ hidden rather than guessing from text length.
 **After-turn poll (0.3.7).** On the real CLI no `context_usage` had shown
 up by the end of a long session, so when a turn ends and the session still
 has no percentage, the controller calls the advertised `_kiro/session/context`
-once (`pollContextUsage`) and reads its reply defensively
+(`pollContextUsage`, after each turn until a percentage is known) and reads
+its reply defensively
 (`contextFromResult`: the usual keys at any depth, then "42%" / "84k of 200k
 tokens" in its text). The first reply per session and one example of every
 `session_info_update` kind are logged to the Kiro ACP channel, so the real
 shapes can be recorded. An agent that rejects the method is not polled again
 until the next restart. The fake agent reports 7% for a session that never
-announced a `context_usage` (e2e F15.2).
+announced a `context_usage`; its reply also counts the calls, which e2e
+F15.2 checks through `/context`.
+
+Stop on POSIX: commands run in their own process group (`detached`), and the
+kill signals the group (SIGTERM, SIGKILL two seconds later when still
+alive), so a service started by the shell dies with it; Windows already
+used `taskkill /T /F`.
 
 ## D27. Stop is local-first: kill the session's commands, then end the turn without the agent
 A real session hung for an hour at "thinking": the agent had started a
@@ -497,7 +506,7 @@ service (`run_service_sit.bat`) through `terminal/create` and was waiting in
 `terminal/wait_for_exit` for a process that never exits; `session/cancel`
 did not get it out of that wait, and kiro-cli's stderr showed its backend
 calls failing with `HTTP 407 Proxy Authorization Required` meanwhile. Only
-the `session/prompt` response ends a turn (D22), so the UI stayed "working"
+the `session/prompt` response ends a turn (D5), so the UI stayed "working"
 and Stop looked broken.
 
 Stop (`cancel()`) therefore does three things:
@@ -513,11 +522,20 @@ Stop (`cancel()`) therefore does three things:
   it is ended locally as `cancelled` with a notice ("Kiro did not confirm the
   stop…"). `runTurn` compares the session's turn generation when the
   `session/prompt` promise finally settles and ignores a late answer (e2e
-  F12.8). The queue is kept (Stop never discards it, D22).
+  F12.8, F12.10). The queue is kept (Stop never discards it, D22). Until
+  that late settlement arrives the session is flagged `abandonedTurn`:
+  streamed updates that reach it while no turn runs are that turn's late
+  output and are dropped (logged once). Updates that arrive while a *new*
+  turn already runs cannot be told apart (ACP updates carry no turn id) and
+  are shown; that needs an agent that ignores the cancel for over 5 s and
+  then resumes streaming into a session that has moved on.
 
 Diagnostics that come with it: the working strip shows "no reply for N min"
-from the webview's `lastActivityAt` (stamped on every session message, kept
-from the snapshot's `updatedAt`), and `[ERROR]` lines on kiro-cli's stderr
+from `UiState.lastActivityAt` (the snapshot carries `ChatSession.updatedAt`,
+so a re-sent snapshot keeps the counter; the webview reducer restamps it on
+the session messages that changed its state and clears it on a session
+switch), every Kiro ACP log line starts with the local time
+(`src/ui/stampedOutput.ts`), and `[ERROR]` lines on kiro-cli's stderr
 are turned into one notice per distinct error per minute in every session
 whose turn is running (`noteAgentStderr`). Unknown agent requests are logged
 with their params (`_kiro/terminal/shell_type` was seen and answered

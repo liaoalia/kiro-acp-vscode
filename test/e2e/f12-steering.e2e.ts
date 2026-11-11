@@ -330,6 +330,31 @@ test("F12.8 Stop ends the turn locally when the agent never answers session/canc
   void turn; // the hung prompt() never resolves in this fake; nothing awaits it
 });
 
+test("F12.10 a session/prompt answer that lands after the watchdog ended the turn is ignored (D27)", async ({ api, recorder }) => {
+  await freshSession(api);
+  const mark = recorder.mark();
+  void api.controller.prompt("/scenario hang-late", []);
+  await waitFor(() => recorder.ofType("chunk", mark).some((c) => c.role === "agent"), 15_000, "the first chunk");
+
+  const stopped = Date.now();
+  await api.controller.cancel();
+  await waitFor(() => !api.controller.snapshot().turnActive, 15_000, "the watchdog to end the turn");
+  assert(Date.now() - stopped >= 4_000, "ended by the watchdog (the agent answers only after 6.5 s)");
+
+  // A new turn runs while the abandoned prompt finally settles (~6.5 s after Stop).
+  const next = recorder.mark();
+  await withTimeout(api.controller.prompt("/scenario slow", []), 15_000, "the next turn");
+  await sleep(Math.max(0, stopped + 8_000 - Date.now())); // let the late answer land, whenever it does
+  const ends = recorder.ofType("turn", next).filter((t) => !t.active);
+  assertEqual(ends.length, 1, `the next turn ended exactly once: ${JSON.stringify(ends)}`);
+  assertEqual(ends[0]?.stopReason, "end_turn", "with its own stop reason, not the late 'cancelled'");
+  assert(
+    messagesOf(api.controller.snapshot()).some((m) => m.role === "agent" && textOf(m).includes("slow 19 ")),
+    "the next turn streamed to its end",
+  );
+  assertEqual(api.controller.snapshot().turnActive, false, "idle afterwards");
+});
+
 test("F12.9 Stop kills the session's running command, so an agent waiting on it can end the turn (D27)", async ({ api, recorder }) => {
   await freshSession(api);
   const mark = recorder.mark();

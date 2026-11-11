@@ -135,6 +135,8 @@ class MirrorPty implements vscode.Pseudoterminal {
 }
 
 const DEFAULT_LIMIT = 1024 * 1024;
+/** POSIX: SIGKILL follows SIGTERM after this long when the process group is still alive. */
+const POSIX_KILL_GRACE_MS = 2_000;
 
 export class TerminalService implements vscode.Disposable {
   private readonly active = new Map<string, TerminalEntry>();
@@ -178,6 +180,9 @@ export class TerminalService implements vscode.Disposable {
       shell: true,
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
+      // POSIX: own process group, so a kill reaches the shell's children too
+      // (a started service, not just `sh -c`); Windows uses `taskkill /T`.
+      detached: process.platform !== "win32",
     });
 
     let resolveExit!: (s: ExitStatus) => void;
@@ -510,7 +515,23 @@ export class TerminalService implements vscode.Disposable {
         killer.on("close", () => resolve());
       });
     } else {
-      entry.child.kill("SIGTERM");
+      // The whole process group (negative pid), SIGKILL after a grace period
+      // for whatever ignored SIGTERM; the plain child as a fallback.
+      const signalGroup = (signal: NodeJS.Signals): boolean => {
+        if (pid === undefined) return false;
+        try {
+          process.kill(-pid, signal);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      if (!signalGroup("SIGTERM")) entry.child.kill("SIGTERM");
+      const escalate = setTimeout(() => {
+        if (entry.exit) return;
+        if (!signalGroup("SIGKILL")) entry.child.kill("SIGKILL");
+      }, POSIX_KILL_GRACE_MS);
+      void entry.exitPromise.then(() => clearTimeout(escalate));
     }
   }
 

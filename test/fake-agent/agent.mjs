@@ -27,6 +27,7 @@
  *       -> cancelled: emits tool_call_update failed ("cancelled") and ends the turn with stopReason cancelled
  *   { "kind": "delay", "ms": 10 }
  *   { "kind": "hang" }                   -> never returns, even after session/cancel (a stuck agent)
+ *   { "kind": "delay_uncancellable", "ms": 6500 } -> waits that long ignoring session/cancel, then goes on
  *   { "kind": "stderr", "text": "..." }
  *   { "kind": "repeat", "times": 40, "steps": [ ...steps using {{i}}... ] }
  *   { "kind": "exit", "code": 3 }          -> the process exits mid-turn
@@ -405,6 +406,10 @@ async function runSteps(ctx, session, turn, steps) {
         // A stuck agent: the prompt never answers, not even after session/cancel.
         await new Promise(() => {});
         break;
+      case "delay_uncancellable":
+        // An agent that honours session/cancel only after its current wait (a late answer).
+        await new Promise((resolve) => setTimeout(resolve, step.ms ?? 1000));
+        break;
       case "stderr":
         process.stderr.write(`${step.text}\n`);
         break;
@@ -668,7 +673,14 @@ if (isV2) {
       // `context_usage` reports.
       const session = sessions.get(ctx.params?.sessionId);
       const usagePercentage = session?.contextPercent ?? 7;
-      return { ok: true, echoed: ctx.params, contextWindow: { usagePercentage, contextWindowSize: 200000 } };
+      // `calls` lets a test count the polls (one after a turn without a percentage, then none).
+      if (session) session.contextCalls = (session.contextCalls ?? 0) + 1;
+      return {
+        ok: true,
+        echoed: ctx.params,
+        calls: session?.contextCalls ?? 0,
+        contextWindow: { usagePercentage, contextWindowSize: 200000 },
+      };
     },
   );
   app.onRequest(
