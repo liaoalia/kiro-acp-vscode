@@ -110,6 +110,8 @@
 - [x] e2e F12.3 / F12.5 rewritten for the new semantics
 - [x] docs: README, DECISIONS D22
 - [x] `/clear` replaces the session in its tab (the old one is forgotten locally); `/new` still adds one alongside (e2e F9.1)
+- [x] revmux 14: a closing/replaced session discards its queue before the cancel and refuses late steer refusals (`ChatSession.closing`, e2e F12.6)
+- [x] revmux 15: a prompt typed while `/clear` awaits `session/new` waits for the replacement and goes there (`ChatSession.replacement`, e2e F12.7)
 
 ### ➕ Task 18: Context and token usage in the header (0.3.6)
 - [x] `src/features/pure/usage.ts`: `SessionUsage` + `applyUsageUpdate` for ACP `usage_update` (`used`/`size`/`cost`), Kiro `session_info_update` `context_usage` (`usagePercentage`) and `turn_completion` (`promptTurnSummaries` token fields, summed per session)
