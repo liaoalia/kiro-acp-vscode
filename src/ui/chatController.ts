@@ -227,6 +227,12 @@ class ChatSession {
   /** `_session/steer` failed once (e.g. -32601): later mid-turn prompts queue directly. */
   steerUnsupported = false;
   /**
+   * The session is being closed or replaced (`/clear`, closeSession): its
+   * queue was discarded and nothing may start another turn on it, not even a
+   * late `_session/steer` refusal (revmux round 14).
+   */
+  closing = false;
+  /**
    * Bumped whenever a turn starts or ends (D22): a steer rejection that
    * arrives after its turn ended compares this to the value it captured and
    * drops the message instead of queueing it into a new turn.
@@ -1364,6 +1370,10 @@ export class ChatController implements vscode.Disposable {
   async closeSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    // Nothing queued may start a turn on a session that is going away; the
+    // notice is posted now, while a view may still display it.
+    session.closing = true;
+    this.discardQueue(session, this.discardRemaining(session));
     if (session.turnActive && this.agent) {
       try {
         await this.agent.cancel(sessionId);
@@ -1583,7 +1593,11 @@ export class ChatController implements vscode.Disposable {
         `[info] steer ${session.id}: failed${code}: ${errorMessage(error)}; queueing mid-turn prompts instead`,
       );
       session.steering.delete(messageId);
-      if (!this.sessions.has(session.id)) return;
+      if (!this.sessions.has(session.id) || session.closing) {
+        // The session is gone or on its way out: nothing may start a turn on it.
+        this.setDelivery(session, messageId, null);
+        return;
+      }
       if (session.turnGeneration !== generation || !session.turnActive) {
         // The steered turn is over (cancelled, failed or ended): the refusal
         // says nothing about steering support. The message was typed and is
@@ -1600,13 +1614,18 @@ export class ChatController implements vscode.Disposable {
 
   /** Hold `item` until the turn ends; sent right away when the turn ended meanwhile. */
   private enqueue(session: ChatSession, item: QueuedPrompt): void {
+    if (session.closing) {
+      this.setDelivery(session, item.messageId, null);
+      this.discardQueue(session, 1);
+      return;
+    }
     session.queue.push(item);
     if (!session.turnActive) this.drainQueue(session);
   }
 
   /** Send the next queued prompt of an idle session as a turn of its own. */
   private drainQueue(session: ChatSession): void {
-    if (session.turnActive) return;
+    if (session.turnActive || session.closing) return;
     const next = session.queue.shift();
     if (!next) return;
     this.setDelivery(session, next.messageId, null);
@@ -2068,16 +2087,25 @@ export class ChatController implements vscode.Disposable {
       case "new_session": {
         // `/clear` and `/new`: a new session in the view the command came from
         // (else the focused view, else any view) when it displays this session.
-        // Typed mid-turn they also stop the turn left behind (D22). `/clear`
-        // then forgets the old session locally, so the tab starts over with a
-        // single clean session (the agent keeps its history, D20).
+        // `/clear` replaces the session: its queue is discarded and its turn
+        // cancelled first (nothing may start another turn on it meanwhile),
+        // then the old session is forgotten locally so the tab starts over
+        // with a single clean session (the agent keeps its history, D20).
+        // `/new` leaves the old session alone, running turn and queue included.
         const displays = (v: ViewBinding | null | undefined): ViewBinding | undefined =>
           v && !v.follows && v.displayed === sessionId ? v : undefined;
         const view =
           displays(sender) ?? displays(this.focusedView) ?? [...this.views].find((v) => displays(v) !== undefined);
-        if (session.turnActive) await this.cancel(sessionId);
+        if (action.replace) {
+          session.closing = true;
+          this.discardQueue(session, this.discardRemaining(session));
+          if (session.turnActive) await this.cancel(sessionId);
+        }
         const created = await this.newSession(view);
-        if (action.replace && created !== null && created !== sessionId) await this.closeSession(sessionId);
+        if (action.replace) {
+          if (created !== null && created !== sessionId) await this.closeSession(sessionId);
+          else session.closing = false; // the replacement failed: the session stays usable
+        }
         return true;
       }
       case "capabilities":

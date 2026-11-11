@@ -7,6 +7,7 @@ import {
   messagesOf,
   test,
   textOf,
+  sleep,
   waitFor,
   withTimeout,
   type Recorder,
@@ -224,6 +225,40 @@ test("F12.5 a steer refused after the turn was cancelled is sent as the next tur
   assertEqual(userMessage(api, "steer again")?.delivery, "steering", "steering is still attempted");
   await withTimeout(turn2, 15_000, "the second slow turn");
   assertEqual(api.controller.snapshot().turnActive, false, "idle after the follow-up turn");
+});
+
+test("F12.6 /clear mid-turn discards the queue and never starts a turn on the cleared session", async ({ api, recorder }) => {
+  const sessionId = await freshSession(api);
+  api.controller.setSteerUnsupportedForTests(sessionId, true);
+  const mark = recorder.mark();
+  const { turn } = await startSlowTurn(api, recorder, mark);
+
+  await withTimeout(api.controller.prompt("/scenario chat later", []), 15_000, "queued prompt()");
+  const queued = userMessage(api, "/scenario chat later");
+  assert(queued && queued.delivery === "queued", "the prompt was queued");
+
+  await withTimeout(api.controller.prompt("/clear", []), 15_000, "/clear mid-turn");
+  await withTimeout(turn, 15_000, "the slow turn to end after /clear");
+  await waitFor(() => {
+    const s = api.controller.snapshot();
+    return s.sessionId && s.sessionId !== sessionId && s.items.length === 0 ? true : undefined;
+  }, 15_000, "a fresh, empty session after /clear");
+  assert(!api.controller.snapshot().sessions.some((s) => s.id === sessionId), "the cleared session is gone");
+
+  const notice = recorder.ofType("notice", mark).find((n) => n.notice.text.includes("discarded"));
+  assert(notice, `a notice says the queued message was discarded: ${JSON.stringify(recorder.ofType("notice", mark))}`);
+  assert(
+    recorder.ofType("messageDelivery", mark).some((m) => m.messageId === queued.id && m.delivery === null),
+    "the queued badge was cleared",
+  );
+  // Only the slow turn ever started: the queued prompt never became a session/prompt on the cleared session.
+  await sleep(1000);
+  assertEqual(recorder.ofType("turn", mark).filter((t) => t.active).length, 1, "no turn started for the discarded prompt");
+  assert(
+    !recorder.ofType("chunk", mark).some((c) => c.role === "agent" && c.segment.type === "text" && c.segment.text.includes("42")),
+    "the discarded prompt was never answered",
+  );
+  assertEqual(api.controller.snapshot().turnActive, false, "the new session is idle");
 });
 
 test("F12.4 /cancel typed mid-turn runs immediately", async ({ api, recorder }) => {

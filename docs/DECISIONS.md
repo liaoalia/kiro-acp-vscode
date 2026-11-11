@@ -268,7 +268,12 @@ badge and handled one of two ways:
   0.3.5 a cancel dropped the queue). A turn that failed or lost its agent,
   and closing the session (`/clear`, the tab's close), drop the whole queue:
   every badge clears and an info notice says "N queued message(s)
-  discarded". Nothing is sent that the user did not see go.
+  discarded". A session being closed or replaced is flagged `closing` and
+  its queue is discarded *before* its turn is cancelled, so the cancel's
+  own end-of-turn cannot drain a queued prompt into the session the user is
+  leaving, and a late steer refusal for it is dropped silently (revmux
+  round 14). `/new` no longer touches the session it leaves behind. Nothing
+  is sent that the user did not see go.
 - **Turn generation.** Each session counts turn starts and ends
   (`ChatSession.turnGeneration`, bumped in `runTurn` and `endTurn`). The
   steer call captures the generation before it goes out; its refusal marks
@@ -288,8 +293,8 @@ delivered (or discarded, in which case a notice said so).
 
 Slash commands bypass the gate: `parseSlash`/`runSlash` run before the
 turn-active check, so `/cancel`, `/help`, `/mode …`, `/usage` work while the
-agent streams, and `/clear` mid-turn cancels the running turn and then opens
-the new session. Only the "session is restoring" refusal (D21) still applies
+agent streams, and `/clear` mid-turn discards the queue, cancels the running
+turn and then opens the new session (`/new` just opens one alongside). Only the "session is restoring" refusal (D21) still applies
 to everything. Agent-advertised commands (`forward` routing) are prompt text
 and are steered/queued like any other text. A pending permission request
 does not block steering either — the steer request goes out while the
