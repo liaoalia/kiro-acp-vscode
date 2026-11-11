@@ -135,7 +135,7 @@
 
 ### ➕ Task 20: Tab switches re-rendered the whole transcript (0.3.8)
 - [x] `src/ui/chatPanel.ts`, `src/ui/chatView.ts`: no `state` snapshot on visibility change (the webview is retained while hidden and receives posts) — DECISIONS D28
-- [ ] revmux final round
+- [x] revmux 19 (final): clean
 
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages
