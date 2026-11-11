@@ -145,12 +145,16 @@ export class ChatPanelManager implements vscode.Disposable {
       webview.onDidReceiveMessage((message: FromWebview) => {
         void this.controller.handle(message, view);
       }),
+      // The webview keeps its state while hidden (`retainContextWhenHidden`)
+      // and receives every post meanwhile, so becoming visible again needs no
+      // snapshot: re-sending one made every tab switch re-render the whole
+      // transcript, terminal outputs included (D28). A reload still gets one
+      // through `ready`.
       panel.onDidChangeViewState(() => {
         if (panel.active) {
           this.recent = entry;
           view.focus();
         }
-        if (panel.visible) poster({ type: "state", state: view.snapshot() });
       }),
     ];
     panel.onDidDispose(() => {

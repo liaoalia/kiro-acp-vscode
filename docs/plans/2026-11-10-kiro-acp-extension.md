@@ -133,7 +133,12 @@
 - [x] revmux 17 (comprehensive): 1 major (the snapshot did not carry `lastActivityAt`, so a re-sent snapshot hid "no reply for N min") + minors (watchdog checks the same `ChatSession` object, `closeSession` clears it, late updates of the abandoned turn dropped while idle, D5 exception, D26/README wording, F12.10 late-settlement test, F15.2 counts the calls, POSIX process-group kill, timestamps in the log)
 - [x] revmux 18 (final): clean
 
+### ➕ Task 20: Tab switches re-rendered the whole transcript (0.3.8)
+- [x] `src/ui/chatPanel.ts`, `src/ui/chatView.ts`: no `state` snapshot on visibility change (the webview is retained while hidden and receives posts) — DECISIONS D28
+- [ ] revmux final round
+
 ## Follow-ups (from revmux rounds, not blocking)
+- [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages
 - [ ] `_kiro/terminal/shell_type`: implement once its params/reply are recorded from the log
 - [ ] `src/features/diff.ts:405` — diff entries and permission selection are keyed by tool-call id only; add the session id so two sessions reusing an id can never resolve each other's proposal
 - [ ] `src/ui/chatController.ts:1384` — automatic diff opening indexes the filtered diff list while card links use content indexes; use one indexing scheme

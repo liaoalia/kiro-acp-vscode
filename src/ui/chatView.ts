@@ -60,11 +60,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       webview.onDidReceiveMessage((message: FromWebview) => {
         void this.controller.handle(message, handle);
       }),
-      webviewView.onDidChangeVisibility(() => {
-        if (webviewView.visible) {
-          poster({ type: "state", state: handle.snapshot() });
-        }
-      }),
+      // Retained while hidden (see `webviewOptions` in extension.ts): no
+      // snapshot on re-show, same as the chat tabs (D28).
     ];
     webviewView.onDidDispose(() => {
       for (const d of subscriptions) d.dispose();

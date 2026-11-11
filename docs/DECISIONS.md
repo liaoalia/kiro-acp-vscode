@@ -500,6 +500,19 @@ kill signals the group (SIGTERM, SIGKILL two seconds later when still
 alive), so a service started by the shell dies with it; Windows already
 used `taskkill /T /F`.
 
+## D28. A view that becomes visible again gets no snapshot
+Switching chat tabs took seconds on a long session: every
+`onDidChangeViewState` (and the sidebar's `onDidChangeVisibility`) posted a
+full `state` snapshot, i.e. the whole transcript with the output of every
+terminal (up to 1 MB each), and the webview's transcript renderer memoises
+by object identity, so a snapshot re-rendered every message (markdown and
+all) and every tool card, then jumped to the bottom. Both hosts keep the
+webview alive while hidden (`retainContextWhenHidden`), and VS Code delivers
+posts to a retained hidden webview, so the view's state is already current
+when it shows again. The snapshot on visibility is gone; a reloaded webview
+(VS Code restart, panel serialisation) still asks for one with `ready`, and
+a session switch still gets `session` + `state` (`postSessionState`).
+
 ## D27. Stop is local-first: kill the session's commands, then end the turn without the agent
 A real session hung for an hour at "thinking": the agent had started a
 service (`run_service_sit.bat`) through `terminal/create` and was waiting in
