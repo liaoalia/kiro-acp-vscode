@@ -145,6 +145,7 @@ Contract (written first): `ImageAttachment`, `ImageSegment.name/src`, `Connectio
 - [x] tests: `test/features-images.test.ts`, `test/features-contentBlocks.test.ts`, transcript segment tests, webview pure helpers, `test/e2e/f16-images.e2e.ts`
 - [x] docs: README, DECISIONS D29, protocol-notes verification row
 - [x] verified in a browser harness with the built webview: paste → tile with WebP thumbnail, a paste with text keeps the text, Enter posts text + full PNG + preview, no image support hides the button and refuses pastes with a notice
+- [x] revmux 20 (comprehensive): 5 minors, no gating — the webview did not sniff the bytes (a renamed non-image passed the composer and the host's refusal on send cleared the typed message; now both sides use `imageDataVerdict` from `src/ui/images.ts`), F16.2 could not tell the thumbnail from the image (distinct WebP preview now), no e2e for images through steer / queue / `/plan` / an agent without image support (F16.8–F16.11; the fake agent's steer reply names the images), D29 claimed the echo never shows the full image, protocol-notes said "seven features"
 
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages

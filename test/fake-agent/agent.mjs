@@ -762,11 +762,14 @@ if (isV2) {
         await sleep(SLOW_STEER_REFUSAL_MS);
         throw acp.RequestError.invalidParams(undefined, "steer refused (slow-steer scenario)");
       }
-      const text = (ctx.params.prompt ?? [])
+      const steerBlocks = ctx.params.prompt ?? [];
+      const text = steerBlocks
         .filter((b) => b && b.type === "text")
         .map((b) => b.text)
         .join("\n");
-      log(`steer accepted for ${session.id}: ${JSON.stringify(text)}`);
+      // Steered images are reported like a turn's (`describeImages`), so a test can see them arrive.
+      const steeredImages = steerBlocks.some((b) => b && b.type === "image") ? ` [${describeImages(steerBlocks)}]` : "";
+      log(`steer accepted for ${session.id}: ${JSON.stringify(text)}${steeredImages}`);
       setTimeout(() => {
         if (session.turn !== turn || turn.cancelled) {
           void sendUpdate(ctx, session, { sessionUpdate: "session_info_update", _meta: { kiro: { kind: "steering_cleared" } } });
@@ -777,7 +780,7 @@ if (isV2) {
           await sendUpdate(ctx, session, {
             sessionUpdate: "agent_message_chunk",
             messageId: `steer-${++messageCounter}`,
-            content: { type: "text", text: `Steered: ${text}` },
+            content: { type: "text", text: `Steered: ${text}${steeredImages}` },
           });
         })();
       }, STEER_INJECT_DELAY_MS);

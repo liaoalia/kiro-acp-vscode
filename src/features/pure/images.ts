@@ -11,58 +11,25 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type { ImageAttachment } from "../../ui/protocol.js";
 import {
   MAX_INLINE_PREVIEW_CHARS,
-  base64Size,
-  imageRejection,
+  imageDataVerdict,
   imageTypeForName,
+  imageVerdict,
   parseImageDataUrl,
+  sniffImageType,
+  type ImageVerdict,
 } from "../../ui/images.js";
 
-export type ImageCheck = { ok: true; mimeType: string; size: number } | { ok: false; reason: string };
+/** Re-exported: the sniffing and the verdict are shared with the webview (`src/ui/images.ts`). */
+export { sniffImageType };
+export type ImageCheck = ImageVerdict;
 export type ImageRead = { ok: true; image: ImageAttachment } | { ok: false; reason: string };
 
 /** Plain base64 with canonical padding (no `data:` prefix, no whitespace); the length is checked apart. */
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
-/** Base64 characters that decode to the 12 bytes every accepted format is recognised by. */
-const SNIFF_CHARS = 16;
-
-const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
-
-function hasBytes(bytes: Uint8Array, signature: readonly number[] | string, offset = 0): boolean {
-  const expected = typeof signature === "string" ? [...signature].map((c) => c.charCodeAt(0)) : signature;
-  if (bytes.length < offset + expected.length) return false;
-  return expected.every((byte, i) => bytes[offset + i] === byte);
-}
-
-/**
- * The image type of `bytes` by their magic number: PNG, JPEG, GIF (87a/89a)
- * or WebP (`RIFF????WEBP`); `undefined` for anything else.
- */
-export function sniffImageType(bytes: Uint8Array): string | undefined {
-  if (hasBytes(bytes, PNG_SIGNATURE)) return "image/png";
-  if (hasBytes(bytes, JPEG_SIGNATURE)) return "image/jpeg";
-  if (hasBytes(bytes, "GIF87a") || hasBytes(bytes, "GIF89a")) return "image/gif";
-  if (hasBytes(bytes, "RIFF") && hasBytes(bytes, "WEBP", 8)) return "image/webp";
-  return undefined;
-}
 
 /** The name an image goes by in notices. */
 function displayName(name: unknown): string {
   return typeof name === "string" && name.trim() !== "" ? name : "An image";
-}
-
-/**
- * The verdict on an image of `size` bytes whose content sniffed as
- * `sniffed`: `imageRejection`'s type and size rules, applied to the sniffed
- * type. `claimedType` (the declared type, or the file extension's) only
- * words the reason when the bytes were not recognised, so an SVG or an empty
- * file gets the sharper one.
- */
-function verdict(name: string, sniffed: string | undefined, claimedType: string, size: number): ImageCheck {
-  const rejection = imageRejection(name, sniffed ?? claimedType, size);
-  if (rejection) return { ok: false, reason: rejection };
-  if (!sniffed) return { ok: false, reason: `${name} was not attached: it is not a PNG, JPEG, GIF or WebP image.` };
-  return { ok: true, mimeType: sniffed, size };
 }
 
 /**
@@ -82,9 +49,8 @@ export function checkImageAttachment(img: ImageAttachment): ImageCheck {
   if (typeof data !== "string" || data.length % 4 !== 0 || !BASE64.test(data)) {
     return { ok: false, reason: `${name} was not attached: its data is not valid base64.` };
   }
-  const sniffed = sniffImageType(Buffer.from(data.slice(0, SNIFF_CHARS), "base64"));
   const declared = typeof img.mimeType === "string" ? img.mimeType : "";
-  return verdict(name, sniffed, declared, base64Size(data));
+  return imageDataVerdict(name, data, declared);
 }
 
 /**
@@ -93,7 +59,7 @@ export function checkImageAttachment(img: ImageAttachment): ImageCheck {
  * `bytes`. `path` (the file's absolute path) becomes the block's `uri`.
  */
 export function imageAttachmentFromBytes(id: string, name: string, bytes: Uint8Array, path?: string): ImageRead {
-  const check = verdict(displayName(name), sniffImageType(bytes), imageTypeForName(name) ?? "", bytes.length);
+  const check = imageVerdict(displayName(name), sniffImageType(bytes), imageTypeForName(name) ?? "", bytes.length);
   if (!check.ok) return check;
   const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
   const image: ImageAttachment = { id, name, mimeType: check.mimeType, data, size: check.size };

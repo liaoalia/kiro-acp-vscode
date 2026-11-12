@@ -23,10 +23,11 @@ export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_IMAGES_PER_PROMPT = 10;
 
 /**
- * Largest base64 payload a transcript image segment shows inline (images the
- * agent sends or replays with `session/load`); larger ones render as an
- * "[image]" chip so snapshots stay small. Echoed prompts carry the webview's
- * thumbnail instead, which is always far below this.
+ * Largest base64 payload a transcript image segment shows inline: images the
+ * agent sends or replays with `session/load`, and an echoed prompt image that
+ * has no thumbnail (the webview could not make one, or the prompt came from
+ * the API). Larger ones render as an "[image]" chip so snapshots stay small.
+ * An echoed image normally carries the webview's thumbnail, far below this.
  */
 export const MAX_INLINE_PREVIEW_CHARS = 512 * 1024;
 
@@ -77,6 +78,76 @@ export function imageRejection(name: string, mimeType: string, size: number): st
     return `${name} was not attached: the file is empty.`;
   }
   return undefined;
+}
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPEG_SIGNATURE = [0xff, 0xd8, 0xff];
+
+function hasBytes(bytes: Uint8Array, signature: readonly number[] | string, offset = 0): boolean {
+  const expected = typeof signature === "string" ? [...signature].map((c) => c.charCodeAt(0)) : signature;
+  if (bytes.length < offset + expected.length) return false;
+  return expected.every((byte, i) => bytes[offset + i] === byte);
+}
+
+/**
+ * The image type of `bytes` by their magic number: PNG, JPEG, GIF (87a/89a)
+ * or WebP (`RIFF????WEBP`); `undefined` for anything else.
+ */
+export function sniffImageType(bytes: Uint8Array): string | undefined {
+  if (hasBytes(bytes, PNG_SIGNATURE)) return "image/png";
+  if (hasBytes(bytes, JPEG_SIGNATURE)) return "image/jpeg";
+  if (hasBytes(bytes, "GIF87a") || hasBytes(bytes, "GIF89a")) return "image/gif";
+  if (hasBytes(bytes, "RIFF") && hasBytes(bytes, "WEBP", 8)) return "image/webp";
+  return undefined;
+}
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+/** Base64 characters that decode to the 12 bytes every accepted format is recognised by. */
+const SNIFF_CHARS = 16;
+
+/**
+ * {@link sniffImageType} of base64 data, decoding only its first 12 bytes
+ * (no `Buffer` / `atob`: this runs in both bundles). `undefined` when they
+ * are not an accepted image or the prefix is not base64.
+ */
+export function sniffBase64ImageType(data: string): string | undefined {
+  const head = data.slice(0, SNIFF_CHARS).replace(/=+$/, "");
+  const bytes: number[] = [];
+  let bits = 0;
+  let value = 0;
+  for (const ch of head) {
+    const index = BASE64_ALPHABET.indexOf(ch);
+    if (index < 0) return undefined;
+    value = (value << 6) | index;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((value >> bits) & 0xff);
+    }
+  }
+  return sniffImageType(Uint8Array.from(bytes));
+}
+
+export type ImageVerdict = { ok: true; mimeType: string; size: number } | { ok: false; reason: string };
+
+/**
+ * The verdict on image bytes of `size` that sniffed as `sniffed` (shared by
+ * the webview, on attach, and the host, on send, so both refuse the same
+ * images with the same words): `imageRejection`'s type and size rules
+ * applied to the sniffed type. `claimedType` (the declared type, or the file
+ * extension's) only words the reason when the bytes were not recognised, so
+ * an SVG or an empty file gets the sharper one.
+ */
+export function imageVerdict(name: string, sniffed: string | undefined, claimedType: string, size: number): ImageVerdict {
+  const rejection = imageRejection(name, sniffed ?? claimedType, size);
+  if (rejection) return { ok: false, reason: rejection };
+  if (!sniffed) return { ok: false, reason: `${name} was not attached: it is not a PNG, JPEG, GIF or WebP image.` };
+  return { ok: true, mimeType: sniffed, size };
+}
+
+/** {@link imageVerdict} for base64 image data: the type from its bytes, the size decoded from its length. */
+export function imageDataVerdict(name: string, data: string, claimedType: string): ImageVerdict {
+  return imageVerdict(name, sniffBase64ImageType(data), claimedType, base64Size(data));
 }
 
 /** `data:<mime>;base64,<data>`. */

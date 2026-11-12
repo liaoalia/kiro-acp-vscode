@@ -570,20 +570,26 @@ prompt carrying images otherwise (with a notice; nothing is sent).
   (megabytes per image); a reload drops them.
 - **Rules** (`src/ui/images.ts`, shared by both bundles): PNG, JPEG, GIF and
   WebP (what the Claude-family models behind Kiro accept), at most 5 MB each
-  and 10 per prompt. The webview checks them on attach; the host checks them
-  again on send against the bytes (magic-byte sniffing wins over the declared
-  type), before anything is echoed, so a rejected prompt leaves no
-  half-sent trace. Images are not downscaled: what the user attached is
-  what Kiro gets.
+  and 10 per prompt. Both sides judge an image by its bytes with the same
+  code (`imageDataVerdict`: magic-byte sniffing wins over the declared type
+  or extension): the webview on attach, so a renamed AVIF or text file never
+  becomes a tile, and the host again on send, before anything is echoed, so
+  a rejected prompt leaves no half-sent trace. The send check only catches
+  what slipped past the composer (agent capability lost meanwhile, a prompt
+  from the API), since Send clears the composer before the host answers.
+  Images are not downscaled: what the user attached is what Kiro gets.
 - **Paste.** Images are attached only when the clipboard has no plain text:
   Excel and Word put a bitmap next to the text, and the text is what the user
   means there; screenshots and "copy image" from a browser carry no text.
 - **Block order:** text, images, then the context chips (D10), the same
   order as the echo.
 - **Display.** The echo (D13) shows the webview's thumbnail (longest side
-  ≤ 320 px, WebP), never the full image, so transcript snapshots stay small;
-  image blocks the agent sends or replays (`session/load`) are shown inline
-  only up to 512 KB of base64, else as an `[image]` chip. Every `src` is a
+  ≤ 320 px; WebP, PNG where the canvas cannot encode WebP), so transcript
+  snapshots stay small. Without a thumbnail (it could not be made, or the
+  prompt came from the API) the echo shows the image itself only up to
+  512 KB of base64 (`MAX_INLINE_PREVIEW_CHARS`), else an `[image]` chip; the
+  same bound applies to image blocks the agent sends or replays
+  (`session/load`). Every `src` is a
   `data:` URL of an accepted type, checked on the host and again in the
   webview (the CSP already allows only `data:` and local images).
 - **Slash commands:** `/plan <text>` and agent commands forward the images

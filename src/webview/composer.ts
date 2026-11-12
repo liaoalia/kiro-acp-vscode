@@ -9,7 +9,7 @@
  * delegation in `main.ts`.
  */
 import type { CommandView, ContextChip, FileSuggestion, ImageAttachment } from "../ui/protocol";
-import { base64Size, formatBytes, imageRejection, isSafeImageDataUrl } from "../ui/images";
+import { formatBytes, imageDataVerdict, isSafeImageDataUrl } from "../ui/images";
 import {
   IMAGES_NOT_ACCEPTED,
   ONLY_IMAGES_DROPPED,
@@ -382,22 +382,31 @@ export class Composer {
    * thumbnails, then shows the tiles. Rejections become one local notice.
    */
   async addImages(incoming: ImageAttachment[]): Promise<void> {
-    const valid = (Array.isArray(incoming) ? incoming : [])
-      .filter((i) => i && typeof i.data === "string" && typeof i.mimeType === "string")
-      .map((i): ImageAttachment => {
-        const name = typeof i.name === "string" && i.name.trim() ? i.name.trim() : "Image";
-        const img: ImageAttachment = { id: this.nextImageId(), name, mimeType: i.mimeType, data: i.data, size: base64Size(i.data) };
-        if (typeof i.path === "string" && i.path) img.path = i.path;
-        return img;
-      });
-    if (valid.length === 0) return;
+    const candidates = (Array.isArray(incoming) ? incoming : []).filter(
+      (i) => i && typeof i.data === "string" && typeof i.mimeType === "string",
+    );
+    if (candidates.length === 0) return;
     if (!this.imagesAllowed) {
       this.host.notify(IMAGES_NOT_ACCEPTED, "warning");
       return;
     }
+    // Type and size from the bytes, as for pasted files and on the host's send check.
+    const refused: string[] = [];
+    const valid: ImageAttachment[] = [];
+    for (const i of candidates) {
+      const name = typeof i.name === "string" && i.name.trim() ? i.name.trim() : "Image";
+      const verdict = imageDataVerdict(name, i.data, i.mimeType);
+      if (!verdict.ok) {
+        refused.push(verdict.reason);
+        continue;
+      }
+      const img: ImageAttachment = { id: this.nextImageId(), name, mimeType: verdict.mimeType, data: i.data, size: verdict.size };
+      if (typeof i.path === "string" && i.path) img.path = i.path;
+      valid.push(img);
+    }
     const paths = this.images.map((i) => i.path).filter((p): p is string => typeof p === "string");
     const plan = planAttach(valid, this.images.length + this.reserved, paths);
-    this.report(plan.notices);
+    this.report([...refused, ...plan.notices]);
     if (plan.accepted.length === 0) return;
     await this.run(plan.accepted.length, () => this.commit(plan.accepted));
   }
@@ -485,10 +494,11 @@ export class Composer {
       for (const c of plan.accepted) {
         try {
           const data = await readFileAsBase64(c.file);
-          const size = base64Size(data);
-          const rejection = imageRejection(c.name, c.mimeType, size);
-          if (rejection) failures.push(rejection);
-          else read.push({ id: this.nextImageId(), name: c.name, mimeType: c.mimeType, data, size });
+          // The bytes decide, as on the host (D29): a renamed AVIF or text file is
+          // refused here, not after Send has already cleared the composer.
+          const verdict = imageDataVerdict(c.name, data, c.mimeType);
+          if (!verdict.ok) failures.push(verdict.reason);
+          else read.push({ id: this.nextImageId(), name: c.name, mimeType: verdict.mimeType, data, size: verdict.size });
         } catch {
           failures.push(`${c.name} was not attached: it could not be read.`);
         }

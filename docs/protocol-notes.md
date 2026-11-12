@@ -301,4 +301,4 @@ To complete the right-hand column: install Kiro CLI, run `kiro-cli login`,
 then (a) `node scripts/record-acp.mjs --prompt "hello" --out docs/recordings/kiro-initialize.ndjson`
 and paste the `initialize` / `session/new` messages above, (b) launch the
 Extension Development Host (`F5`) with default settings and walk through the
-seven features, noting any deviation in the table and in the section above.
+features in the table, noting any deviation in the table and in the section above.
