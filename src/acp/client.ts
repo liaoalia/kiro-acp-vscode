@@ -588,9 +588,11 @@ export class KiroAgentImpl implements KiroAgent {
   private markAuthRequired(request: string, err: AcpError): void {
     if (!this._agent || !this.connection) return;
     this.options.logger.warn(`${request} rejected (${err.code ?? "no code"}): ${err.message}; sign-in required`);
-    if (this._agent.authMethods.length === 0) {
-      this._agent = { ...this._agent, authMethods: [FALLBACK_LOGIN_METHOD] };
-    }
+    // Only a terminal login is offered. Kiro 3.x also advertises `aws-builder-id` /
+    // `aws-iam-identity-center`, but its `authenticate` merely tries to refresh the
+    // cached token, which is exactly what just failed: a dead end for the user.
+    const terminal = this._agent.authMethods.filter(isTerminalMethod);
+    this._agent = { ...this._agent, authMethods: terminal.length > 0 ? terminal : [FALLBACK_LOGIN_METHOD] };
     this.setStatus("auth_required", { agent: this._agent, message: err.message });
   }
 
@@ -603,25 +605,38 @@ export class KiroAgentImpl implements KiroAgent {
       (methodId === FALLBACK_LOGIN_METHOD.id ? FALLBACK_LOGIN_METHOD : undefined);
     if (!method) throw new AcpError(`Unknown auth method '${methodId}'`);
     if (isTerminalMethod(method)) {
-      if (!this.services.runTerminalAuth) {
-        throw new AcpError(`Auth method '${methodId}' requires a terminal, which the host does not provide`);
-      }
-      // Agent-advertised args extend the configured invocation (`kiro-cli acp … --login`);
-      // the standalone fallback runs `kiro-cli login` on its own.
-      const standalone = method === FALLBACK_LOGIN_METHOD;
-      await this.services.runTerminalAuth(method, {
-        command: this.resolvedCommand ?? this.options.command,
-        args: standalone ? [] : this.options.args,
-      });
+      await this.runTerminalAuth(method);
       return;
     }
     const agent = this.requireAgent();
     try {
       await agent.request(acp.methods.agent.authenticate, { methodId });
     } catch (error) {
-      throw toAcpError(error, "authenticate failed");
+      const err = toAcpError(error, "authenticate failed");
+      // Kiro answers `authenticate` with "You are not logged in. Please log in
+      // with `kiro-cli login`" instead of signing in (observed 2026-11-12): do
+      // what it asks for, in a terminal.
+      if (!isAuthRequiredError(err) || !this.services.runTerminalAuth) throw err;
+      this.options.logger.warn(
+        `authenticate '${methodId}' rejected (${err.code ?? "no code"}): ${err.message}; falling back to the terminal login`,
+      );
+      await this.runTerminalAuth(FALLBACK_LOGIN_METHOD);
+      return;
     }
     if (this._status === "auth_required") this.setStatus("ready", { agent: info });
+  }
+
+  private async runTerminalAuth(method: acp.AuthMethodTerminal & { type: "terminal" }): Promise<void> {
+    if (!this.services.runTerminalAuth) {
+      throw new AcpError(`Auth method '${method.id}' requires a terminal, which the host does not provide`);
+    }
+    // Agent-advertised args extend the configured invocation (`kiro-cli acp … --login`);
+    // the standalone fallback runs `kiro-cli login` on its own.
+    const standalone = method === FALLBACK_LOGIN_METHOD;
+    await this.services.runTerminalAuth(method, {
+      command: this.resolvedCommand ?? this.options.command,
+      args: standalone ? [] : this.options.args,
+    });
   }
 
   async callExtension<T = unknown>(method: string, params: unknown): Promise<T> {

@@ -2172,15 +2172,19 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * Sign in with `methodId` (default: the first method the agent offers, else
-   * the terminal fallback that runs `kiro-cli login`), then reconnect and
+   * Sign in with `methodId` (default: the first terminal method the agent
+   * offers, else the fallback: `kiro-cli logout`, then `kiro-cli login` in a
+   * terminal, i.e. a fresh sign-in, never a token refresh), then reconnect and
    * restore the sessions the chat views were showing (D25).
    */
   async login(methodId?: string): Promise<void> {
     await this.ensureStarted();
     const agent = this.agent;
     if (!agent) return;
-    const id = methodId ?? this.agentInfo?.authMethods[0]?.id ?? FALLBACK_LOGIN_METHOD.id;
+    const id =
+      methodId ??
+      this.agentInfo?.authMethods.find((m) => "type" in m && m.type === "terminal")?.id ??
+      FALLBACK_LOGIN_METHOD.id;
     try {
       await agent.authenticate(id);
       await this.restart({ restoreSessions: true });

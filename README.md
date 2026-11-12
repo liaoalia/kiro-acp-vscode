@@ -115,8 +115,9 @@ Then run `kiro-cli login` once in a terminal. The extension can also start the
 login for you: when the agent reports that you are signed out (at startup, or
 later with "Auth refresh callback failed: … You are not logged in" when a
 cached token expired), the chat shows a **Log in to Kiro** button that opens a
-terminal running the sign-in (`kiro-cli acp --login` when Kiro advertises the
-method, `kiro-cli login` otherwise). When that process exits successfully the
+terminal running the sign-in (`kiro-cli acp --login` when Kiro advertises a
+terminal method; otherwise a fresh sign-in: `kiro-cli logout`, then
+`kiro-cli login` — the expired token is never "refreshed"). When that process exits successfully the
 chat reconnects by itself (click **Reconnect** in the notification to do it
 sooner): the agent is respawned and the sessions shown in the chat tabs are
 restored. `/login` and `Kiro: Log In` do the same at any time.

@@ -63,6 +63,10 @@ const recordingsDir = join(here, "..", "recordings");
 const argv = process.argv.slice(2);
 const standaloneLogin = argv[0] === "login";
 if (argv[0] === "acp") argv.shift();
+if (argv[0] === "logout") {
+  process.stdout.write("fake kiro-cli: logged out\n");
+  process.exit(0);
+}
 // Sign-in stand-ins: the fallback runs `<cliPath> login`; the advertised terminal
 // method appends `--login` to the agent invocation (`<cliPath> acp … --login`).
 if (standaloneLogin || argv.includes("--login")) {
@@ -70,12 +74,15 @@ if (standaloneLogin || argv.includes("--login")) {
   process.exit(0);
 }
 /** `listPageSize`: `session/list` pages of this many entries (`--list-page-size N`, default 2). */
-const config = { scenario: "tour", authRequired: false, engine: "v3", listPageSize: 2 };
+const config = { scenario: "tour", authRequired: false, authAgentMethods: false, engine: "v3", listPageSize: 2 };
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === "--scenario") config.scenario = argv[++i] ?? config.scenario;
   else if (arg.startsWith("--scenario=")) config.scenario = arg.slice("--scenario=".length);
   else if (arg === "--auth-required") config.authRequired = true;
+  // Like the real Kiro CLI 3.x: agent-type methods are advertised, yet `authenticate`
+  // only re-checks the cached token and fails while signed out.
+  else if (arg === "--auth-agent-methods") config.authRequired = config.authAgentMethods = true;
   else if (arg === "--engine") config.engine = argv[++i] ?? config.engine;
   else if (arg.startsWith("--engine=")) config.engine = arg.slice("--engine=".length);
   else if (arg.startsWith("--agent-engine=")) config.engine = arg.slice("--agent-engine=".length);
@@ -514,7 +521,12 @@ const app = acp
       agentInfo: { name: "fake-kiro", title: "Fake Kiro", version: isV2 ? "2.0.0-fake" : "3.0.0-fake" },
       authMethods: [],
     };
-    if (config.authRequired) {
+    if (config.authAgentMethods) {
+      response.authMethods = [
+        { id: "aws-builder-id", name: "AWS Builder ID" },
+        { id: "aws-iam-identity-center", name: "AWS IAM Identity Center" },
+      ];
+    } else if (config.authRequired) {
       const terminalAuth =
         ctx.params.clientCapabilities?.auth?.terminal === true ||
         ctx.params.clientCapabilities?._meta?.["terminal-auth"] === true;
@@ -525,6 +537,12 @@ const app = acp
     return response;
   })
   .onRequest(acp.methods.agent.authenticate, () => {
+    if (config.authAgentMethods) {
+      throw new acp.RequestError(
+        -32603,
+        "Auth refresh callback failed: Internal error: You are not logged in. Please log in with `kiro-cli login`.",
+      );
+    }
     authenticated = true;
     return {};
   })

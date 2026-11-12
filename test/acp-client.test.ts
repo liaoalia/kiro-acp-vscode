@@ -146,6 +146,33 @@ test("expired token: a prompt rejected as signed out maps to auth_required with 
   }
 });
 
+test("refresh-only agent auth methods: authenticate falls back to the terminal login and only it is offered", async () => {
+  const h = launch({ args: ["--scenario", "chat", "--auth-agent-methods"] });
+  try {
+    const info = await h.agent.start();
+    assert.deepEqual(
+      info.authMethods.map((m) => m.id),
+      ["aws-builder-id", "aws-iam-identity-center"],
+    );
+    // Kiro rejects `authenticate` as "not logged in": `kiro-cli login` runs instead.
+    await h.agent.authenticate("aws-builder-id");
+    assert.equal(h.services.terminalAuthRuns.length, 1);
+    const run = h.services.terminalAuthRuns[0]!;
+    assert.equal(run.method.id, FALLBACK_LOGIN_METHOD.id);
+    assert.deepEqual(run.args, []);
+
+    await assert.rejects(() => h.agent.newSession(h.cwd));
+    assert.equal(h.agent.status, "auth_required");
+    // Signed out: only the terminal login is offered, not the refresh-only methods.
+    assert.deepEqual(
+      h.changes[h.changes.length - 1]?.agent?.authMethods.map((m) => m.id),
+      [FALLBACK_LOGIN_METHOD.id],
+    );
+  } finally {
+    await h.agent.stop();
+  }
+});
+
 test("the terminal login fallback is accepted even while the agent is signed in (/login)", async () => {
   const h = launch({ args: ["--scenario", "chat"] });
   try {

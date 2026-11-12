@@ -7,7 +7,9 @@ import type { ClientServices } from "../acp/types.js";
 import type { FsService } from "./fs.js";
 import type { PermissionManager } from "./permissions.js";
 import type { TerminalService } from "./terminal.js";
+import { execFile } from "node:child_process";
 import { shellWrappedCommand } from "../acp/process.js";
+import { FALLBACK_LOGIN_METHOD } from "../acp/types.js";
 
 export interface ServicesLogger {
   info(message: string): void;
@@ -46,6 +48,28 @@ export function loginShell(
   return { shellPath: wrapped.command, shellArgs: wrapped.args.join(" ") };
 }
 
+/**
+ * `<cli> logout`, so the following `<cli> login` is a fresh sign-in instead of
+ * a refusal ("already logged in") or another attempt to refresh a dead token.
+ * Best effort: a failure (already signed out, timeout) is logged and ignored.
+ */
+function logout(command: string, logger: ServicesLogger): Promise<void> {
+  const wrapped = shellWrappedCommand(command, ["logout"]);
+  return new Promise((resolve) => {
+    const child = execFile(
+      wrapped.command,
+      wrapped.args,
+      { timeout: 15_000, windowsHide: true, windowsVerbatimArguments: wrapped.command !== command },
+      (error) => {
+        if (error) logger.warn(`logout before sign-in failed (ignored): ${error.message}`);
+        else logger.info("signed out before the fresh sign-in");
+        resolve();
+      },
+    );
+    child.stdin?.end();
+  });
+}
+
 /** Build the host services object handed to the ACP connection. */
 export function createClientServices(deps: ClientServicesDeps): ClientServices {
   const { permissions, fs, terminal, logger } = deps;
@@ -80,6 +104,7 @@ export function createClientServices(deps: ClientServicesDeps): ClientServices {
       invocation: { command: string; args: readonly string[] },
     ): Promise<void> {
       const args = [...invocation.args, ...(method.args ?? [])];
+      if (method.id === FALLBACK_LOGIN_METHOD.id) await logout(invocation.command, logger);
       // The sign-in *is* the terminal's process (not a command typed into a
       // shell), so its exit is observable: code 0 means signed in and the
       // caller reconnects at once; the Reconnect button stays as the manual way.

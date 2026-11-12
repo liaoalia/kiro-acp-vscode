@@ -249,6 +249,10 @@ Organisation-managed account (AWS IAM Identity Center), Windows, Kiro CLI 3.x:
 - `agentCapabilities`: `loadSession: true`, `promptCapabilities: { image: true, embeddedContext: true }`,
   `sessionCapabilities: { list, close, delete, fork }`, `mcpCapabilities: { http, sse }`.
 - `authMethods`: `aws-builder-id`, `aws-iam-identity-center` (shown when signed out).
+  Neither signs in: `authenticate` with either id is rejected with "Auth refresh callback
+  failed: Internal error: You are not logged in. Please log in with `kiro-cli login`."
+  (observed 2026-11-12), so the extension ignores them: when signed out it offers one action, a fresh
+  sign-in in a terminal (`kiro-cli logout`, then `kiro-cli login`).
 - `_meta.kiro.extensionMethods` (34): `_kiro/knowledge`, `_kiro/memory/{list,get,create,update,delete,getSyncStatus,sync}`,
   `_kiro/codeIntelligence`, `_kiro/environment/{start_ssh_session,get_network_configuration}`,
   `_kiro/session/{context,compact,export,history}`, `_kiro/config/template`,
