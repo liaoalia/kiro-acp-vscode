@@ -1,0 +1,8 @@
+{
+  "name": "images",
+  "description": "Reports the image blocks of the prompt and the order of its blocks (D29).",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Received {{images}}; blocks: {{blockTypes}}." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

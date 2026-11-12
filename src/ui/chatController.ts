@@ -47,6 +47,21 @@ import {
 } from "../features/pure/transcript.js";
 import { buildPromptBlocks } from "../features/pure/contentBlocks.js";
 import {
+  checkImageAttachment,
+  echoImageContent,
+  imageAttachmentFromBytes,
+  type ImageRead,
+} from "../features/pure/images.js";
+import {
+  IMAGE_TYPE_BY_EXTENSION,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES_PER_PROMPT,
+  base64Size,
+  formatBytes,
+  imageRejection,
+  imageTypeForName,
+} from "./images.js";
+import {
   describeOptions,
   findExtension,
   formatExtensionResult,
@@ -54,6 +69,7 @@ import {
   parseSlash,
   routeSlash,
   type ParsedSlash,
+  type SlashAction,
   type SlashContext,
 } from "../features/pure/slashCommands.js";
 import { ContextTracker, searchFiles } from "../features/context.js";
@@ -66,6 +82,7 @@ import type {
   ConnectionView,
   ContextChip,
   FromWebview,
+  ImageAttachment,
   MessageDelivery,
   ModelView,
   NoticeView,
@@ -369,6 +386,8 @@ export class ChatController implements vscode.Disposable {
   private focusedView: ViewBinding | null = null;
   private sessionSeq = 0;
   private noticeSeq = 0;
+  /** Mints the ids of images the host reads for `pickImages` / `dropFiles` (`host-img-N`). */
+  private imageSeq = 0;
   /** Notices not tied to a session (agent start failures); shown in every view. */
   private globalNotices: NoticeView[] = [];
   private readonly views = new Set<ViewBinding>();
@@ -944,6 +963,7 @@ export class ChatController implements vscode.Disposable {
     if (info) {
       const caps = info.agentCapabilities;
       view.canBrowseSessions = caps.loadSession === true && !!caps.sessionCapabilities?.list;
+      view.acceptsImages = caps.promptCapabilities?.image === true;
     }
     return view;
   }
@@ -1543,8 +1563,17 @@ export class ChatController implements vscode.Disposable {
    * Send a prompt to `sessionId` (default: the session of `view`, else the
    * focused session) and wait for the turn to end. `view` is the webview the
    * prompt came from, so `/clear` can replace the session in that very view.
+   * `images` go out as `image` blocks after the text (D29); they are checked
+   * before anything is echoed, and one that fails keeps the whole message
+   * from being sent.
    */
-  async prompt(text: string, chips: ContextChip[], sessionId?: string, view?: ViewHandle): Promise<void> {
+  async prompt(
+    text: string,
+    chips: ContextChip[],
+    sessionId?: string,
+    view?: ViewHandle,
+    images: readonly ImageAttachment[] = [],
+  ): Promise<void> {
     await this.ensureStarted();
     const agent = this.agent;
     const binding = asBinding(view);
@@ -1572,7 +1601,7 @@ export class ChatController implements vscode.Disposable {
         this.notice(session, "warning", "The session is closing; send the message again in a new one.");
         return;
       }
-      return this.prompt(text, chips, replacement, view);
+      return this.prompt(text, chips, replacement, view, images);
     }
     this.focus(session.id);
     if (session.loading) {
@@ -1583,29 +1612,73 @@ export class ChatController implements vscode.Disposable {
       return;
     }
     const trimmed = text.trim();
-    if (!trimmed && chips.length === 0) return;
+    if (!trimmed && chips.length === 0 && images.length === 0) return;
+
+    // Images are checked before anything is echoed or the chips are cleared:
+    // a message with a refused image is not sent at all, not half-sent (D29).
+    const attached = images.length > 0 ? this.checkPromptImages(session, images) : [];
+    if (attached === null) return;
 
     // Slash commands run at once, turn or no turn: `/cancel` must stop the
     // running turn and `/clear` must be able to leave it (D22).
     const parsed = parseSlash(trimmed);
-    if (parsed && (await this.runSlash(session, parsed, chips, binding))) return;
+    if (parsed && (await this.runSlash(session, parsed, chips, binding, attached))) return;
 
     const embeddedContext = this.agentInfo?.agentCapabilities.promptCapabilities?.embeddedContext === true;
-    const blocks = await buildPromptBlocks(trimmed, chips, readWorkspaceText, { embeddedContext });
+    const blocks = await buildPromptBlocks(trimmed, chips, readWorkspaceText, { embeddedContext }, attached);
 
     if (session.turnActive) {
       // Plain text while the agent works: steer the turn, or hold the message
       // until the turn ends when the agent cannot steer (D22).
-      await this.promptDuringTurn(agent, session, trimmed, chips, blocks);
+      await this.promptDuringTurn(agent, session, trimmed, chips, blocks, attached);
       return;
     }
 
     if (session.firstPrompt === null && trimmed) {
       session.firstPrompt = truncateTitle(trimmed);
     }
-    this.echoUserMessage(session, trimmed, chips);
+    this.echoUserMessage(session, trimmed, chips, undefined, attached);
     this.deps.contextTracker.clearExplicit();
     await this.runTurn(agent, session, blocks);
+  }
+
+  /** The agent advertised `promptCapabilities.image`: ACP allows `image` blocks only then (D29). */
+  private acceptsImages(): boolean {
+    return this.agentInfo?.agentCapabilities.promptCapabilities?.image === true;
+  }
+
+  /**
+   * The images of a prompt, checked against their bytes (D29): the agent
+   * must accept images, there may be at most `MAX_IMAGES_PER_PROMPT`, and
+   * every one must pass `checkImageAttachment` (its sniffed `mimeType` and
+   * decoded size replace the declared ones). Otherwise one warning names
+   * every reason and the result is null: the message is not sent.
+   */
+  private checkPromptImages(session: ChatSession, images: readonly ImageAttachment[]): ImageAttachment[] | null {
+    if (!this.acceptsImages()) {
+      this.notice(session, "warning", "Kiro does not accept images, so the message was not sent.");
+      return null;
+    }
+    if (images.length > MAX_IMAGES_PER_PROMPT) {
+      this.notice(
+        session,
+        "warning",
+        `A message can carry up to ${MAX_IMAGES_PER_PROMPT} images (this one had ${images.length}), so it was not sent.`,
+      );
+      return null;
+    }
+    const checked: ImageAttachment[] = [];
+    const reasons: string[] = [];
+    for (const image of images) {
+      const check = checkImageAttachment(image);
+      if (check.ok) checked.push({ ...image, mimeType: check.mimeType, size: check.size });
+      else reasons.push(check.reason);
+    }
+    if (reasons.length > 0) {
+      this.notice(session, "warning", `${reasons.join(" ")} The message was not sent.`);
+      return null;
+    }
+    return checked;
   }
 
   /**
@@ -1644,10 +1717,19 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * Show the user's message locally (echoed `user_message_chunk`s are ignored,
-   * see DECISIONS D13), optionally badged with its delivery state. Returns the
+   * see DECISIONS D13), optionally badged with its delivery state: the text,
+   * one image per attachment (its thumbnail, D29), then one chip per context
+   * chip, in the order of the prompt blocks. The text chunk is applied even
+   * when empty (it renders nothing) so it opens the message. Returns the
    * message's view id (the id `chunk` / `messageDelivery` posts carry).
    */
-  private echoUserMessage(session: ChatSession, text: string, chips: ContextChip[], delivery?: MessageDelivery): string {
+  private echoUserMessage(
+    session: ChatSession,
+    text: string,
+    chips: ContextChip[],
+    delivery?: MessageDelivery,
+    images: readonly ImageAttachment[] = [],
+  ): string {
     const messageId = `user-${++session.userMessageSeq}`;
     const emitted = this.applyLocalUpdate(session, {
       sessionUpdate: "user_message_chunk",
@@ -1656,6 +1738,13 @@ export class ChatController implements vscode.Disposable {
     });
     const chunk = emitted.find((e): e is Extract<ToWebview, { type: "chunk" }> => e.type === "chunk");
     const viewId = chunk?.messageId ?? session.transcript.openMessage?.id ?? messageId;
+    for (const image of images) {
+      this.applyLocalUpdate(session, {
+        sessionUpdate: "user_message_chunk",
+        messageId,
+        content: echoImageContent(image),
+      });
+    }
     for (const chip of chips) {
       this.applyLocalUpdate(session, {
         sessionUpdate: "user_message_chunk",
@@ -1689,19 +1778,20 @@ export class ChatController implements vscode.Disposable {
     text: string,
     chips: ContextChip[],
     blocks: acp.ContentBlock[],
+    images: readonly ImageAttachment[] = [],
   ): Promise<void> {
     if (session.steerUnsupported) {
-      const messageId = this.echoUserMessage(session, text, chips, "queued");
+      const messageId = this.echoUserMessage(session, text, chips, "queued", images);
       this.deps.contextTracker.clearExplicit();
       this.enqueue(session, { text, chips, blocks, messageId });
       return;
     }
-    const messageId = this.echoUserMessage(session, text, chips, "steering");
+    const messageId = this.echoUserMessage(session, text, chips, "steering", images);
     this.deps.contextTracker.clearExplicit();
     session.steering.add(messageId);
     const generation = session.turnGeneration;
     const params = { sessionId: session.id, prompt: blocks };
-    this.deps.output.appendLine(`[info] steer ${session.id}: ${STEER_METHOD} ${safeJson(params)}`);
+    this.deps.output.appendLine(`[info] steer ${session.id}: ${STEER_METHOD} ${safeJson(withoutImageData(params))}`);
     try {
       const result = await agent.callExtension(STEER_METHOD, params);
       this.deps.output.appendLine(`[info] steer ${session.id}: accepted ${safeJson(result)}`);
@@ -2068,7 +2158,13 @@ export class ChatController implements vscode.Disposable {
 
     switch (message.type) {
       case "prompt":
-        await this.prompt(message.text, message.chips, sessionId ?? undefined, binding);
+        await this.prompt(message.text, message.chips, sessionId ?? undefined, binding, message.images ?? []);
+        return;
+      case "pickImages":
+        await this.pickImages(session ?? null, binding);
+        return;
+      case "dropFiles":
+        await this.dropFiles(message.uris, session ?? null, binding);
         return;
       case "cancel":
         await this.cancel(sessionId ?? undefined);
@@ -2205,6 +2301,117 @@ export class ChatController implements vscode.Disposable {
   }
 
   // ---------------------------------------------------------------------
+  // Image attachments (D29)
+  // ---------------------------------------------------------------------
+
+  /**
+   * The composer's attach button: a file dialog for images. The ones that
+   * pass the checks go back to the requesting view as `imagesAttached` (the
+   * webview makes the previews), the others are named in one warning.
+   */
+  private async pickImages(session: ChatSession | null, view: ViewBinding | undefined): Promise<void> {
+    if (!this.acceptsImages()) {
+      this.notice(session, "info", "Kiro does not accept images.");
+      return;
+    }
+    const uris = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      openLabel: "Attach",
+      filters: { Images: Object.keys(IMAGE_TYPE_BY_EXTENSION).map((ext) => ext.slice(1)) },
+    });
+    if (!uris || uris.length === 0) return;
+    const images = await this.readImageFiles(uris, session);
+    if (images.length > 0) this.postRequester(view, { type: "imagesAttached", images });
+  }
+
+  /**
+   * URIs dropped on the composer (VS Code drags carry a uri-list, not the
+   * bytes): image files (by extension) are read like picked ones; any other
+   * `file:` URI naming a file becomes an `@` file chip. Folders, other
+   * schemes and strings that do not parse are ignored.
+   */
+  private async dropFiles(
+    uris: readonly string[],
+    session: ChatSession | null,
+    view: ViewBinding | undefined,
+  ): Promise<void> {
+    const imageUris: vscode.Uri[] = [];
+    let refused = 0;
+    let chips = 0;
+    for (const raw of Array.isArray(uris) ? uris : []) {
+      const uri = parseDroppedUri(raw);
+      if (!uri) continue;
+      if (imageTypeForName(uri.path)) {
+        if (this.acceptsImages()) imageUris.push(uri);
+        else refused++;
+        continue;
+      }
+      if (uri.scheme !== "file" || !(await isFile(uri))) continue;
+      this.deps.contextTracker.addFileChip(uri.fsPath);
+      chips++;
+    }
+    if (refused > 0) {
+      const what = refused === 1 ? "the image was" : `${refused} images were`;
+      this.notice(session, "info", `Kiro does not accept images, so ${what} not attached.`);
+    }
+    const images = await this.readImageFiles(imageUris, session);
+    if (images.length > 0) this.postRequester(view, { type: "imagesAttached", images });
+    if (images.length > 0 || chips > 0) this.postRequester(view, { type: "focusInput" });
+  }
+
+  /**
+   * Read picked or dropped image files: at most `MAX_IMAGES_PER_PROMPT` per
+   * pick or drop (the composer enforces the total), each through
+   * {@link readImageFile}. Every refusal is named in one warning on
+   * `session` (every view without one).
+   */
+  private async readImageFiles(uris: readonly vscode.Uri[], session: ChatSession | null): Promise<ImageAttachment[]> {
+    const images: ImageAttachment[] = [];
+    const reasons: string[] = [];
+    for (const uri of uris.slice(0, MAX_IMAGES_PER_PROMPT)) {
+      const read = await this.readImageFile(uri);
+      if (read.ok) images.push(read.image);
+      else reasons.push(read.reason);
+    }
+    const extra = uris.length - MAX_IMAGES_PER_PROMPT;
+    if (extra > 0) {
+      const what = extra === 1 ? "1 more image was" : `${extra} more images were`;
+      reasons.push(`${what} not attached: a message can carry up to ${MAX_IMAGES_PER_PROMPT} images.`);
+    }
+    if (reasons.length > 0) this.notice(session, "warning", reasons.join(" "));
+    return images;
+  }
+
+  /**
+   * One image file as an attachment (id `host-img-N`, `path` for `file:`
+   * URIs): a file over `MAX_IMAGE_BYTES` is refused from its size without
+   * being read; the bytes decide the type (`imageAttachmentFromBytes`).
+   */
+  private async readImageFile(uri: vscode.Uri): Promise<ImageRead> {
+    const name = uri.path.slice(uri.path.lastIndexOf("/") + 1) || uri.toString(true);
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if ((stat.type & vscode.FileType.File) === 0) {
+        return { ok: false, reason: `${name} was not attached: it is not a file.` };
+      }
+      const tooLarge =
+        stat.size > MAX_IMAGE_BYTES ? imageRejection(name, imageTypeForName(name) ?? "", stat.size) : undefined;
+      if (tooLarge) return { ok: false, reason: tooLarge };
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const filePath = uri.scheme === "file" ? uri.fsPath : undefined;
+      return imageAttachmentFromBytes(`host-img-${++this.imageSeq}`, name, bytes, filePath);
+    } catch (error) {
+      return { ok: false, reason: `${name} was not attached: ${errorMessage(error)}` };
+    }
+  }
+
+  /** Post to the view a request came from, or to every view when it came without one. */
+  private postRequester(view: ViewBinding | undefined, message: ToWebview): void {
+    if (view) this.postView(view, message);
+    else this.postAll(message);
+  }
+
+  // ---------------------------------------------------------------------
   // Slash commands (client-side routing, see DECISIONS D18)
   // ---------------------------------------------------------------------
 
@@ -2240,17 +2447,46 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * Returns true when the command was handled locally. `forward` commands
-   * (advertised by the agent) return false so the text goes out as a prompt.
+   * (advertised by the agent) return false so the text goes out as a prompt,
+   * `images` included. `/plan <text>` sends `images` with its text; any
+   * other command runs in the extension, so attached images are not sent and
+   * an info notice says so once the command ran (D29).
    */
   private async runSlash(
     session: ChatSession,
     parsed: ParsedSlash,
     chips: ContextChip[],
     sender?: ViewBinding,
+    images: readonly ImageAttachment[] = [],
   ): Promise<boolean> {
-    const raw = `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`;
     const context = this.slashContext(session.transcript);
     const action = routeSlash(parsed, context);
+    if (action.kind === "forward") return false;
+    const sendsImages = action.kind === "plan" && action.modeId !== null && action.text !== "";
+    const handled = await this.runSlashAction(session, parsed, action, context, chips, sender, sendsImages ? images : []);
+    if (handled && images.length > 0 && !sendsImages) {
+      // Told after the command: `/clear`, `/new` and `/restart` change the session the view shows.
+      const shown = sender?.sessionId ? this.sessions.get(sender.sessionId) : undefined;
+      const what = images.length === 1 ? "The image was" : `The ${images.length} images were`;
+      this.notice(
+        shown ?? this.sessions.get(session.id) ?? null,
+        "info",
+        `${what} not sent: /${parsed.name} runs in the extension.`,
+      );
+    }
+    return handled;
+  }
+
+  private async runSlashAction(
+    session: ChatSession,
+    parsed: ParsedSlash,
+    action: SlashAction,
+    context: SlashContext,
+    chips: ContextChip[],
+    sender: ViewBinding | undefined,
+    images: readonly ImageAttachment[],
+  ): Promise<boolean> {
+    const raw = `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`;
     const agent = this.agent;
     const sessionId = session.id;
     switch (action.kind) {
@@ -2371,7 +2607,7 @@ export class ChatController implements vscode.Disposable {
           }
         }
         if (action.text) {
-          await this.prompt(action.text, chips, sessionId);
+          await this.prompt(action.text, chips, sessionId, undefined, images);
         } else {
           this.localExchange(session, raw, `Planner mode \`${action.modeId}\` is active. Describe what to plan.`);
         }
@@ -2553,6 +2789,25 @@ async function readWorkspaceText(absPath: string): Promise<string> {
   return new TextDecoder("utf-8").decode(bytes);
 }
 
+/** A dropped URI string as a `vscode.Uri`; `undefined` when it does not parse (no scheme, junk). */
+function parseDroppedUri(raw: unknown): vscode.Uri | undefined {
+  if (typeof raw !== "string" || raw.trim() === "") return undefined;
+  try {
+    return vscode.Uri.parse(raw.trim(), true);
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `uri` names an existing file (not a folder). */
+async function isFile(uri: vscode.Uri): Promise<boolean> {
+  try {
+    return ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.File) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 async function openFile(absPath: string, line?: number): Promise<void> {
   try {
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absPath));
@@ -2592,6 +2847,16 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** Prompt params for the output channel: each image's base64 payload replaced by its size (D29). */
+function withoutImageData(params: { sessionId: string; prompt: acp.ContentBlock[] }): unknown {
+  return {
+    ...params,
+    prompt: params.prompt.map((block) =>
+      block.type === "image" ? { ...block, data: `<${formatBytes(base64Size(block.data))} of base64>` } : block,
+    ),
+  };
 }
 
 function truncate(text: string, max: number): string {

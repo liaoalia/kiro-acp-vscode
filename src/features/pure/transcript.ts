@@ -9,6 +9,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type {
   CommandView,
   ConfigOptionView,
+  ImageSegment,
   MessageDelivery,
   MessageRole,
   MessageSegment,
@@ -23,6 +24,7 @@ import type {
   TranscriptItem,
   UiState,
 } from "../../ui/protocol";
+import { MAX_INLINE_PREVIEW_CHARS, imageDataUrl, isSafeImageDataUrl } from "../../ui/images.js";
 
 export type ModesView = UiState["modes"];
 
@@ -103,13 +105,49 @@ export function toToolStatus(status: unknown, fallback: ToolStatus = "pending"):
   return typeof status === "string" && TOOL_STATUSES.has(status) ? (status as ToolStatus) : fallback;
 }
 
+/**
+ * Last path segment of a `file:` URL, another URL or a plain path (either
+ * slash), percent-decoded for URLs; `undefined` when there is none. String
+ * operations only: this module stays free of Node imports.
+ */
+export function fileNameOfUri(uri: string): string | undefined {
+  const isUrl = /^[a-z][a-z0-9+.-]+:/i.test(uri); // two+ letters: `C:\…` is a path
+  const pathPart = isUrl ? uri.replace(/[?#].*$/s, "") : uri;
+  const last = pathPart.slice(Math.max(pathPart.lastIndexOf("/"), pathPart.lastIndexOf("\\")) + 1);
+  if (!isUrl) return last || undefined;
+  try {
+    return decodeURIComponent(last) || undefined;
+  } catch {
+    return last || undefined;
+  }
+}
+
+/**
+ * An `image` block as a segment (D29): `name` from its `uri`; `src` (a data
+ * URL to show) only for data small enough to keep in the transcript
+ * (`MAX_INLINE_PREVIEW_CHARS`) whose URL passes `isSafeImageDataUrl`, so an
+ * SVG or junk payload never reaches an `<img>`.
+ */
+function toImageSegment(block: acp.ImageContent): ImageSegment {
+  const mimeType = typeof block.mimeType === "string" ? block.mimeType : "";
+  const segment: ImageSegment = { type: "image", mimeType };
+  const name = typeof block.uri === "string" ? fileNameOfUri(block.uri) : undefined;
+  if (name) segment.name = name;
+  const data = typeof block.data === "string" ? block.data : "";
+  if (data.length > 0 && data.length <= MAX_INLINE_PREVIEW_CHARS) {
+    const src = imageDataUrl(mimeType.toLowerCase(), data);
+    if (isSafeImageDataUrl(src)) segment.src = src;
+  }
+  return segment;
+}
+
 /** Map a content block to a message segment. */
 export function toMessageSegment(block: acp.ContentBlock): MessageSegment {
   switch (block.type) {
     case "text":
       return { type: "text", text: block.text };
     case "image":
-      return { type: "image", mimeType: block.mimeType };
+      return toImageSegment(block);
     case "audio":
       return { type: "text", text: "[audio]" };
     case "resource_link":

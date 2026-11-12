@@ -10,9 +10,11 @@
  */
 import { quietLabel, quietTitle } from "./quiet.js";
 import { usageText } from "./usageText.js";
+import { isSafeImageDataUrl } from "../ui/images";
 import type {
   ConnectionView,
   ContextChip,
+  ImageSegment,
   MessageDelivery,
   MessageView,
   PermissionView,
@@ -875,21 +877,52 @@ function renderMessage(el: HTMLElement, message: MessageView): void {
     }
     buffer = "";
   };
+  // Consecutive image segments share one wrapping row of thumbnails.
+  let imageRow: HTMLElement | null = null;
   for (const seg of message.segments) {
     if (seg.type === "text") {
       buffer += seg.text;
+      if (seg.text) imageRow = null;
       continue;
     }
     flush();
     if (seg.type === "resource") {
+      imageRow = null;
       body.appendChild(
         h("span", { class: "chip chip-resource", title: seg.uri }, icon("file"), h("span", { class: "chip-label" }, seg.label)),
       );
     } else {
-      body.appendChild(h("span", { class: "chip chip-image", title: seg.mimeType }, "[image]"));
+      if (!imageRow) {
+        imageRow = h("div", { class: "msg-images" });
+        body.appendChild(imageRow);
+      }
+      imageRow.appendChild(imageSegment(seg));
     }
   }
   flush();
+}
+
+/**
+ * An image segment: the thumbnail when its `src` is a safe image `data:` URL
+ * (the host guarantees it; checked again here), else an "[image]" chip with
+ * the name when known. Nothing remote is ever loaded.
+ */
+function imageSegment(seg: ImageSegment): HTMLElement {
+  if (seg.src && isSafeImageDataUrl(seg.src)) {
+    return h("img", {
+      class: "msg-image",
+      src: seg.src,
+      alt: seg.name ?? "image",
+      title: seg.name ?? seg.mimeType,
+      draggable: "false",
+    });
+  }
+  return h(
+    "span",
+    { class: "chip chip-image", title: seg.name ? `${seg.name} (${seg.mimeType})` : seg.mimeType },
+    seg.name ? icon("image") : null,
+    h("span", { class: "chip-label" }, seg.name ?? "[image]"),
+  );
 }
 
 /** Where the streaming caret goes: inside the last inline block of the last markdown chunk. */

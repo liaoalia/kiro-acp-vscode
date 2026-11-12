@@ -28,6 +28,35 @@ export interface ConnectionView {
   authMethods?: AuthMethodView[];
   /** The agent advertised `session/list` + `session/load`, so a history button makes sense. */
   canBrowseSessions?: boolean;
+  /**
+   * The agent advertised `promptCapabilities.image`: the composer offers image
+   * attachments (paste, drop, attach button). ACP forbids image blocks otherwise (D29).
+   */
+  acceptsImages?: boolean;
+}
+
+/**
+ * An image attached in the composer and sent with a prompt as an ACP `image`
+ * content block (D29). Rules (types, size, count) live in `src/ui/images.ts`.
+ */
+export interface ImageAttachment {
+  /** Unique within the composer; never sent to the agent. */
+  id: string;
+  /** File name, or a generated one for a pasted image ("Pasted image 1.png"). */
+  name: string;
+  /** One of `ACCEPTED_IMAGE_TYPES`; the host re-checks it against the bytes. */
+  mimeType: string;
+  /** The image bytes, base64 without a `data:` prefix. */
+  data: string;
+  /** Decoded size in bytes. */
+  size: number;
+  /** Absolute path when the image came from a file (picked or dropped). */
+  path?: string;
+  /**
+   * Small `data:` URL thumbnail made by the webview; shown on the composer
+   * tile and, after sending, in the user's message instead of the full image.
+   */
+  preview?: string;
 }
 
 export interface ContextChip {
@@ -58,6 +87,14 @@ export interface ResourceSegment {
 export interface ImageSegment {
   type: "image";
   mimeType: string;
+  /** File name when known (from the block's `uri`). */
+  name?: string;
+  /**
+   * `data:` URL to show (a thumbnail for echoed prompts, the image itself when
+   * small); absent when too large or unknown, then an "[image]" chip is shown.
+   * Always passes `isSafeImageDataUrl`.
+   */
+  src?: string;
 }
 export type MessageSegment = TextSegment | ResourceSegment | ImageSegment;
 
@@ -323,7 +360,13 @@ export type ToWebview =
   | { type: "clearNotice"; id: string }
   /** Context / token usage of the displayed session changed (D26). */
   | { type: "usage"; usage: SessionUsage | null }
-  | { type: "focusInput" };
+  | { type: "focusInput" }
+  /**
+   * Images read by the host for `pickImages` / `dropFiles`, posted to the
+   * requesting view only; the webview adds them to the composer (making the
+   * previews itself). Rejected files were already reported as a notice.
+   */
+  | { type: "imagesAttached"; images: ImageAttachment[] };
 
 // ---------------------------------------------------------------------------
 // Webview → Extension
@@ -331,8 +374,17 @@ export type ToWebview =
 
 export type FromWebview =
   | { type: "ready" }
-  | { type: "prompt"; text: string; chips: ContextChip[] }
+  /** `images`: composer attachments, sent as `image` blocks after the text (D29). */
+  | { type: "prompt"; text: string; chips: ContextChip[]; images?: ImageAttachment[] }
   | { type: "cancel" }
+  /** Attach button: the host opens a file dialog and answers with `imagesAttached`. */
+  | { type: "pickImages" }
+  /**
+   * URIs dropped on the composer (VS Code explorer drags carry a uri-list, not
+   * the bytes): image files are read and answered with `imagesAttached`, other
+   * `file:` URIs become `@` file chips.
+   */
+  | { type: "dropFiles"; uris: string[] }
   /** Create a new session and display it in this webview. */
   | { type: "newSession" }
   /** Display an existing session in this webview. */

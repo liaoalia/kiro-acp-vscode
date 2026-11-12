@@ -295,6 +295,7 @@ organisation-managed account; raw exchange not yet captured):
 | 5 | Selection context chip + command/keybinding | ✅ `test/e2e/f5-selection.e2e.ts` | ⏳ |
 | 6 | Client fs (dirty buffers, WorkspaceEdit writes) and terminal methods | ✅ `test/acp-client.test.ts`, `test/e2e/f6-fs-terminal.e2e.ts` | ⏳ |
 | 7 | Permissions: allow once / always for session / reject per tool kind | ✅ `test/features-permissionPolicy.test.ts`, `test/e2e/f7-permissions.e2e.ts` | ⏳ |
+| 8 | Image attachments (paste / drop / pick → ACP `image` blocks, D29) | ✅ `test/features-images.test.ts`, `test/webview-attachments.test.ts`, `test/e2e/f16-images.e2e.ts` (the fake agent reports the image blocks it received) | ⏳ (`promptCapabilities.image: true` is advertised; whether Kiro forwards the `uri` field or limits sizes below 5 MB is unknown) |
 
 To complete the right-hand column: install Kiro CLI, run `kiro-cli login`,
 then (a) `node scripts/record-acp.mjs --prompt "hello" --out docs/recordings/kiro-initialize.ndjson`

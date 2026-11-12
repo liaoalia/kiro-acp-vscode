@@ -6,12 +6,16 @@
  * `test/recordings/<scenario>.json` when it receives `session/prompt`.
  *
  * Usage:
- *   node test/fake-agent/agent.mjs [acp] [--scenario <name>] [--auth-required] [--engine v2|v3]
+ *   node test/fake-agent/agent.mjs [acp] [--scenario <name>] [--auth-required] [--engine v2|v3] [--no-image]
  *
  * A leading `acp` argument is ignored so the extension can be pointed at it
  * with `kiroAcp.cliPath = "node"` and `cliArgs = ["<path>/agent.mjs", ...]`.
  * A prompt whose text starts with `/scenario <name>` selects that recording
- * for the turn instead of the launch scenario.
+ * for the turn instead of the launch scenario; a prompt of images only runs
+ * the `images` recording. Every turn gets the vars `images` (a summary of the
+ * prompt's image blocks, e.g. `1 image(s): image/png 67 B shot.png`) and
+ * `blockTypes` (the prompt's block types in order, e.g. `text,image`).
+ * `--no-image` stops advertising `promptCapabilities.image`.
  *
  * Recording step format (all string values support `{{var}}` placeholders;
  * `cwd`, `sessionId` and anything stored through `save` are available):
@@ -74,7 +78,7 @@ if (standaloneLogin || argv.includes("--login")) {
   process.exit(0);
 }
 /** `listPageSize`: `session/list` pages of this many entries (`--list-page-size N`, default 2). */
-const config = { scenario: "tour", authRequired: false, authAgentMethods: false, engine: "v3", listPageSize: 2 };
+const config = { scenario: "tour", authRequired: false, authAgentMethods: false, engine: "v3", listPageSize: 2, image: true };
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === "--scenario") config.scenario = argv[++i] ?? config.scenario;
@@ -86,6 +90,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (arg === "--engine") config.engine = argv[++i] ?? config.engine;
   else if (arg.startsWith("--engine=")) config.engine = arg.slice("--engine=".length);
   else if (arg.startsWith("--agent-engine=")) config.engine = arg.slice("--agent-engine=".length);
+  else if (arg === "--no-image") config.image = false;
   else if (arg === "--list-page-size") config.listPageSize = parsePageSize(argv[++i]);
   else if (arg.startsWith("--list-page-size=")) config.listPageSize = parsePageSize(arg.slice("--list-page-size=".length));
 }
@@ -101,6 +106,21 @@ function parsePageSize(value) {
 // ---------------------------------------------------------------------------
 
 const log = (text) => process.stderr.write(`[fake-agent] ${text}\n`);
+
+/**
+ * `images` turn var: "no images", or "N image(s): <mime> <bytes> B[ <file name>], ..."
+ * (the byte count is the decoded size of `data`; the name is the last segment of `uri`).
+ */
+function describeImages(blocks) {
+  const images = blocks.filter((b) => b && b.type === "image");
+  if (images.length === 0) return "no images";
+  const parts = images.map((b) => {
+    const bytes = typeof b.data === "string" ? Buffer.from(b.data, "base64").length : 0;
+    const name = typeof b.uri === "string" && b.uri ? ` ${decodeURIComponent(b.uri.split(/[\\/]/).pop() ?? "")}` : "";
+    return `${b.mimeType} ${bytes} B${name}`;
+  });
+  return `${images.length} image(s): ${parts.join(", ")}`;
+}
 
 function loadRecording(name) {
   const file = join(recordingsDir, `${name}.json`);
@@ -511,7 +531,7 @@ const app = acp
   .onRequest(acp.methods.agent.initialize, (ctx) => {
     const agentCapabilities = {
       loadSession: !isV2,
-      promptCapabilities: { image: true, embeddedContext: true },
+      promptCapabilities: config.image ? { image: true, embeddedContext: true } : { embeddedContext: true },
       sessionCapabilities: isV2 ? {} : { list: {} },
     };
     if (!isV2) agentCapabilities._meta = { kiro: { extensionMethods } };
@@ -561,13 +581,16 @@ const app = acp
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
     requireAuth();
     const session = requireSession(ctx.params.sessionId);
-    const text = (ctx.params.prompt ?? [])
+    const blocks = ctx.params.prompt ?? [];
+    const text = blocks
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("\n");
+    const imageBlocks = blocks.filter((b) => b && b.type === "image");
     let scenario = config.scenario;
     const selector = /^\/scenario\s+([\w-]+)/.exec(text.trim());
     if (selector) scenario = selector[1];
+    else if (!text.trim() && imageBlocks.length > 0) scenario = "images";
     // Signed-in agent whose token expired: the real CLI accepts session/new and
     // rejects the prompt with this message (no authMethods were advertised).
     if (scenario === "auth-expired") {
@@ -577,17 +600,27 @@ const app = acp
       );
     }
 
-    // Remember the user turn (not echoed live; replayed by session/load).
+    // Remember the user turn (not echoed live; replayed by session/load), images included.
+    const userMessageId = `u-${++messageCounter}`;
     session.history.push({
       sessionUpdate: "user_message_chunk",
-      messageId: `u-${++messageCounter}`,
+      messageId: userMessageId,
       content: { type: "text", text },
     });
+    for (const image of imageBlocks) {
+      session.history.push({ sessionUpdate: "user_message_chunk", messageId: userMessageId, content: image });
+    }
     session.updatedAt = new Date().toISOString();
     if (!session.title) session.title = text.trim().slice(0, 40) || null;
 
     const abort = new AbortController();
-    const turn = { scenario, cancelled: false, signal: abort.signal, abort, vars: { cwd: session.cwd, sessionId: session.id } };
+    const vars = {
+      cwd: session.cwd,
+      sessionId: session.id,
+      images: describeImages(blocks),
+      blockTypes: blocks.map((b) => b?.type ?? "?").join(","),
+    };
+    const turn = { scenario, cancelled: false, signal: abort.signal, abort, vars };
     session.turn = turn;
     try {
       const recording = loadRecording(scenario);

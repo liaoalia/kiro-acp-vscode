@@ -259,6 +259,7 @@ function reduceMessage(state: UiState, msg: ToWebview): UiState {
 
     case "fileSuggestions":
     case "focusInput":
+    case "imagesAttached":
       // Transient; handled by the composer, not part of UiState.
       return state;
 

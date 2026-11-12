@@ -15,7 +15,7 @@ import {
   scoreFileMatch,
   sortByScore,
 } from "../src/features/pure/fileSearch.js";
-import type { ContextChip } from "../src/ui/protocol.js";
+import type { ContextChip, ImageAttachment } from "../src/ui/protocol.js";
 
 const abs = path.resolve("/ws/src/app.ts");
 const fileChip: ContextChip = {
@@ -92,6 +92,24 @@ test("unreadable selection degrades to a resource_link; duplicate chips are skip
     name: "missing.py",
     mimeType: "text/x-python",
   });
+});
+
+test("images go after the text and before the chips, one image block each", async () => {
+  const shot = path.resolve("/ws/shot.png");
+  const images: ImageAttachment[] = [
+    { id: "a", name: "shot.png", mimeType: "image/png", data: "iVBORw0K", size: 6, path: shot, preview: "data:image/png;base64,AAAA" },
+    { id: "b", name: "Pasted image 1.png", mimeType: "image/jpeg", data: "/9j/4A==", size: 4 },
+  ];
+  const blocks = await buildPromptBlocks("look", [fileChip], fakeRead, { embeddedContext: true }, images);
+  assert.deepEqual(
+    blocks.map((b) => b.type),
+    ["text", "image", "image", "resource_link"],
+  );
+  assert.deepEqual(blocks[1], { type: "image", mimeType: "image/png", data: "iVBORw0K", uri: pathToFileURL(shot).href });
+  assert.deepEqual(blocks[2], { type: "image", mimeType: "image/jpeg", data: "/9j/4A==" });
+
+  const imageOnly = await buildPromptBlocks("", [], fakeRead, { embeddedContext: false }, images.slice(1));
+  assert.deepEqual(imageOnly, [{ type: "image", mimeType: "image/jpeg", data: "/9j/4A==" }]);
 });
 
 test("helpers", () => {

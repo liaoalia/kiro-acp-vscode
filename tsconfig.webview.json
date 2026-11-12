@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["src/webview/**/*.ts", "src/ui/protocol.ts"]
+  "include": ["src/webview/**/*.ts", "src/ui/protocol.ts", "src/ui/images.ts"]
 }

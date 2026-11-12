@@ -852,6 +852,31 @@ summary:focus-visible {
   padding-right: 6px;
 }
 
+/* Image segments of a message: one wrapping row of thumbnails (D29). */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 4px 0;
+  min-width: 0;
+}
+.msg-image {
+  display: block;
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 160px;
+  object-fit: contain;
+  border-radius: var(--kiro-radius);
+  border: 1px solid var(--kiro-border);
+  background: var(--vscode-textCodeBlock-background);
+}
+.msg-images > .chip {
+  align-self: center;
+}
+
 /* ---------------------------------------------------------------------------
    Tool cards
 --------------------------------------------------------------------------- */
@@ -1244,11 +1269,111 @@ summary:focus-visible {
 .composer-box:focus-within {
   border-color: var(--vscode-focusBorder);
 }
+/* Files or a uri-list dragged over the composer. */
+.composer-box.is-dragover {
+  border-color: var(--vscode-focusBorder);
+  outline: 1px dashed var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
 .chips {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   padding: 2px 0 2px;
+}
+
+/* Attached images: tiles of thumbnail + name, remove button in the corner (D29). */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0;
+}
+.attachment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 48px thumbnail plus the 1px border (border-box). */
+  height: 50px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--kiro-radius);
+  border: 1px solid var(--kiro-border);
+  background: var(--vscode-textCodeBlock-background);
+  color: var(--vscode-foreground);
+}
+.attachment-thumb {
+  display: block;
+  flex: 0 0 auto;
+  height: 48px;
+  min-width: 32px;
+  max-width: 96px;
+  object-fit: cover;
+}
+.attachment-placeholder {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  color: var(--kiro-dim);
+  border-right: 1px solid var(--kiro-border);
+}
+.attachment-placeholder .icon svg {
+  width: 20px;
+  height: 20px;
+}
+.attachment-name {
+  min-width: 0;
+  max-width: 120px;
+  padding-right: 24px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--kiro-dim);
+}
+/* Hidden until hover or focus, but always in the tab order (opacity, not display). */
+.attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--vscode-contrastBorder, var(--kiro-border));
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.attachment:hover .attachment-remove,
+.attachment:focus-within .attachment-remove {
+  opacity: 1;
+}
+.attachment-remove:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+}
+.attachment-remove:focus-visible {
+  opacity: 1;
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 0;
+}
+.attachment-remove .icon svg {
+  width: 10px;
+  height: 10px;
+  stroke-width: 1.8;
+}
+@media (hover: none) {
+  .attachment-remove {
+    opacity: 1;
+  }
 }
 .composer-input {
   display: block;
@@ -1946,6 +2071,9 @@ summary:focus-visible {
   .sp-status-running svg,
   .sp-status-needs_input {
     animation: none;
+  }
+  .attachment-remove {
+    transition: none;
   }
   /* Static full ring instead of a spinning arc. */
   .sp-status-running .ring {

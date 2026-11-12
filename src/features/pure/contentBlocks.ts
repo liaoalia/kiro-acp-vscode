@@ -1,12 +1,13 @@
 /**
- * Build the `session/prompt` content blocks from the typed text and the
- * context chips (DECISIONS.md D10). vscode-free; tested in
+ * Build the `session/prompt` content blocks from the typed text, the attached
+ * images and the context chips (DECISIONS.md D10, D29). vscode-free; tested in
  * `test/features-contentBlocks.test.ts`.
  */
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type * as acp from "@agentclientprotocol/sdk";
-import type { ContextChip } from "../../ui/protocol.js";
+import type { ContextChip, ImageAttachment } from "../../ui/protocol.js";
+import { imageBlock } from "./images.js";
 
 export interface PromptCapabilities {
   /** `promptCapabilities.embeddedContext` advertised by the agent. */
@@ -105,21 +106,28 @@ function fileLinkBlock(chip: ContextChip): acp.ContentBlock {
 }
 
 /**
- * Compose the prompt: the text block first (when non-empty), then one block
- * per chip. Files become `resource_link`s; selections become an embedded
- * `resource` (`uri#L<start>-L<end>`) when `caps.embeddedContext`, else a
- * fenced `text` block. A selection whose file cannot be read degrades to a
- * `resource_link` for the file.
+ * Compose the prompt: the text block first (when non-empty), then one
+ * `image` block per image (D29), then one block per chip. Files become
+ * `resource_link`s; selections become an embedded `resource`
+ * (`uri#L<start>-L<end>`) when `caps.embeddedContext`, else a fenced `text`
+ * block. A selection whose file cannot be read degrades to a `resource_link`
+ * for the file. `images` must already be checked (`checkImageAttachment`,
+ * `mimeType` corrected) and only be passed when the agent advertised
+ * `promptCapabilities.image`.
  */
 export async function buildPromptBlocks(
   text: string,
   chips: readonly ContextChip[],
   read: (absPath: string) => Promise<string>,
   caps: PromptCapabilities,
+  images: readonly ImageAttachment[] = [],
 ): Promise<acp.ContentBlock[]> {
   const blocks: acp.ContentBlock[] = [];
   if (text.length > 0) {
     blocks.push({ type: "text", text });
+  }
+  for (const image of images) {
+    blocks.push(imageBlock(image));
   }
   const seen = new Set<string>();
   for (const chip of chips) {

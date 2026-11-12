@@ -553,3 +553,39 @@ are turned into one notice per distinct error per minute in every session
 whose turn is running (`noteAgentStderr`). Unknown agent requests are logged
 with their params (`_kiro/terminal/shell_type` was seen and answered
 `-32601`, as the Kiro docs require).
+
+## D29. Images are composer attachments sent as ACP `image` blocks
+Kiro CLI advertises `promptCapabilities.image` (protocol-notes), and ACP
+forbids `image` blocks unless the agent does, so the composer offers images
+only when `ConnectionView.acceptsImages` is set, and the host refuses a
+prompt carrying images otherwise (with a notice; nothing is sent).
+
+- **Where they live.** Pasted images have no path, so attachments belong to
+  the composer (webview), like the draft text, not to the host's
+  `ContextTracker`. Files picked with the button (`pickImages`, an open
+  dialog) or dropped as a VS Code uri-list (`dropFiles`) are read by the
+  host and handed back to the requesting view (`imagesAttached`); the
+  composer then owns them too. They travel with the `prompt` message as
+  `ImageAttachment`s (base64). They are not persisted in the webview state
+  (megabytes per image); a reload drops them.
+- **Rules** (`src/ui/images.ts`, shared by both bundles): PNG, JPEG, GIF and
+  WebP (what the Claude-family models behind Kiro accept), at most 5 MB each
+  and 10 per prompt. The webview checks them on attach; the host checks them
+  again on send against the bytes (magic-byte sniffing wins over the declared
+  type), before anything is echoed, so a rejected prompt leaves no
+  half-sent trace. Images are not downscaled: what the user attached is
+  what Kiro gets.
+- **Paste.** Images are attached only when the clipboard has no plain text:
+  Excel and Word put a bitmap next to the text, and the text is what the user
+  means there; screenshots and "copy image" from a browser carry no text.
+- **Block order:** text, images, then the context chips (D10), the same
+  order as the echo.
+- **Display.** The echo (D13) shows the webview's thumbnail (longest side
+  ≤ 320 px, WebP), never the full image, so transcript snapshots stay small;
+  image blocks the agent sends or replays (`session/load`) are shown inline
+  only up to 512 KB of base64, else as an `[image]` chip. Every `src` is a
+  `data:` URL of an accepted type, checked on the host and again in the
+  webview (the CSP already allows only `data:` and local images).
+- **Slash commands:** `/plan <text>` and agent commands forward the images
+  with the text; a command the extension handles itself (`/help`, `/mode`,
+  …) does not send them, and a notice says so.

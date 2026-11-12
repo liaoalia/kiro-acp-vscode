@@ -133,6 +133,8 @@ const ICON_PATHS: Record<string, string> = {
   // UI
   file: '<path d="M4 2h5.5L13 5.5V14H4z"/><path d="M9.5 2v3.5H13"/>',
   selection: '<path d="M3 3h10v10H3z" stroke-dasharray="2 1.5"/><path d="M5.5 7h5M5.5 9.5h3"/>',
+  // Picture frame with a sun and a mountain ridge: image attachments.
+  image: '<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="5.8" cy="6.3" r="1.1"/><path d="M2.4 11.4l3.3-3.2 2.8 2.7 1.7-1.6 3.4 3.1"/>',
   chevron: '<path d="M6 4l4 4-4 4"/>',
   close: '<path d="M4 4l8 8M12 4l-8 8"/>',
   plus: '<path d="M8 3v10M3 8h10"/>',

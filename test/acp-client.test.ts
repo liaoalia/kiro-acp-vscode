@@ -224,6 +224,51 @@ test("streamed chat: events arrive in order and the turn finishes with the promp
   }
 });
 
+/** A 1×1 PNG. */
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+test("image blocks reach the agent in order; an image-only prompt runs the images recording; --no-image hides the capability", async () => {
+  const bytes = Buffer.from(PNG_1PX, "base64").length;
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    await h.agent.start();
+    const session = await h.agent.newSession(h.cwd);
+
+    let before = h.events.length;
+    const response = await h.agent.prompt(session.sessionId, [
+      { type: "text", text: "/scenario images what is this?" },
+      { type: "image", mimeType: "image/png", data: PNG_1PX, uri: "file:///tmp/my%20shot.png" },
+      { type: "resource_link", uri: "file:///tmp/notes.md", name: "notes.md" },
+    ]);
+    assert.equal(response.stopReason, "end_turn");
+    assert.equal(
+      chunkText(h.events.slice(before)),
+      `Received 1 image(s): image/png ${bytes} B my shot.png; blocks: text,image,resource_link.`,
+    );
+
+    before = h.events.length;
+    await h.agent.prompt(session.sessionId, [
+      { type: "image", mimeType: "image/png", data: PNG_1PX },
+      { type: "image", mimeType: "image/png", data: PNG_1PX },
+    ]);
+    assert.equal(
+      chunkText(h.events.slice(before)),
+      `Received 2 image(s): image/png ${bytes} B, image/png ${bytes} B; blocks: image,image.`,
+    );
+  } finally {
+    await h.agent.stop();
+  }
+
+  const noImage = launch({ args: ["--scenario", "chat", "--no-image"] });
+  try {
+    const info = await noImage.agent.start();
+    assert.equal(info.agentCapabilities.promptCapabilities?.image, undefined);
+    assert.equal(info.agentCapabilities.promptCapabilities?.embeddedContext, true);
+  } finally {
+    await noImage.agent.stop();
+  }
+});
+
 test("refusal stop reason is reported", async () => {
   const h = launch({ args: ["--scenario", "refusal"] });
   try {

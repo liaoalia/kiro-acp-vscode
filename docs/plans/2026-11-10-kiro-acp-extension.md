@@ -137,6 +137,15 @@
 - [x] `src/ui/chatPanel.ts`, `src/ui/chatView.ts`: no `state` snapshot on visibility change (the webview is retained while hidden and receives posts) — DECISIONS D28
 - [x] revmux 19 (final): clean
 
+### ➕ Task 21: Image attachments in the composer (0.3.10)
+Contract (written first): `ImageAttachment`, `ImageSegment.name/src`, `ConnectionView.acceptsImages`, `prompt.images`, `pickImages`, `dropFiles`, `imagesAttached` in `src/ui/protocol.ts`; shared rules in `src/ui/images.ts` (PNG/JPEG/GIF/WebP, ≤ 5 MB, ≤ 10 per prompt, safe `data:` URLs) — DECISIONS D29.
+- [x] host: `src/features/pure/images.ts` (magic-byte sniffing, attachment check, file → attachment, preview segment), `buildPromptBlocks` emits `image` blocks after the text, `ChatController.prompt(..., images)` validates (capability, type, size, count) and echoes thumbnails, steer/queue carry them, `/plan <text>` forwards them, other client slash commands report them unsent; `pickImages` (open dialog) and `dropFiles` (images → `imagesAttached` to the requesting view, other files → `@` chips); `ConnectionView.acceptsImages`; transcript `image` segments get `name` / `src` (inline only when small and safe)
+- [x] webview: composer attachment tiles (thumbnail, name, size, remove), paste (images unless the clipboard also has text), drop (files → images; uri-list → `dropFiles`), attach button (only when `acceptsImages`), send allowed with images only, local notices for rejected images; transcript renders image segments as thumbnails; CSS
+- [x] fake agent: received images are summarised into the turn vars (`images` recording) and kept in the replayed history; e2e F16
+- [x] tests: `test/features-images.test.ts`, `test/features-contentBlocks.test.ts`, transcript segment tests, webview pure helpers, `test/e2e/f16-images.e2e.ts`
+- [x] docs: README, DECISIONS D29, protocol-notes verification row
+- [x] verified in a browser harness with the built webview: paste → tile with WebP thumbnail, a paste with text keeps the text, Enter posts text + full PNG + preview, no image support hides the button and refuses pastes with a notice
+
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages
 - [ ] `_kiro/terminal/shell_type`: implement once its params/reply are recorded from the log

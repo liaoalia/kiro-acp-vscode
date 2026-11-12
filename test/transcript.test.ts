@@ -5,10 +5,13 @@ import {
   applyUpdate,
   applyUpdates,
   createTranscript,
+  fileNameOfUri,
   snapshotToUiState,
   toConfigOptionViews,
+  toMessageSegment,
   withSessionSnapshot,
 } from "../src/features/pure/transcript.js";
+import { MAX_INLINE_PREVIEW_CHARS } from "../src/ui/images.js";
 
 function chunk(
   kind: "agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk",
@@ -64,6 +67,43 @@ test("non-text content blocks become resource/image segments", () => {
     { type: "resource", uri: "file:///a.ts", label: "a.ts" },
     { type: "image", mimeType: "image/png" },
   ]);
+});
+
+test("image blocks: src only for small, safe data; name from the uri", () => {
+  const image = (block: Partial<acp.ImageContent>) =>
+    toMessageSegment({ type: "image", data: "", mimeType: "image/png", ...block });
+  assert.deepEqual(image({ data: "iVBORw0K" }), {
+    type: "image",
+    mimeType: "image/png",
+    src: "data:image/png;base64,iVBORw0K",
+  });
+  assert.deepEqual(image({ data: "iVBORw0K", mimeType: "image/PNG", uri: "file:///c%3A/Users/me/My%20Shot.png" }), {
+    type: "image",
+    mimeType: "image/PNG",
+    name: "My Shot.png",
+    src: "data:image/png;base64,iVBORw0K",
+  });
+  // Too large to keep in the transcript: a named chip without src.
+  assert.deepEqual(image({ data: "A".repeat(MAX_INLINE_PREVIEW_CHARS + 4), uri: "file:///w/big.png" }), {
+    type: "image",
+    mimeType: "image/png",
+    name: "big.png",
+  });
+  // Types that are not accepted images, and junk payloads, never get a src.
+  assert.deepEqual(image({ data: "PHN2Zy8+", mimeType: "image/svg+xml" }), { type: "image", mimeType: "image/svg+xml" });
+  assert.deepEqual(image({ data: "not base64!", mimeType: "image/png" }), { type: "image", mimeType: "image/png" });
+  assert.deepEqual(image({ data: "AAAA", mimeType: "text/html" }), { type: "image", mimeType: "text/html" });
+});
+
+test("fileNameOfUri takes the last segment of URLs and plain paths", () => {
+  assert.equal(fileNameOfUri("file:///home/me/shot.png"), "shot.png");
+  assert.equal(fileNameOfUri("file:///c%3A/Users/me/caf%C3%A9%20%231.png"), "café #1.png");
+  assert.equal(fileNameOfUri("https://example.com/img/a.gif?size=2#top"), "a.gif");
+  assert.equal(fileNameOfUri("C:\\Users\\me\\shot.jpg"), "shot.jpg");
+  assert.equal(fileNameOfUri("/tmp/50%.png"), "50%.png");
+  assert.equal(fileNameOfUri("file:///bad%E0%A4%A.png"), "bad%E0%A4%A.png");
+  assert.equal(fileNameOfUri("file:///dir/"), undefined);
+  assert.equal(fileNameOfUri(""), undefined);
 });
 
 test("tool_call maps content (text, diff, terminal, non-text) and locations", () => {

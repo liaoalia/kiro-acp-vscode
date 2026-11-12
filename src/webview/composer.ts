@@ -1,13 +1,29 @@
 /**
- * Composer: a single rounded container holding the chips row, the
- * auto-growing textarea and a toolbar row (`+` context, `/` commands, model
- * pill on the left; mode pill and send/stop button on the right). Also owns
- * the `@` file autocomplete and `/` command popup. The chips row and the pill
- * slots are filled by the main renderer from state; buttons carry
- * `data-action` and are handled by delegation in `main.ts`.
+ * Composer: a single rounded container holding the image attachments row,
+ * the chips row, the auto-growing textarea and a toolbar row (`+` context,
+ * attach image, `/` commands, model pill on the left; mode pill and
+ * send/stop button on the right). Also owns the `@` file autocomplete, the
+ * `/` command popup and the attached images (paste, drop, attach button;
+ * DECISIONS D29). The chips row and the pill slots are filled by the main
+ * renderer from state; buttons carry `data-action` and are handled by
+ * delegation in `main.ts`.
  */
-import type { CommandView, ContextChip, FileSuggestion } from "../ui/protocol";
+import type { CommandView, ContextChip, FileSuggestion, ImageAttachment } from "../ui/protocol";
+import { base64Size, formatBytes, imageRejection, isSafeImageDataUrl } from "../ui/images";
+import {
+  IMAGES_NOT_ACCEPTED,
+  ONLY_IMAGES_DROPPED,
+  PasteNamer,
+  fileImageType,
+  isAttachableDrag,
+  isImageFile,
+  isWebUri,
+  parseUriList,
+  pasteAction,
+  planAttach,
+} from "./attachments";
 import { actionButton, h, icon, setChildren, shortPath } from "./dom";
+import { clipboardImageFiles, makePreview, readFileAsBase64 } from "./imageFiles";
 import { PromptHistory } from "./promptHistory";
 import { loadDraft, loadHistory, post, saveDraft, saveHistory } from "./vscodeApi";
 
@@ -19,6 +35,36 @@ export interface ComposerHost {
   /** The prompt was sent; the host may drop local chips. */
   onSent(): void;
   getCommands(): CommandView[];
+  /** Show a local notice (rejected images and the like); it renders and dismisses like the host's. */
+  notify(text: string, severity?: "info" | "warning"): void;
+}
+
+/** A pasted or dropped file on its way to becoming an attachment. */
+interface FileCandidate {
+  file: File;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
+/** Composer tile of an attached image: thumbnail (or icon), name, remove button. */
+function attachmentTile(img: ImageAttachment): HTMLElement {
+  const thumb =
+    img.preview && isSafeImageDataUrl(img.preview)
+      ? h("img", { class: "attachment-thumb", src: img.preview, alt: "", draggable: "false" })
+      : h("span", { class: "attachment-thumb attachment-placeholder" }, icon("image"));
+  return h(
+    "div",
+    { class: "attachment", role: "listitem", title: `${img.name} · ${formatBytes(img.size)}` },
+    thumb,
+    h("span", { class: "attachment-name" }, img.name),
+    actionButton("remove-image", icon("close"), {
+      cls: "attachment-remove",
+      data: { id: img.id },
+      ariaLabel: `Remove ${img.name}`,
+      title: "Remove",
+    }),
+  );
 }
 
 /** State-derived labels shown in the toolbar row. */
@@ -52,6 +98,9 @@ export class Composer {
   readonly el: HTMLElement;
   readonly chipsEl: HTMLElement;
 
+  private readonly box: HTMLElement;
+  private readonly attachmentsEl: HTMLElement;
+  private readonly attachBtn: HTMLButtonElement;
   private readonly textarea: HTMLTextAreaElement;
   private readonly sendBtn: HTMLButtonElement;
   /** Separate stop button, shown next to Send only while composing mid-turn is allowed. */
@@ -76,7 +125,25 @@ export class Composer {
   private composableDuringTurn = false;
   private meta: ComposerMeta = { settingsOpen: false };
 
+  /** Attached images, in order; part of the draft (kept across session switches, not persisted). */
+  private images: ImageAttachment[] = [];
+  /** The agent accepts image blocks (`ConnectionView.acceptsImages`). */
+  private imagesAllowed = false;
+  /** Slots held by images still being read or previewed, so concurrent attaches respect the count limit. */
+  private reserved = 0;
+  /** Attach work in flight (file reads, thumbnails); Send waits for it. */
+  private readonly inflight = new Set<Promise<void>>();
+  /** Send was pressed while attach work was in flight: send when it is done. */
+  private sendWhenReady = false;
+  private readonly pasteNamer = new PasteNamer();
+  private imageSeq = 0;
+
   constructor(private readonly host: ComposerHost) {
+    this.attachmentsEl = h("div", { class: "attachments", role: "list", "aria-label": "Attached images" });
+    this.attachmentsEl.hidden = true;
+    // Keep the caret in the textarea while clicking a tile or its remove button (keyboard focus still works).
+    this.attachmentsEl.addEventListener("mousedown", (e) => e.preventDefault());
+
     this.chipsEl = h("div", { class: "chips", role: "list", "aria-label": "Context" });
     this.chipsEl.hidden = true;
 
@@ -108,6 +175,14 @@ export class Composer {
     this.modelSlot = h("span", { class: "tool-slot tool-slot-model" });
     this.modeSlot = h("span", { class: "tool-slot tool-slot-mode" });
 
+    // Shown only while the agent accepts images (`setImagesAllowed`).
+    this.attachBtn = actionButton("attach-image", [icon("image")], {
+      cls: "tool-btn",
+      title: "Attach an image (or paste one)",
+      ariaLabel: "Attach an image",
+    });
+    this.attachBtn.hidden = true;
+
     const tools = h(
       "div",
       { class: "composer-tools", role: "toolbar", "aria-label": "Composer tools" },
@@ -116,6 +191,7 @@ export class Composer {
         title: "Add a file to the context (@)",
         ariaLabel: "Add a file to the context",
       }),
+      this.attachBtn,
       actionButton("insert-slash", [icon("slash")], {
         cls: "tool-btn",
         title: "Commands (/)",
@@ -136,12 +212,8 @@ export class Composer {
     this.popup = h("div", { class: "popup", id: "composer-popup", role: "listbox" });
     this.popup.hidden = true;
 
-    this.el = h(
-      "div",
-      { class: "composer" },
-      this.popup,
-      h("div", { class: "composer-box" }, this.chipsEl, this.textarea, tools),
-    );
+    this.box = h("div", { class: "composer-box" }, this.attachmentsEl, this.chipsEl, this.textarea, tools);
+    this.el = h("div", { class: "composer" }, this.popup, this.box);
 
     this.textarea.value = loadDraft();
 
@@ -149,6 +221,15 @@ export class Composer {
     this.textarea.addEventListener("keydown", (e) => this.onKeyDown(e));
     this.textarea.addEventListener("click", () => this.updatePopup());
     this.textarea.addEventListener("blur", () => this.closePopup());
+    this.textarea.addEventListener("paste", (e) => this.onPaste(e));
+    // Drops: OS files (bytes) or VS Code / file-manager uri-lists. VS Code may
+    // not deliver every drag to a webview; without the events nothing happens.
+    this.box.addEventListener("dragenter", (e) => this.onDragOver(e));
+    this.box.addEventListener("dragover", (e) => this.onDragOver(e));
+    this.box.addEventListener("dragleave", (e) => this.onDragLeave(e));
+    this.box.addEventListener("drop", (e) => this.onDrop(e));
+    window.addEventListener("dragend", () => this.setDragOver(false));
+    window.addEventListener("drop", () => this.setDragOver(false));
     // Keep focus in the textarea while clicking the popup.
     this.popup.addEventListener("mousedown", (e) => e.preventDefault());
     this.popup.addEventListener("click", (e) => {
@@ -247,14 +328,29 @@ export class Composer {
     this.onInput();
   }
 
-  /** Sends the current text (same path as pressing Enter). */
+  /**
+   * Sends the current text and attached images (same path as pressing
+   * Enter). Either may be empty, not both. While an image is still being
+   * read or previewed, the send happens as soon as it is attached.
+   */
   send(): void {
     if (!this.canSend()) return;
+    if (this.inflight.size > 0) {
+      this.sendWhenReady = true;
+      return;
+    }
     const text = this.textarea.value.replace(/\s+$/, "");
-    if (text.trim().length === 0) return;
-    post({ type: "prompt", text, chips: this.host.getChips() });
-    this.history.push(text);
-    saveHistory(this.history.list());
+    const hasText = text.trim().length > 0;
+    const images = this.images;
+    if (!hasText && images.length === 0) return;
+    const chips = this.host.getChips();
+    post(images.length > 0 ? { type: "prompt", text, chips, images } : { type: "prompt", text, chips });
+    if (hasText) {
+      this.history.push(text);
+      saveHistory(this.history.list());
+    }
+    this.images = [];
+    this.renderAttachments();
     this.textarea.value = "";
     this.closePopup();
     this.autoGrow();
@@ -263,6 +359,207 @@ export class Composer {
     saveDraft("");
     this.host.onSent();
     this.textarea.focus();
+  }
+
+  // -------------------------------------------------------------------------
+  // Image attachments (D29)
+  // -------------------------------------------------------------------------
+
+  /**
+   * `ConnectionView.acceptsImages`: shows the attach button; while false,
+   * pasted, dropped or host-read images get a notice and are not attached.
+   * Images already attached stay (the host refuses them on send, with a notice).
+   */
+  setImagesAllowed(allowed: boolean): void {
+    if (this.imagesAllowed === allowed) return;
+    this.imagesAllowed = allowed;
+    this.attachBtn.hidden = !allowed;
+  }
+
+  /**
+   * Attach images (read by the host for `pickImages` / `dropFiles`, or built
+   * from pasted/dropped files): enforces type, size and count, makes the
+   * thumbnails, then shows the tiles. Rejections become one local notice.
+   */
+  async addImages(incoming: ImageAttachment[]): Promise<void> {
+    const valid = (Array.isArray(incoming) ? incoming : [])
+      .filter((i) => i && typeof i.data === "string" && typeof i.mimeType === "string")
+      .map((i): ImageAttachment => {
+        const name = typeof i.name === "string" && i.name.trim() ? i.name.trim() : "Image";
+        const img: ImageAttachment = { id: this.nextImageId(), name, mimeType: i.mimeType, data: i.data, size: base64Size(i.data) };
+        if (typeof i.path === "string" && i.path) img.path = i.path;
+        return img;
+      });
+    if (valid.length === 0) return;
+    if (!this.imagesAllowed) {
+      this.host.notify(IMAGES_NOT_ACCEPTED, "warning");
+      return;
+    }
+    const paths = this.images.map((i) => i.path).filter((p): p is string => typeof p === "string");
+    const plan = planAttach(valid, this.images.length + this.reserved, paths);
+    this.report(plan.notices);
+    if (plan.accepted.length === 0) return;
+    await this.run(plan.accepted.length, () => this.commit(plan.accepted));
+  }
+
+  /** Remove button of a tile. Keyboard focus moves to the next tile's button, else the textarea. */
+  removeImage(id: string): void {
+    const index = this.images.findIndex((i) => i.id === id);
+    if (index < 0) return;
+    const hadFocus = this.attachmentsEl.contains(document.activeElement);
+    this.images = this.images.filter((i) => i.id !== id);
+    this.renderAttachments();
+    if (hadFocus) {
+      const buttons = this.attachmentsEl.querySelectorAll<HTMLElement>(".attachment-remove");
+      (buttons.length > 0 ? buttons[Math.min(index, buttons.length - 1)] : this.textarea).focus();
+    }
+  }
+
+  private nextImageId(): string {
+    this.imageSeq += 1;
+    return `img-${this.imageSeq}`;
+  }
+
+  private report(notices: string[]): void {
+    if (notices.length > 0) this.host.notify(notices.join(" "), "warning");
+  }
+
+  /**
+   * Run attach work holding `slots` of the count limit; Send waits for it.
+   * When the last piece of work ends, a Send pressed meanwhile goes out.
+   */
+  private run(slots: number, work: () => Promise<void>): Promise<void> {
+    this.reserved += slots;
+    const job = (async () => {
+      try {
+        await work();
+      } catch {
+        // Every step reports its own failures; nothing is attached for this job.
+      } finally {
+        this.reserved -= slots;
+      }
+    })();
+    this.inflight.add(job);
+    void job.then(() => {
+      this.inflight.delete(job);
+      if (this.inflight.size === 0 && this.sendWhenReady) {
+        this.sendWhenReady = false;
+        this.send();
+      }
+    });
+    return job;
+  }
+
+  /** Make the thumbnails (dropping any preview that came in) and show the tiles. */
+  private async commit(images: ImageAttachment[]): Promise<void> {
+    const ready = await Promise.all(
+      images.map(async (img): Promise<ImageAttachment> => {
+        const { preview: _ignored, ...rest } = img;
+        const preview = await makePreview(img.mimeType, img.data);
+        return preview ? { ...rest, preview } : rest;
+      }),
+    );
+    this.images = [...this.images, ...ready];
+    this.renderAttachments();
+  }
+
+  /** Pasted (`pasted`) or dropped image files: name, check, read and attach them. */
+  private attachFiles(files: File[], pasted: boolean): void {
+    if (files.length === 0) return;
+    if (!this.imagesAllowed) {
+      this.host.notify(IMAGES_NOT_ACCEPTED, "warning");
+      return;
+    }
+    const candidates: FileCandidate[] = files.map((file) => {
+      const mimeType = fileImageType(file.type, file.name);
+      const name = pasted || !file.name.trim() ? this.pasteNamer.name(file.name, mimeType) : file.name.trim();
+      return { file, name, mimeType, size: file.size };
+    });
+    // Type, size and count are checked on the file's metadata, before reading anything.
+    const plan = planAttach(candidates, this.images.length + this.reserved);
+    this.report(plan.notices);
+    if (plan.accepted.length === 0) return;
+    void this.run(plan.accepted.length, async () => {
+      const read: ImageAttachment[] = [];
+      const failures: string[] = [];
+      for (const c of plan.accepted) {
+        try {
+          const data = await readFileAsBase64(c.file);
+          const size = base64Size(data);
+          const rejection = imageRejection(c.name, c.mimeType, size);
+          if (rejection) failures.push(rejection);
+          else read.push({ id: this.nextImageId(), name: c.name, mimeType: c.mimeType, data, size });
+        } catch {
+          failures.push(`${c.name} was not attached: it could not be read.`);
+        }
+      }
+      this.report(failures);
+      if (read.length > 0) await this.commit(read);
+    });
+  }
+
+  private renderAttachments(): void {
+    setChildren(this.attachmentsEl, this.images.map(attachmentTile));
+    this.attachmentsEl.hidden = this.images.length === 0;
+    this.updateSendState();
+  }
+
+  /** Clipboard images are attached unless the clipboard also has plain text (Excel, Word: the text wins). */
+  private onPaste(e: ClipboardEvent): void {
+    const data = e.clipboardData;
+    if (!data) return;
+    const files = clipboardImageFiles(data);
+    if (pasteAction({ hasText: data.getData("text/plain").length > 0, imageCount: files.length }) !== "images") return;
+    e.preventDefault();
+    this.attachFiles(files, true);
+  }
+
+  private setDragOver(on: boolean): void {
+    this.box.classList.toggle("is-dragover", on);
+  }
+
+  private onDragOver(e: DragEvent): void {
+    const dt = e.dataTransfer;
+    if (!dt || !isAttachableDrag(Array.from(dt.types))) return;
+    e.preventDefault();
+    // A drop effect the source does not allow would cancel the drop: ask for "copy" only when allowed.
+    const allowed = dt.effectAllowed.toLowerCase();
+    if (allowed === "all" || allowed === "uninitialized" || allowed.includes("copy")) dt.dropEffect = "copy";
+    this.setDragOver(true);
+  }
+
+  private onDragLeave(e: DragEvent): void {
+    // Moving between children of the box fires dragleave too; only leaving the box counts.
+    const next = e.relatedTarget;
+    if (next instanceof Node && this.box.contains(next)) return;
+    this.setDragOver(false);
+  }
+
+  /**
+   * VS Code's own uri-list (explorer, editor tabs) goes to the host, which
+   * reads image files back (`imagesAttached`) and turns other files into `@`
+   * chips; OS files arrive as bytes: images are attached, the rest get a
+   * notice; a dropped web link stays the textarea's default (inserted as text).
+   */
+  private onDrop(e: DragEvent): void {
+    this.setDragOver(false);
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const types = Array.from(dt.types);
+    if (!isAttachableDrag(types)) return;
+    const codeUris = types.includes("application/vnd.code.uri-list") ? parseUriList(dt.getData("application/vnd.code.uri-list")) : [];
+    const files = codeUris.length > 0 ? [] : Array.from(dt.files ?? []);
+    if (files.length > 0) {
+      e.preventDefault();
+      const images = files.filter((f) => isImageFile(f.type, f.name));
+      if (images.length < files.length) this.host.notify(ONLY_IMAGES_DROPPED, "warning");
+      this.attachFiles(images, false);
+      return;
+    }
+    const uris = codeUris.length > 0 ? codeUris : parseUriList(dt.getData("text/uri-list"));
+    if (uris.length === 0 || uris.every(isWebUri)) return;
+    e.preventDefault();
+    post({ type: "dropFiles", uris });
   }
 
   // -------------------------------------------------------------------------
@@ -287,7 +584,7 @@ export class Composer {
 
   private updateSendState(): void {
     const btn = this.sendBtn;
-    const empty = this.textarea.value.trim().length === 0;
+    const empty = this.textarea.value.trim().length === 0 && this.images.length === 0;
     const steering = this.turnActive && this.composableDuringTurn;
     // Dedicated Stop only while composing mid-turn; otherwise Send itself becomes Stop.
     this.stopBtn.hidden = !steering;

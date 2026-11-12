@@ -19,6 +19,7 @@ network access happens inside `kiro-cli`, which inherits your environment
 | 3 | Live plan document: the agent's plan is rendered as Markdown in an editor tab and updated as steps progress; Approve / Reject appear when the agent asks to leave plan mode | `Kiro: Open Plan` |
 | 4 | File context: type `@` in the input to pick workspace files; the active editor file is attached by default as a removable chip | chat input |
 | 5 | Selection context: the current selection becomes a chip like `file.ts:12-40` and is sent with path and line range | `Kiro: Send Selection to Kiro Chat` (`Ctrl+Alt+K` / `Cmd+Alt+K`) |
+| 5a | Image attachments: paste an image into the input (`Ctrl+V` / `Cmd+V`), drop image files on it, or pick them with the image button; they show as thumbnails and go to Kiro with the prompt (PNG, JPEG, GIF, WebP; up to 5 MB each, 10 per message). Offered only when the agent advertises image support (Kiro CLI does) | chat input |
 | 6 | Client-side file system and terminal: reads are served from open (unsaved) buffers, writes go through `WorkspaceEdit` so they are undoable, agent commands run in a visible VS Code terminal | automatic |
 | 7 | Permissions: allow once / reject, plus session-wide policies — all actions of a kind, all actions of a capability (e.g. `fs_write`) or all changes to one file / one command — using only the options the agent offers; the tool kind is taken from the tool call when the request omits it | chat permission card |
 | 8 | Remembered session options: the mode, model and config options you pick are applied to every new session (only values the agent advertises); `Kiro: Forget Remembered Session Options` resets them | automatic, `kiroAcp.rememberSessionOptions` |
@@ -70,6 +71,15 @@ network access happens inside `kiro-cli`, which inherits your environment
 - **Prompt history**: Up on the first line of the input recalls the previous
   message you sent from this chat, Down walks forward again (back to what
   you were typing); the history survives switching tabs.
+- **Images**: `Ctrl+V` with a screenshot (or an image copied in a browser)
+  in the clipboard attaches it; when the clipboard also holds text (a range
+  copied from Excel or Word) the text is pasted instead. Image files can be
+  dropped on the input (VS Code may need `Shift` held while dropping into a
+  webview; files dragged from the VS Code explorer that are not images
+  become `@` chips) or picked with the image button. A message may be just images. Attachments
+  stay in the input while you switch sessions, but are not kept across a
+  window reload. Images in restored sessions are shown when small, otherwise
+  as an `[image]` chip.
 - Sessions live as long as the `kiro-cli acp` process; restarting the agent
   ends them (restore a past session to pick one up again).
 

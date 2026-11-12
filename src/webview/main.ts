@@ -80,6 +80,9 @@ const live = h("div", { class: "sr-only", "aria-live": "polite", "aria-atomic": 
 // Wide-layout session panel on the right; hidden by the stylesheet below 640px.
 const sessionPanel = h("aside", { class: "session-panel", "aria-label": "Sessions" });
 
+/** Ids of notices raised by the webview itself (`local-<n>`), unique per load. */
+let localNoticeSeq = 0;
+
 const composer = new Composer({
   getChips: () => effectiveChips(state, local),
   addLocalChip: (chip: ContextChip) => {
@@ -93,6 +96,11 @@ const composer = new Composer({
     scheduleRender();
   },
   getCommands: () => state.commands,
+  // Through the reducer like a host notice, so it renders and dismisses the same way.
+  notify: (text, severity = "warning") => {
+    localNoticeSeq += 1;
+    handle({ type: "notice", notice: { id: `local-${localNoticeSeq}`, severity, text } });
+  },
 });
 
 app.append(
@@ -244,6 +252,10 @@ function handle(msg: ToWebview): void {
     case "focusInput":
       composer.focus();
       return;
+    case "imagesAttached":
+      // Composer-owned (D29): never part of UiState.
+      void composer.addImages(Array.isArray(msg.images) ? msg.images : []);
+      return;
     case "state":
       if ((msg.state?.sessionId ?? null) !== state.sessionId) resetLocal();
       stuckToBottom = true;
@@ -264,6 +276,8 @@ function handle(msg: ToWebview): void {
       break;
   }
   state = reduce(state, msg);
+  // Immediately, not on the next frame: an attach right after the connection changed must see it.
+  composer.setImagesAllowed(state.connection.acceptsImages === true);
   scheduleRender();
 }
 
@@ -320,6 +334,13 @@ app.addEventListener("click", (event) => {
       break;
     case "add-context":
       composer.insertAtMention();
+      break;
+    case "attach-image":
+      // The host opens a file dialog and answers this view with `imagesAttached`.
+      post({ type: "pickImages" });
+      break;
+    case "remove-image":
+      if (d.id) composer.removeImage(d.id);
       break;
     case "insert-slash":
       composer.insertSlash();
