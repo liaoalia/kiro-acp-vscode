@@ -187,6 +187,13 @@ function flattenOptions(options) {
 let authenticated = !config.authRequired;
 const sessions = new Map();
 let sessionCounter = 0;
+/**
+ * Session ids never repeat across processes (the real CLI uses UUIDs): a
+ * restarted agent must not hand out an id the previous process used. The
+ * counter comes first, so the 12-character short id in terminal names stays
+ * distinct per session.
+ */
+const sessionIdSuffix = `${process.pid.toString(36)}${Date.now().toString(36).slice(-3)}`;
 let messageCounter = 0;
 /** cwd reported for the canned past sessions: the first `session/new` cwd, else process.cwd(). */
 let cannedCwdPinned = false;
@@ -568,7 +575,7 @@ const app = acp
   })
   .onRequest(acp.methods.agent.session.new, (ctx) => {
     requireAuth();
-    const id = `sess-${++sessionCounter}`;
+    const id = `sess-${++sessionCounter}-${sessionIdSuffix}`;
     if (!isV2) pinCannedCwd(ctx.params.cwd);
     const session = makeSession(id, ctx.params.cwd);
     sessions.set(id, session);

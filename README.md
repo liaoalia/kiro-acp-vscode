@@ -129,8 +129,9 @@ terminal running the sign-in (`kiro-cli acp --login` when Kiro advertises a
 terminal method; otherwise a fresh sign-in: `kiro-cli logout`, then
 `kiro-cli login` — the expired token is never "refreshed"). When that process exits successfully the
 chat reconnects by itself (click **Reconnect** in the notification to do it
-sooner): the agent is respawned and the sessions shown in the chat tabs are
-restored. `/login` and `Kiro: Log In` do the same at any time.
+sooner): the agent is respawned and every session with a conversation is
+restored into its chat tab, not only the one on screen. `/login` and
+`Kiro: Log In` do the same at any time.
 
 ## Install the extension (VSIX)
 

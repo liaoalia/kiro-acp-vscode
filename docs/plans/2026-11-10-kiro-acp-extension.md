@@ -148,6 +148,12 @@ Contract (written first): `ImageAttachment`, `ImageSegment.name/src`, `Connectio
 - [x] revmux 20 (comprehensive): 5 minors, no gating — the webview did not sniff the bytes (a renamed non-image passed the composer and the host's refusal on send cleared the typed message; now both sides use `imageDataVerdict` from `src/ui/images.ts`), F16.2 could not tell the thumbnail from the image (distinct WebP preview now), no e2e for images through steer / queue / `/plan` / an agent without image support (F16.8–F16.11; the fake agent's steer reply names the images), D29 claimed the echo never shows the full image, protocol-notes said "seven features"
 - [x] revmux 21 (final): clean (claude and codex both did full passes)
 
+### ➕ Task 22: Signing in again kept only the session on screen (0.3.11)
+- [x] `src/ui/chatController.ts`: `restart({ restoreSessions })` loads back every live session with a conversation (`restorePlan` / `restoreSessions`, the focused and displayed ones first) into its group with its old `updatedAt`; no first session from the new process when there is something to restore (`startOnce(false)`); a failure is a warning in its tab; tabs closed meanwhile are skipped (`closedGroups`); `openPastSession` and the restore share `loadInto` — DECISIONS D25 addendum
+- [x] fake agent: session ids differ per process
+- [x] tests: e2e F14.2 (two sessions of one tab back in order, no extra empty session, focus kept; a session the new process cannot load → fresh session + named warning)
+- [x] docs: README, DECISIONS D25
+
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages
 - [ ] `_kiro/terminal/shell_type`: implement once its params/reply are recorded from the log

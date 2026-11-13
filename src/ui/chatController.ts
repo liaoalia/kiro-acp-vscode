@@ -203,6 +203,25 @@ interface QueuedPrompt {
   messageId: string;
 }
 
+/**
+ * A live session that a sign-in restart loads back (`session/load`) into the
+ * new agent process: into its group, shown again by the views that showed it,
+ * at its old place in the session list (D25).
+ */
+interface RestoreEntry {
+  sessionId: string;
+  groupId: string;
+  agentTitle: string | null;
+  /** Its title before the restart, for a failure notice. */
+  title: string;
+  /** Kept across the restore, so the session list keeps its order. */
+  updatedAt: number;
+  /** The views that displayed it. */
+  views: ViewBinding[];
+  /** It was the focused session. */
+  focused: boolean;
+}
+
 const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
 /** Upper bound on `session/list` pages followed per listing (guards against an agent that never ends its list). */
 const MAX_LIST_PAGES = 50;
@@ -397,6 +416,8 @@ export class ChatController implements vscode.Disposable {
   private sessionsTimer: ReturnType<typeof setTimeout> | undefined;
   /** Titles seen in the last `session/list`, so a restore started by id can name the session (D21). */
   private readonly pastTitles = new Map<string, string | null>();
+  /** Groups whose tab was closed: a sign-in restart restores nothing into them (D20, D25). */
+  private readonly closedGroups = new Set<string>();
 
   /**
    * Called when a session waits for the user (permission request) while no
@@ -840,15 +861,33 @@ export class ChatController implements vscode.Disposable {
 
   /** Start the agent process (idempotent) and open a first session when none exists. */
   async ensureStarted(): Promise<void> {
+    return this.startOnce(true);
+  }
+
+  /**
+   * {@link ensureStarted}. With `openSessions: false` the new process opens
+   * no first session and gives the views none: a sign-in restart hands them
+   * their own sessions back instead. A start already in flight is joined as is.
+   */
+  private startOnce(openSessions: boolean): Promise<void> {
     if (this.starting) return this.starting;
-    if (this.agent && this.agent.status !== "stopped" && this.agent.status !== "error") return;
-    this.starting = this.startAgent().finally(() => {
+    if (this.agent && this.agent.status !== "stopped" && this.agent.status !== "error") return Promise.resolve();
+    this.starting = this.startAgent(openSessions).finally(() => {
       this.starting = null;
     });
     return this.starting;
   }
 
-  private async startAgent(): Promise<void> {
+  /** A first session when none exists, and a session for every view still without one. */
+  private async openFirstSessions(): Promise<void> {
+    if (this.sessions.size === 0) {
+      const first = await this.createSession(this.focusedView?.groupId ?? DEFAULT_GROUP);
+      if (first) this.focus(first.id);
+    }
+    await this.assignPendingViews();
+  }
+
+  private async startAgent(openSessions: boolean): Promise<void> {
     const config = vscode.workspace.getConfiguration("kiroAcp");
     const configured = config.get<string>("cliPath", "kiro-cli");
     const extraArgs = config.get<string[]>("cliArgs", []);
@@ -876,11 +915,7 @@ export class ChatController implements vscode.Disposable {
     try {
       this.agentInfo = await agent.start();
       this.setConnection(this.connectionFromAgent("ready"));
-      if (this.sessions.size === 0) {
-        const first = await this.createSession(this.focusedView?.groupId ?? DEFAULT_GROUP);
-        if (first) this.focus(first.id);
-      }
-      await this.assignPendingViews();
+      if (openSessions) await this.openFirstSessions();
     } catch (error) {
       const message = errorMessage(error);
       logger.error(`agent start failed: ${message}`);
@@ -903,35 +938,103 @@ export class ChatController implements vscode.Disposable {
   }
 
   /**
-   * Spawn a fresh agent process. With `restoreSessions` the sessions the
-   * views were displaying are loaded back (`session/load`) into the same
-   * views once the new process is ready, so a sign-in does not lose context.
+   * Spawn a fresh agent process. With `restoreSessions` (a sign-in) every
+   * session with a conversation is loaded back (`session/load`) once the new
+   * process is ready: into its group, shown again by the views that showed
+   * it, so a sign-in loses neither a tab's open conversation nor the others in
+   * its session list (D25). Views left without a session get a fresh one.
    */
   async restart(options: { restoreSessions?: boolean } = {}): Promise<void> {
-    const restore = options.restoreSessions ? this.displayedSessions() : [];
+    const plan = options.restoreSessions ? this.restorePlan() : [];
     this.endAllSessions();
     await this.teardownAgent();
     this.contextPollUnsupported = false;
     this.setConnection({ status: "stopped" });
-    await this.ensureStarted();
-    if (restore.length === 0 || this.agentInfo?.agentCapabilities.loadSession !== true) return;
-    for (const { binding, sessionId } of restore) {
-      await this.openPastSession(sessionId, binding);
+    // With sessions to bring back, the new process opens no session of its
+    // own first: it would linger as an empty "New session" in the focused tab.
+    await this.startOnce(plan.length === 0);
+    const agent = this.agent;
+    if (plan.length === 0 || !agent || !this.agentInfo) return;
+    let failed: Array<{ entry: RestoreEntry; message: string }> = [];
+    if (this.agentInfo.agentCapabilities.loadSession === true) {
+      failed = await this.restoreSessions(agent, plan);
+    } else {
+      this.deps.output.appendLine(`[warn] the agent cannot load sessions: ${plan.length} session(s) not restored`);
     }
-    // A view whose session could not be restored gets a fresh one.
-    await this.assignPendingViews();
+    if (this.agent !== agent) return;
+    await this.openFirstSessions();
+    const shown = this.focusedView?.sessionId ?? null;
+    if (shown) this.focus(shown);
+    else if (!this.focusedId) {
+      const newest = this.sortedSessions()[0];
+      if (newest) this.focus(newest.id);
+    }
+    for (const { entry, message } of failed) {
+      // Told in the tab the session belonged to, which shows a fresh session
+      // by now; a group no view lists has the output-channel line only.
+      const view = [...this.views].find((v) => !v.follows && v.groupId === entry.groupId && v.displayed !== null);
+      const target = view?.displayed ? (this.sessions.get(view.displayed) ?? null) : null;
+      if (target) this.notice(target, "warning", `Could not restore session "${entry.title}" (${entry.sessionId}): ${message}`);
+    }
   }
 
-  /** Views bound to a loaded session, with that session id (for a restore after restart). */
-  private displayedSessions(): Array<{ binding: ViewBinding; sessionId: string }> {
-    const out: Array<{ binding: ViewBinding; sessionId: string }> = [];
-    for (const view of this.views) {
-      if (view.follows || !view.displayed) continue;
-      const session = this.sessions.get(view.displayed);
-      if (!session || session.loading) continue;
-      out.push({ binding: view, sessionId: view.displayed });
+  /**
+   * What a sign-in restart brings back: every live session with a
+   * conversation (an empty one is not worth a `session/load`), the focused
+   * one first, then the displayed ones, then the rest, most recent first.
+   * Sessions still restoring or closing are left out: their own pending
+   * request ends with the old process and cleans up after itself.
+   */
+  private restorePlan(): RestoreEntry[] {
+    const entries: RestoreEntry[] = [];
+    for (const session of this.sortedSessions()) {
+      if (session.loading || session.closing || session.transcript.items.length === 0) continue;
+      entries.push({
+        sessionId: session.id,
+        groupId: session.groupId,
+        agentTitle: session.agentTitle,
+        title: session.title(),
+        updatedAt: session.updatedAt,
+        views: [...this.views].filter((v) => !v.follows && v.displayed === session.id),
+        focused: session.id === this.focusedId,
+      });
     }
-    return out;
+    const rank = (e: RestoreEntry): number => (e.focused ? 0 : e.views.length > 0 ? 1 : 2);
+    return entries.sort((a, b) => rank(a) - rank(b));
+  }
+
+  /**
+   * Load the {@link restorePlan} back into the new process, one session at a
+   * time (the views see theirs first). A view shows its session again unless
+   * it shows another one by now. Returns the sessions the agent could not
+   * load; a session whose tab was closed meanwhile, or that something else
+   * restored already, is skipped, and once the agent is no longer ready (it
+   * exited, or wants a sign-in again) the rest are left for Past sessions.
+   */
+  private async restoreSessions(
+    agent: KiroAgent,
+    plan: readonly RestoreEntry[],
+  ): Promise<Array<{ entry: RestoreEntry; message: string }>> {
+    const failed: Array<{ entry: RestoreEntry; message: string }> = [];
+    for (const [index, entry] of plan.entries()) {
+      if (this.agent !== agent || agent.status !== "ready") {
+        this.deps.output.appendLine(`[warn] ${plan.length - index} session(s) not restored: the agent is ${agent.status}`);
+        break;
+      }
+      if (this.closedGroups.has(entry.groupId) || this.sessions.has(entry.sessionId)) continue;
+      const result = await this.loadInto(agent, entry.sessionId, {
+        groupId: entry.groupId,
+        views: entry.views.filter((v) => this.views.has(v) && v.displayed === null),
+        focus: entry.focused,
+        agentTitle: entry.agentTitle,
+        updatedAt: entry.updatedAt,
+        fallback: null,
+      });
+      if (typeof result !== "string") continue;
+      failed.push({ entry, message: result });
+      if (this.focusedId === entry.sessionId) this.clearFocus();
+    }
+    return failed;
   }
 
   /**
@@ -1354,6 +1457,53 @@ export class ChatController implements vscode.Disposable {
       return null;
     }
     const groupId = binding?.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
+    if (!this.pastTitles.has(sessionId)) {
+      try {
+        await this.listPastEntries(agent);
+      } catch {
+        /* the title stays unknown until the agent reports one */
+      }
+    }
+    const loaded = await this.loadInto(agent, sessionId, {
+      groupId,
+      views: binding && !binding.follows ? [binding] : [],
+      focus: true,
+      agentTitle: this.pastTitles.get(sessionId) ?? null,
+      // The view goes back to what it showed before; focus follows below.
+      fallback: previous,
+    });
+    if (typeof loaded !== "string") return sessionId;
+    if (this.focusedId === sessionId) {
+      this.focusedId = null;
+      const fallback = previous ?? this.sortedSessions()[0]?.id ?? null;
+      if (fallback) this.focus(fallback);
+      else this.clearFocus();
+    }
+    const target = this.focusedId ? (this.sessions.get(this.focusedId) ?? null) : null;
+    this.notice(target, "warning", `Could not restore session ${sessionId}: ${loaded}`);
+    return null;
+  }
+
+  /**
+   * `session/load` `sessionId` into a fresh `ChatSession` of `target.groupId`,
+   * displayed by `target.views` (and focused with `target.focus`) while the
+   * agent replays its history. Returns the session once loaded, its
+   * `updatedAt` set to `target.updatedAt` (default: now). On failure it is
+   * forgotten again, the views that displayed it show `target.fallback`, and
+   * the error message is returned; focus is the caller's to fix.
+   */
+  private async loadInto(
+    agent: KiroAgent,
+    sessionId: string,
+    target: {
+      groupId: string;
+      views: readonly ViewBinding[];
+      focus: boolean;
+      agentTitle: string | null;
+      updatedAt?: number;
+      fallback: string | null;
+    },
+  ): Promise<ChatSession | string> {
     const cwd = this.workspaceRoot();
     const placeholder: SessionState = {
       sessionId,
@@ -1364,22 +1514,14 @@ export class ChatController implements vscode.Disposable {
       availableCommands: [],
       meta: null,
     };
-    const session = new ChatSession(placeholder, ++this.sessionSeq, groupId);
+    const session = new ChatSession(placeholder, ++this.sessionSeq, target.groupId);
     session.loading = true;
-    if (!this.pastTitles.has(sessionId)) {
-      try {
-        await this.listPastEntries(agent);
-      } catch {
-        /* the title stays unknown until the agent reports one */
-      }
-    }
-    session.agentTitle = this.pastTitles.get(sessionId) ?? null;
+    session.agentTitle = target.agentTitle;
     this.sessions.set(sessionId, session);
-    this.deps.output.appendLine(`[info] session ${sessionId} restoring (group ${groupId})`);
-    if (binding && !binding.follows) this.setViewSession(binding, sessionId);
-    this.focus(sessionId);
+    this.deps.output.appendLine(`[info] session ${sessionId} restoring (group ${target.groupId})`);
+    for (const view of target.views) this.setViewSession(view, sessionId);
+    if (target.focus) this.focus(sessionId);
     const restoring = this.notice(session, "info", "Restoring session…");
-    const wasFocused = () => this.focusedId === sessionId;
     try {
       const state = await agent.loadSession(sessionId, cwd);
       // The client already emitted a `state` event for it; merging again is harmless.
@@ -1387,33 +1529,29 @@ export class ChatController implements vscode.Disposable {
     } catch (error) {
       const message = errorMessage(error);
       this.deps.output.appendLine(`[error] session ${sessionId} restore failed: ${message}`);
-      this.sessions.delete(sessionId);
-      this.deps.permissions.cancelAll(sessionId);
-      this.deps.permissions.clearPolicies(sessionId);
-      // The view goes back to what it showed before; focus follows.
-      for (const v of this.views) {
-        if (!v.follows && v.displayed === sessionId) this.setViewSession(v, previous);
-      }
-      if (wasFocused()) {
-        this.focusedId = null;
-        const fallback = previous ?? this.sortedSessions()[0]?.id ?? null;
-        if (fallback) this.focus(fallback);
-        else this.clearFocus();
+      // Only this very object: the id may have been closed and restored again meanwhile.
+      if (this.sessions.get(sessionId) === session) {
+        this.sessions.delete(sessionId);
+        this.deps.permissions.cancelAll(sessionId);
+        this.deps.permissions.clearPolicies(sessionId);
+        for (const v of this.views) {
+          if (!v.follows && v.displayed === sessionId) this.setViewSession(v, target.fallback);
+        }
       }
       this.scheduleSessions();
-      const target = this.focusedId ? (this.sessions.get(this.focusedId) ?? null) : null;
-      this.notice(target, "warning", `Could not restore session ${sessionId}: ${message}`);
-      return null;
+      return message;
     }
     session.loading = false;
-    session.touch();
+    // The replay touched it; a session coming back keeps its place in the list.
+    if (target.updatedAt === undefined) session.touch();
+    else session.updatedAt = target.updatedAt;
     this.clearNotice(session, restoring.id);
     for (const v of this.views) {
       if (v.sessionId === sessionId) this.postSessionState(v, sessionId);
     }
     this.scheduleSessions();
     this.deps.output.appendLine(`[info] session ${sessionId} restored (${session.transcript.items.length} items)`);
-    return sessionId;
+    return session;
   }
 
   /** Merge a `SessionState` (session/new, session/load, state events) into `session` and tell its views. */
@@ -1433,6 +1571,7 @@ export class ChatController implements vscode.Disposable {
 
   /** Close every session of `groupId` (a chat tab was closed, see D20). */
   async closeGroup(groupId: string): Promise<void> {
+    this.closedGroups.add(groupId);
     for (const session of this.sortedSessions()) {
       if (session.groupId === groupId) await this.closeSession(session.id);
     }

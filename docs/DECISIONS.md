@@ -432,9 +432,10 @@ adding a notice: the sign-in banner already shows the agent's message and the
 button.
 
 After the terminal login the agent is respawned (`restart({ restoreSessions:
-true })`): the sessions the chat views were displaying are loaded back with
-`session/load` into the same views (D21), so signing in does not lose the
-conversation; a session that cannot be restored falls back to a fresh one.
+true })`): every live session with a conversation is loaded back with
+`session/load` (D21) into its group, so signing in loses neither the
+conversation a tab shows nor the others in its session list (see the 0.3.11
+addendum); a view whose session cannot be restored gets a fresh one.
 Whether the running process could instead pick up the new token without a
 restart is unverified; the spec says to reconnect.
 
@@ -458,6 +459,26 @@ the user closed) resolves the login and the agent reconnects at once; a
 non-zero exit fails it with the code. The "Reconnect" notification remains
 the manual shortcut. `isTransient: true` keeps the terminal out of VS Code's
 session restore.
+
+**Addendum (0.3.11):** the restart restored only the session each view
+*displayed*. A tab holding several sessions came back with just the one on
+screen, and the new process's own first session sat in the focused tab as an
+extra empty "New session". A user who signed in again from one tab reported
+"only the tab I signed in from is left, the others closed": the other
+sessions of the tab's list were gone. `restorePlan()` now takes every live
+session with a conversation (empty ones are not worth a `session/load`, and
+sessions still restoring or closing are left out). The focused session goes
+first, then the displayed ones, then the rest. `restoreSessions()` loads them
+one at a time into their old group, each view showing its own session again,
+and keeps each `updatedAt` so the list order survives. With anything to
+restore, the new process opens no first session (`startOnce(false)`). Views
+still without a session then get a fresh one, and focus returns to the
+focused view's session. A session the agent cannot load is named in a
+warning in its tab; in a group no view lists, it only gets an output-channel
+line. A tab closed during the restore gets nothing back (`closedGroups`).
+Once the agent stops being ready, the remaining sessions are left for Past
+sessions. The fake agent's session ids now differ per process, as UUIDs do,
+so a restarted fake cannot hand out an id the old process used.
 
 ## D26. Context and token usage come from whatever the agent reports
 The header shows a usage pill ("42% ctx · 12k tokens", tooltip with the
