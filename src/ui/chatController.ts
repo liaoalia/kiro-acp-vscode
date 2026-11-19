@@ -2,7 +2,8 @@
  * Orchestrates the chat: agent lifecycle, every live session (transcript,
  * permissions, diffs, plan, notices) and the views that display them.
  *
- * One `KiroAgent` process hosts many sessions. Each attached view (sidebar,
+ * One `KiroAgent` (an `AgentPool`: one `kiro-cli` process per session, D31)
+ * hosts many sessions. Each attached view (sidebar,
  * editor tab, test recorder) displays exactly one session at a time; the
  * controller also tracks a *focused* session — the one most recently used
  * through its API or from a view — which the plan document, the status bar
@@ -24,13 +25,15 @@ import type * as acp from "@agentclientprotocol/sdk";
 
 import {
   AcpError,
-  createKiroAgent,
+  createAgentPool,
   FALLBACK_LOGIN_METHOD,
   resolveCliPath,
   type AgentInfo,
+  type AgentPool,
   type ClientServices,
   type ConnectionStateChange,
   type KiroAgent,
+  type PoolProcessInfo,
   type ProtocolLogger,
   type SessionEvent,
   type SessionListEntry,
@@ -238,6 +241,21 @@ const STEER_METHOD = "_session/steer";
 const CANCEL_GRACE_MS = 5_000;
 /** One notice per distinct kiro-cli stderr error per this interval. */
 const STDERR_NOTICE_INTERVAL_MS = 60_000;
+/** `kiroAcp.agentProcesses.max`: default and bounds (package.json, D31). */
+const DEFAULT_MAX_PROCESSES = 8;
+const MAX_PROCESSES_LIMIT = 32;
+/**
+ * Sessions a sign-in restore loads at the same time (D25, D31): each load
+ * starts a process of its own, so a few at once bring a full window back
+ * faster without spawning every process in the same instant.
+ */
+const RESTORE_CONCURRENCY = 4;
+/**
+ * A turn that failed this shortly before its process's exit was reported
+ * failed by that exit (the connection closed first): the exit notice
+ * replaces its "Prompt failed" (D31).
+ */
+const EXIT_FAILURE_WINDOW_MS = 5_000;
 
 /** A prompt typed mid-turn and held until the turn ends (steering unavailable, see D22). */
 interface QueuedPrompt {
@@ -385,6 +403,20 @@ class ChatSession {
   abandonedTurn = false;
   /** The drop above is logged once per session. */
   abandonedDropLogged = false;
+  /**
+   * The kiro-cli process hosting this session exited (D31): its exit
+   * message, until a process hosts the session again. The next turn (or
+   * option change) first loads it into a new process ({@link ChatController.reloadSession}).
+   */
+  processLost: string | null = null;
+  /** That `session/load` while in flight; its replayed history is dropped (the transcript has it). */
+  reload: Promise<string | null> | null = null;
+  /**
+   * The "Prompt failed" notice of the last turn and the `turnGeneration` its
+   * end left: a process exit that arrives after the failure it caused
+   * replaces the notice instead of adding a second one (D31).
+   */
+  lastFailure: { noticeId: string; generation: number; at: number } | null = null;
   updatedAt = Date.now();
 
   constructor(
@@ -485,7 +517,8 @@ interface LinkWaiter {
 // ---------------------------------------------------------------------------
 
 export class ChatController implements vscode.Disposable, AgentLinkHost {
-  private agent: KiroAgent | null = null;
+  /** One `kiro-cli` process per session behind the `KiroAgent` facade (D31). */
+  private agent: AgentPool | null = null;
   private agentInfo: AgentInfo | null = null;
   /** `_kiro/session/context` rejected the after-turn poll (D26): not asked again until a restart. */
   private contextPollUnsupported = false;
@@ -838,14 +871,24 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     }
   }
 
-  /** An idle, empty session of `groupId` that no view displays (the auto-created first session, typically). */
+  /**
+   * An idle, empty session of `groupId` that no view displays (the
+   * auto-created first session, typically). Not one whose process exited
+   * (D31): an empty session may never have been saved, so it might not load
+   * again, and a fresh one costs the same.
+   */
   private spareSession(groupId: string): ChatSession | undefined {
     const displayed = new Set<string>();
     for (const view of this.views) {
       if (!view.follows && view.displayed) displayed.add(view.displayed);
     }
     return this.sortedSessions().find(
-      (s) => s.groupId === groupId && !displayed.has(s.id) && !s.turnActive && s.transcript.items.length === 0,
+      (s) =>
+        s.groupId === groupId &&
+        !displayed.has(s.id) &&
+        !s.turnActive &&
+        s.transcript.items.length === 0 &&
+        !this.unhosted(s),
     );
   }
 
@@ -1035,14 +1078,21 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     const logger = this.logger();
     const command = await resolveCliPath(configured);
     const args = ["acp", ...extraArgs];
-    logger.info(`spawning: ${command} ${args.join(" ")} (cwd ${this.workspaceRoot()})`);
+    const maxProcesses = this.agentProcessesMax();
+    logger.info(
+      `spawning: ${command} ${args.join(" ")} (cwd ${this.workspaceRoot()}; one process per session, at most ${maxProcesses})`,
+    );
 
     const version = (this.deps.context.extension.packageJSON as { version?: string }).version ?? "0.0.0";
-    const agent = createKiroAgent(
+    // One process per session (D31): a kiro-cli process runs one turn at a
+    // time, so sessions sharing one wait for each other. Read at every start
+    // (`Kiro: Restart` applies a changed limit).
+    const agent = createAgentPool(
       { command, args, cwd: this.workspaceRoot(), env: process.env, logger, clientVersion: version },
       this.deps.services,
+      { maxProcesses },
     );
-    // Sessions belong to the process; a new process starts without any, and
+    // Sessions belong to the processes; a new pool starts without any, and
     // the old capabilities / auth methods must not leak into its `starting` view.
     this.endAllSessions();
     await this.teardownAgent();
@@ -1077,6 +1127,29 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         /* ignore */
       }
     }
+  }
+
+  /** `kiroAcp.agentProcesses.max`: 1–32, default {@link DEFAULT_MAX_PROCESSES} (D31). */
+  private agentProcessesMax(): number {
+    const value = vscode.workspace
+      .getConfiguration("kiroAcp")
+      .get<unknown>("agentProcesses.max", DEFAULT_MAX_PROCESSES);
+    if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MAX_PROCESSES;
+    return Math.min(MAX_PROCESSES_LIMIT, Math.max(1, Math.floor(value)));
+  }
+
+  /**
+   * The running agent's kiro-cli processes (D31), spawn order: one per
+   * session (more sessions share one past the limit) plus the idle spare.
+   * Empty while no agent runs. Read-only; for `/capabilities` and the tests.
+   */
+  agentProcesses(): PoolProcessInfo[] {
+    return this.agent?.processes() ?? [];
+  }
+
+  /** The process limit of the running agent (`kiroAcp.agentProcesses.max` when it started); null while none runs. */
+  agentProcessLimit(): number | null {
+    return this.agent?.maxProcesses ?? null;
   }
 
   /**
@@ -1147,38 +1220,52 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   }
 
   /**
-   * Load the {@link restorePlan} back into the new process, one session at a
-   * time (the views see theirs first). A view shows its session again unless
-   * it shows another one by now. Returns the sessions the agent could not
-   * load; a session whose tab was closed meanwhile, or that something else
-   * restored already, is skipped, and once the agent is no longer ready (it
-   * exited, or wants a sign-in again) the rest are left for Past sessions.
+   * Load the {@link restorePlan} back into the new agent, up to
+   * {@link RESTORE_CONCURRENCY} sessions at a time, each into a process of
+   * its own (D31). They start in plan order, so the focused and the
+   * displayed ones come first, and each `ChatSession` is created (and the
+   * focused one focused) synchronously when its load starts; every session
+   * keeps its old `updatedAt`, so the list order does not depend on which
+   * load finishes first. A view shows its session again unless it shows
+   * another one by now. Returns the sessions the agent could not load, in
+   * plan order; a session whose tab was closed meanwhile, or that something
+   * else restored already, is skipped, and once the agent is no longer ready
+   * (it exited, or wants a sign-in again) the rest are left for Past sessions.
    */
   private async restoreSessions(
     agent: KiroAgent,
     plan: readonly RestoreEntry[],
   ): Promise<Array<{ entry: RestoreEntry; message: string }>> {
-    const failed: Array<{ entry: RestoreEntry; message: string }> = [];
-    for (const [index, entry] of plan.entries()) {
-      if (this.agent !== agent || agent.status !== "ready") {
-        this.deps.output.appendLine(`[warn] ${plan.length - index} session(s) not restored: the agent is ${agent.status}`);
-        break;
+    const failed: Array<{ entry: RestoreEntry; message: string } | undefined> = [];
+    let next = 0;
+    let halted = false;
+    const worker = async (): Promise<void> => {
+      while (!halted && next < plan.length) {
+        const index = next++;
+        const entry = plan[index]!;
+        if (this.agent !== agent || agent.status !== "ready") {
+          halted = true;
+          this.deps.output.appendLine(`[warn] ${plan.length - index} session(s) not restored: the agent is ${agent.status}`);
+          return;
+        }
+        if (this.closedGroups.has(entry.groupId) || this.sessions.has(entry.sessionId)) continue;
+        const result = await this.loadInto(agent, entry.sessionId, {
+          handle: entry.handle,
+          groupId: entry.groupId,
+          views: entry.views.filter((v) => this.views.has(v) && v.displayed === null),
+          focus: entry.focused,
+          agentTitle: entry.agentTitle,
+          updatedAt: entry.updatedAt,
+          fallback: null,
+        });
+        if (typeof result !== "string") continue;
+        failed[index] = { entry, message: result };
+        if (this.focusedId === entry.sessionId) this.clearFocus();
       }
-      if (this.closedGroups.has(entry.groupId) || this.sessions.has(entry.sessionId)) continue;
-      const result = await this.loadInto(agent, entry.sessionId, {
-        handle: entry.handle,
-        groupId: entry.groupId,
-        views: entry.views.filter((v) => this.views.has(v) && v.displayed === null),
-        focus: entry.focused,
-        agentTitle: entry.agentTitle,
-        updatedAt: entry.updatedAt,
-        fallback: null,
-      });
-      if (typeof result !== "string") continue;
-      failed.push({ entry, message: result });
-      if (this.focusedId === entry.sessionId) this.clearFocus();
-    }
-    return failed;
+    };
+    const workers = Math.min(RESTORE_CONCURRENCY, plan.length);
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    return failed.filter((f): f is { entry: RestoreEntry; message: string } => f !== undefined);
   }
 
   /**
@@ -2432,6 +2519,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         if (this.sessions.get(sessionId) === session) this.keepLinkGrant(sessionId, grant);
         else grant.revoke();
       }
+      // Closed while loading: its release came before the pool bound it, so
+      // the process it got is let go now, unless the id lives on (restored again).
+      if (!this.sessions.has(sessionId)) agent.releaseSession?.(sessionId);
       // The client already emitted a `state` event for it; merging again is harmless.
       this.applySessionState(session, state);
     } catch (error) {
@@ -2445,6 +2535,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         this.forgetLinkSession(sessionId);
         this.deps.permissions.cancelAll(sessionId);
         this.deps.permissions.clearPolicies(sessionId);
+        // No process keeps it (D31); a no-op when the pool never bound it.
+        agent.releaseSession?.(sessionId);
         for (const v of this.views) {
           if (!v.follows && v.displayed === sessionId) this.setViewSession(v, target.fallback);
         }
@@ -2481,6 +2573,117 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     this.postTo(session.id, { type: "commands", commands: this.commandsView(session) });
   }
 
+  // ---------------------------------------------------------------------
+  // Process exits (D31: one kiro-cli process per session)
+  // ---------------------------------------------------------------------
+
+  /** No process hosts `session` right now: its process exited, and it is not loaded into a new one yet (D31). */
+  private unhosted(session: ChatSession): boolean {
+    return session.processLost !== null;
+  }
+
+  /**
+   * The process hosting `sessionIds` exited on its own (D31). Only these
+   * sessions are affected; the connection, and every other session, go on.
+   * Each one's turn ends (error) and its queue is dropped with the usual
+   * notice, its permission requests are cancelled, the commands it still
+   * runs are killed (no agent is left to release them) and its agent-link
+   * token is revoked (the dead process held the only connection that used
+   * it). The session keeps its transcript, handle and place in the list; one
+   * notice says what happened, and its next turn loads it into a new process
+   * first ({@link reloadSession}). When the turn's "Prompt failed" arrived
+   * before this event, this notice replaces it. A `wait_for_session` on it
+   * ends `idle`, as after any failed turn (D30): the session can be messaged
+   * again.
+   */
+  private onProcessExited(sessionIds: readonly string[], message: string): void {
+    for (const id of sessionIds) {
+      const session = this.sessions.get(id);
+      // A closing session is going away anyway; one still restoring learns of
+      // the exit from its own `session/load` failing.
+      if (!session || session.closing || session.loading) continue;
+      this.deps.output.appendLine(
+        `[warn] session ${id} (${session.handle}): its kiro-cli process exited (${message}); the next turn loads it into a new process`,
+      );
+      session.processLost = message;
+      const wasRunning = session.turnActive;
+      this.deps.permissions.cancelAll(id);
+      this.revokeLink(id);
+      if (wasRunning) this.endTurn(session, "error");
+      else this.discardQueue(session, this.discardRemaining(session));
+      // The failure of the turn this exit cut short: no turn since, and only just now.
+      const last = session.lastFailure;
+      const earlier =
+        last && last.generation === session.turnGeneration && Date.now() - last.at < EXIT_FAILURE_WINDOW_MS ? last : null;
+      if (earlier) this.clearNotice(session, earlier.noticeId);
+      session.lastFailure = null;
+      void this.deps.terminal.killSession(id).then((killed) => {
+        if (killed.length > 0) {
+          this.deps.output.appendLine(`[info] session ${id}: killed its running terminal(s) ${killed.join(", ")} (its process exited)`);
+        }
+      });
+      this.notice(
+        session,
+        wasRunning || earlier ? "error" : "warning",
+        `Kiro's process for this session exited (${message})${wasRunning || earlier ? " and the turn ended" : ""}. ` +
+          "Your next message loads the session again in a new process.",
+      );
+    }
+    this.scheduleSessions();
+    this.notifyLinkWaiters();
+  }
+
+  /**
+   * Load a session whose process exited into a new process (D31) and keep
+   * its `ChatSession` (transcript, handle, notices, queue): the history the
+   * agent replays is dropped in {@link onSessionEvent}, the transcript shows
+   * it already. The agent-link token is issued anew. One load per session at
+   * a time: a second caller joins the one in flight. Resolves with null once
+   * a process hosts it again, else with the error message; the session then
+   * stays marked and the next turn tries again.
+   */
+  private reloadSession(session: ChatSession): Promise<string | null> {
+    if (session.reload) return session.reload;
+    const reload = this.doReloadSession(session).finally(() => {
+      if (session.reload === reload) session.reload = null;
+    });
+    session.reload = reload;
+    return reload;
+  }
+
+  private async doReloadSession(session: ChatSession): Promise<string | null> {
+    const agent = this.agent;
+    const id = session.id;
+    if (!agent || agent.status !== "ready") return "Kiro is not running";
+    if (agent.agent?.agentCapabilities.loadSession !== true) return "the agent cannot load sessions (no `loadSession` capability)";
+    this.deps.output.appendLine(`[info] session ${id}: loading it into a new kiro-cli process`);
+    let grant: AgentLinkGrant | null = null;
+    try {
+      grant = await this.issueLinkGrant(id);
+      const state = await agent.loadSession(id, session.state.cwd, grant ? { mcpServers: [grant.mcpServer()] } : undefined);
+      if (this.agent !== agent || this.sessions.get(id) !== session || session.closing) {
+        grant?.revoke();
+        // Closed while loading: its release came before the pool bound it.
+        if (this.agent === agent && !this.sessions.has(id)) agent.releaseSession(id);
+        return "the session was closed";
+      }
+      if (grant) this.keepLinkGrant(id, grant);
+      session.processLost = null;
+      this.applySessionState(session, state);
+      const host = agent.processes().find((p) => p.sessionIds.includes(id));
+      this.deps.output.appendLine(
+        `[info] session ${id}: loaded again${host ? ` in process ${host.id} (pid ${host.pid ?? "unknown"})` : ""}`,
+      );
+      this.scheduleSessions();
+      return null;
+    } catch (error) {
+      grant?.revoke();
+      const message = errorMessage(error);
+      this.deps.output.appendLine(`[warn] session ${id}: could not load it into a new process: ${message}`);
+      return message;
+    }
+  }
+
   /** Close every session of `groupId` (a chat tab was closed, see D20). */
   async closeGroup(groupId: string): Promise<void> {
     this.closedGroups.add(groupId);
@@ -2506,7 +2709,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       session.cancelTimer = null;
     }
     this.discardQueue(session, this.discardRemaining(session));
-    if (session.turnActive && this.agent) {
+    // A session whose process exited (or is being loaded into a new one) has
+    // nothing to cancel in any process (D31).
+    if (session.turnActive && this.agent && !this.unhosted(session)) {
       try {
         await this.agent.cancel(sessionId);
       } catch (error) {
@@ -2518,6 +2723,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     this.sessions.delete(sessionId);
     this.revokeLink(sessionId);
     this.forgetLinkSession(sessionId);
+    // Its process stops once it hosts nothing else (D31). A reload or restore
+    // still in flight releases it when it lands (see loadInto / reloadSession).
+    this.agent?.releaseSession(sessionId);
     this.deps.output.appendLine(`[info] session ${sessionId} closed`);
 
     const wasFocused = this.focusedId === sessionId;
@@ -2558,11 +2766,18 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     if (!id || !this.agent || !this.sessions.has(id)) return;
     const session = this.sessions.get(id) ?? null;
     this.deps.permissions.cancelAll(id);
-    if (session?.turnActive) this.armCancelWatchdog(session);
-    try {
-      await this.agent.cancel(id);
-    } catch (error) {
-      this.notice(session, "warning", `Cancel failed: ${errorMessage(error)}`);
+    if (session && this.unhosted(session)) {
+      // No process hosts it (D31): nothing to tell an agent. A turn still
+      // waiting for the session's reload ends here; the reload goes on, and
+      // the prompt it waited for is not sent (runTurn's generation check).
+      if (session.turnActive) this.handleStopReason(session, "cancelled");
+    } else {
+      if (session?.turnActive) this.armCancelWatchdog(session);
+      try {
+        await this.agent.cancel(id);
+      } catch (error) {
+        this.notice(session, "warning", `Cancel failed: ${errorMessage(error)}`);
+      }
     }
     // Stop means the running command too (D27): a tool waiting on a service
     // that never exits would otherwise keep the turn open for ever.
@@ -2744,8 +2959,30 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     session.turnGeneration++;
     const generation = session.turnGeneration;
     session.turnDepth = depth;
+    session.lastFailure = null;
     this.setTurnActive(session, true);
     try {
+      if (session.processLost !== null) {
+        // Its process exited (D31): load it into a new one first. The turn
+        // shows as running meanwhile, so what the user types queues behind it.
+        const failure = await this.reloadSession(session);
+        if (session.turnGeneration !== generation || this.sessions.get(session.id) !== session || session.closing) {
+          return; // Stopped, closed or restarted while loading: nothing is sent.
+        }
+        if (failure !== null) {
+          if (agent.status === "auth_required") {
+            this.deps.output.appendLine(`[warn] session ${session.id} could not be loaded again, sign-in required: ${failure}`);
+          } else {
+            this.notice(
+              session,
+              "error",
+              `Could not load this session into a new Kiro process: ${failure}. The message was not sent; start a new session to go on.`,
+            );
+          }
+          this.endTurn(session, "error");
+          return;
+        }
+      }
       const response = await agent.prompt(session.id, blocks);
       if (session.turnGeneration !== generation) {
         // Ended locally by the Stop watchdog (D27): a later turn may be running.
@@ -2757,17 +2994,25 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     } catch (error) {
       const message = errorMessage(error);
       if (session.turnGeneration !== generation) {
+        // Ended locally meanwhile: by the Stop watchdog (D27), or by the exit
+        // of the session's process (D31), which already said so.
         session.abandonedTurn = false;
         this.deps.output.appendLine(`[info] session ${session.id}: late prompt failure ignored: ${message}`);
         return;
       }
-      if (agent.status === "auth_required") {
+      let failure: NoticeView | null = null;
+      if (this.sessions.get(session.id) !== session || session.closing) {
+        // Closing (its process is released right after the cancel, D31) or
+        // replaced by a restart: nobody is left to tell.
+        this.deps.output.appendLine(`[info] session ${session.id}: prompt of a closing session ended: ${message}`);
+      } else if (agent.status === "auth_required") {
         // The sign-in banner (with the login button) already shows the reason.
         this.deps.output.appendLine(`[warn] session ${session.id} prompt rejected, sign-in required: ${message}`);
       } else {
-        this.notice(session, "error", `Prompt failed: ${message}`);
+        failure = this.notice(session, "error", `Prompt failed: ${message}`);
       }
       this.endTurn(session, "error");
+      if (failure) session.lastFailure = { noticeId: failure.id, generation: session.turnGeneration, at: Date.now() };
     }
   }
 
@@ -2836,7 +3081,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     blocks: acp.ContentBlock[],
     images: readonly ImageAttachment[] = [],
   ): Promise<void> {
-    if (session.steerUnsupported) {
+    // While the turn waits for the session's reload into a new process (D31)
+    // there is no process to steer: queue, without judging steering support.
+    if (session.steerUnsupported || this.unhosted(session)) {
       const messageId = this.echoUserMessage(session, text, chips, "queued", images);
       this.deps.contextTracker.clearExplicit();
       this.enqueue(session, { text, chips, blocks, messageId, depth: 0 });
@@ -2982,7 +3229,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   private async pollContextUsage(session: ChatSession): Promise<void> {
     const agent = this.agent;
     const method = this.agentInfo ? findExtension(this.slashContext(session.transcript), "context") : undefined;
-    if (!agent || !method || this.contextPollUnsupported || session.closing) return;
+    // A session no process hosts (D31) would fail the call without saying anything about the method.
+    if (!agent || !method || this.contextPollUnsupported || session.closing || this.unhosted(session)) return;
     if (session.usage.contextPercent !== null) return;
     let result: unknown;
     try {
@@ -3034,6 +3282,11 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         // commands, mode, config options) must not reorder the session list.
         const update = event.update;
         const replay = event.replay === true;
+        if (replay && session.reload && isActivityUpdate(update)) {
+          // History the new process replays while the session is loaded into
+          // it after its old one exited (D31): the transcript shows it already.
+          return;
+        }
         if (session.abandonedTurn && !session.turnActive && !replay && isActivityUpdate(update)) {
           // The agent resumed streaming the turn the Stop watchdog ended (D27):
           // with no turn running, this is that turn's late output, not a reply.
@@ -3113,6 +3366,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         return;
       case "extension_notification":
         this.deps.output.appendLine(`[ext] ${event.method} ${safeJson(event.params)}`);
+        return;
+      case "process_exited":
+        this.onProcessExited(event.sessionIds, event.message);
         return;
       default:
         return;
@@ -3333,11 +3589,27 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   ): Promise<void> {
     const agent = this.agent;
     if (!agent || !session) return;
+    if (!(await this.ensureHosted(session))) return;
     try {
       await op(agent, session.id);
     } catch (error) {
       this.notice(session, "warning", errorMessage(error));
     }
+  }
+
+  /**
+   * Before a request for `session` that is not a turn (mode, model, option,
+   * extension method): load it into a new process first when its process
+   * exited (D31). False, with a warning, when that failed.
+   */
+  private async ensureHosted(session: ChatSession): Promise<boolean> {
+    if (!this.unhosted(session)) return true;
+    const failure = await this.reloadSession(session);
+    if (failure === null) return true;
+    if (this.sessions.get(session.id) === session && !session.closing) {
+      this.notice(session, "warning", `Could not load this session into a new Kiro process: ${failure}.`);
+    }
+    return false;
   }
 
   /**
@@ -3562,6 +3834,16 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     const raw = `/${parsed.name}${parsed.args ? ` ${parsed.args}` : ""}`;
     const agent = this.agent;
     const sessionId = session.id;
+    const asksAgent =
+      action.kind === "set_mode" || action.kind === "set_config" || action.kind === "extension" || action.kind === "plan";
+    if (asksAgent && agent && this.unhosted(session)) {
+      // Its process exited (D31): load it into a new one before asking.
+      const failure = await this.reloadSession(session);
+      if (failure !== null) {
+        this.localExchange(session, raw, `Could not load this session into a new Kiro process: ${failure}`);
+        return true;
+      }
+    }
     switch (action.kind) {
       case "forward":
         return false;
@@ -3750,9 +4032,34 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     if (commands.length > 0) {
       lines.push("", `**Agent commands:** ${commands.map((c) => `\`/${c.name}\``).join(", ")}`);
     }
+    lines.push("", ...this.describeProcesses(session));
     lines.push("", `Remembered for new sessions: ${this.describeRememberedOptions()}`);
     lines.push("", `Agent link: ${this.describeAgentLink()}`);
     return lines.join("\n");
+  }
+
+  /**
+   * `/capabilities`: `Processes: N running (max M)`, then one line per
+   * kiro-cli process (D31): its number, pid and the handles of its sessions
+   * (this session marked), or `spare`.
+   */
+  private describeProcesses(session: ChatSession): string[] {
+    const processes = this.agentProcesses();
+    const max = this.agentProcessLimit() ?? this.agentProcessesMax();
+    const lines = [`**Processes:** ${processes.length} running (max ${max}, \`kiroAcp.agentProcesses.max\`)`];
+    for (const p of processes) {
+      const hosted = p.sessionIds.map((id) => {
+        const handle = this.sessions.get(id)?.handle ?? id;
+        return id === session.id ? `${handle} (this session)` : handle;
+      });
+      const what = [...hosted, ...(p.spare ? ["spare"] : [])].join(", ") || "idle";
+      const status = p.status === "ready" ? "" : `, ${p.status}`;
+      lines.push(`- process ${p.id} (pid ${p.pid ?? "unknown"}${status}): ${what}`);
+    }
+    if (this.unhosted(session)) {
+      lines.push(`- this session: no process (its process exited; the next message loads it again)`);
+    }
+    return lines;
   }
 
   // ---------------------------------------------------------------------

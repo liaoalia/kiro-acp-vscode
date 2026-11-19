@@ -260,6 +260,13 @@
           "default": [],
           "description": "Extra arguments appended after `acp`, for example [\"--agent-engine=v3\"]."
         },
+        "kiroAcp.agentProcesses.max": {
+          "type": "integer",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 32,
+          "markdownDescription": "How many `kiro-cli acp` processes may run at once. Each session gets a process of its own, so sessions in different chat tabs work in parallel (one process runs one turn at a time); every process costs memory. Past the limit, new sessions share the least busy process and take turns there. `1` runs every session in one shared process, as before. Applies at the next start or `Kiro: Restart Agent Process`."
+        },
         "kiroAcp.attachActiveFile": {
           "type": "boolean",
           "default": false,
