@@ -653,3 +653,158 @@ test("stop() aborts running calls and closes promptly with a keep-alive connecti
     await server.stop();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Revoking a grant aborts its running calls
+// ---------------------------------------------------------------------------
+
+interface BlockedCall {
+  /** Resolved with the caller when the call starts. */
+  entered: Deferred<CallerContext>;
+  /** Resolved with `signal.reason` when the call's signal is aborted. */
+  aborted: Deferred<unknown>;
+}
+
+/**
+ * A `block` tool: the call named by `arguments.id` waits until its signal is
+ * aborted, then fails with the abort reason (as a host that rejects with
+ * `signal.reason` would).
+ */
+function blockingTool(): { tool: AgentLinkTool; calls(id: string): BlockedCall } {
+  const registry = new Map<string, BlockedCall>();
+  const calls = (id: string): BlockedCall => {
+    let call = registry.get(id);
+    if (!call) {
+      call = { entered: deferred<CallerContext>(), aborted: deferred<unknown>() };
+      registry.set(id, call);
+    }
+    return call;
+  };
+  const tool: AgentLinkTool = {
+    definition: { name: "block", description: "Waits until aborted", inputSchema: objectSchema },
+    call: (args, caller) =>
+      new Promise<ToolResult>((_resolve, reject) => {
+        const call = calls(String(args.id));
+        caller.signal.addEventListener(
+          "abort",
+          () => {
+            call.aborted.resolve(caller.signal.reason);
+            reject(caller.signal.reason);
+          },
+          { once: true },
+        );
+        call.entered.resolve(caller);
+      }),
+  };
+  return { tool, calls };
+}
+
+const revokedResult = { content: [{ type: "text", text: REVOKED_MESSAGE }], isError: true };
+
+test("revoke() aborts the running tool calls of that grant only, and they are still answered", async () => {
+  const blocking = blockingTool();
+  const { server, logger } = await startServer({ tools: [blocking.tool] });
+  const pending: Array<Promise<unknown>> = [];
+  try {
+    const first = server.issue("s-1");
+    const other = server.issue("s-2");
+    const call = post(server.url!, first.token, callTool(1, "block", { id: "a" }));
+    const untouched = post(server.url!, other.token, callTool(2, "block", { id: "b" }));
+    pending.push(untouched.catch(() => undefined));
+    const callerA = await withTimeout(blocking.calls("a").entered.promise, 5000, "a entered");
+    const callerB = await withTimeout(blocking.calls("b").entered.promise, 5000, "b entered");
+    assert.equal(callerA.sessionId, "s-1");
+
+    first.revoke();
+    const reason = await withTimeout(blocking.calls("a").aborted.promise, 5000, "a aborted");
+    assert.ok(reason instanceof Error);
+    assert.equal(reason.message, REVOKED_MESSAGE);
+    assert.equal(callerA.signal.aborted, true);
+
+    // kiro-cli is still connected: it gets the tool's answer instead of a dangling request.
+    const reply = await withTimeout(call, 5000, "revoked call answered");
+    assert.equal(reply.status, 200);
+    assert.deepEqual(reply.body.result, revokedResult);
+    assert.ok(logger.lines.includes("info agent-link s-1 tools/call block -> 200"), logger.lines.join("\n"));
+
+    // The other grant's call runs on, and the other grant still works.
+    assert.equal(callerB.signal.aborted, false);
+    assert.equal((await post(server.url!, other.token, rpc(3, "ping"))).status, 200);
+    assert.equal((await post(server.url!, first.token, rpc(4, "ping"))).status, 403);
+    assert.equal(callerB.signal.aborted, false);
+  } finally {
+    await server.stop();
+    await Promise.all(pending);
+  }
+});
+
+test("revokeSession() aborts the running calls of every grant of that session; other sessions keep theirs", async () => {
+  const blocking = blockingTool();
+  const { server } = await startServer({ tools: [blocking.tool] });
+  const pending: Array<Promise<unknown>> = [];
+  try {
+    const first = server.issue("s-1");
+    const second = server.issue();
+    second.bind("s-1");
+    const other = server.issue("s-2");
+    const callFirst = post(server.url!, first.token, callTool(1, "block", { id: "first" }));
+    const callSecond = post(server.url!, second.token, callTool(2, "block", { id: "second" }));
+    const callOther = post(server.url!, other.token, callTool(3, "block", { id: "other" }));
+    pending.push(callOther.catch(() => undefined));
+    const callers = await withTimeout(
+      Promise.all(["first", "second", "other"].map((id) => blocking.calls(id).entered.promise)),
+      5000,
+      "all entered",
+    );
+    assert.deepEqual(
+      callers.map((c) => c.sessionId),
+      ["s-1", "s-1", "s-2"],
+    );
+
+    server.revokeSession("s-1");
+    for (const id of ["first", "second"]) {
+      const reason = await withTimeout(blocking.calls(id).aborted.promise, 5000, `${id} aborted`);
+      assert.equal((reason as Error).message, REVOKED_MESSAGE, id);
+    }
+    assert.deepEqual((await withTimeout(callFirst, 5000, "first answered")).body.result, revokedResult);
+    assert.deepEqual((await withTimeout(callSecond, 5000, "second answered")).body.result, revokedResult);
+    assert.equal(callers[2]!.signal.aborted, false);
+    assert.equal(server.boundCount, 1);
+
+    server.revokeSession("s-2");
+    await withTimeout(blocking.calls("other").aborted.promise, 5000, "other aborted");
+    assert.deepEqual((await withTimeout(callOther, 5000, "other answered")).body.result, revokedResult);
+    assert.equal(server.boundCount, 0);
+  } finally {
+    await server.stop();
+    await Promise.all(pending);
+  }
+});
+
+test("stop() aborts a running call as a stop, not as a revocation: it is not answered", async () => {
+  const blocking = blockingTool();
+  const { server, logger } = await startServer({ tools: [blocking.tool] });
+  try {
+    const grant = server.issue("s-1");
+    const call = post(server.url!, grant.token, callTool(1, "block", { id: "a" }));
+    call.catch(() => undefined);
+    await withTimeout(blocking.calls("a").entered.promise, 5000, "a entered");
+    await withTimeout(server.stop(), 3000, "stop()");
+    const reason = await withTimeout(blocking.calls("a").aborted.promise, 1000, "abort on stop");
+    // Aborted by the stop, not by the revocation of the grants that follows it.
+    assert.notEqual((reason as Error | undefined)?.message, REVOKED_MESSAGE);
+    assert.equal(grant.live, false);
+    await assert.rejects(call);
+    await withTimeout(
+      (async () => {
+        while (!logger.lines.includes("info agent-link s-1 tools/call block -> aborted")) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })(),
+      5000,
+      "aborted log line",
+    );
+  } finally {
+    await server.stop();
+  }
+});

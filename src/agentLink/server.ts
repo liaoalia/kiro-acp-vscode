@@ -48,6 +48,18 @@ export const NOT_READY_MESSAGE = "this session is not ready yet";
 export const REVOKED_MESSAGE = "this session's agent link was revoked";
 const CANCELLED_MESSAGE = "the request was cancelled";
 
+/**
+ * The abort reason of a tool call whose grant was revoked (`signal.reason`).
+ * Unlike a client disconnect or `stop()`, the client is still there, so the
+ * call is answered with whatever the tool returns.
+ */
+class GrantRevokedError extends Error {
+  constructor() {
+    super(REVOKED_MESSAGE);
+    this.name = "GrantRevokedError";
+  }
+}
+
 const noop = (): void => undefined;
 
 interface BindWaiter {
@@ -65,6 +77,8 @@ class Grant implements AgentLinkGrant {
   private bound: string | null;
   private alive = true;
   private readonly waiters = new Set<BindWaiter>();
+  /** The requests being handled with this grant; aborted by `revoke()`. */
+  private readonly calls = new Set<AbortController>();
 
   constructor(
     readonly token: string,
@@ -107,8 +121,26 @@ class Grant implements AgentLinkGrant {
     if (!this.alive) return;
     this.alive = false;
     this.owner.forget(this);
+    // Waiters first, so a call still waiting for its bind fails as revoked, not as cancelled.
     const error = new Error(REVOKED_MESSAGE);
     for (const waiter of [...this.waiters]) waiter.reject(error);
+    for (const controller of [...this.calls]) controller.abort(new GrantRevokedError());
+    this.calls.clear();
+  }
+
+  /**
+   * Abort `controller` when the grant is revoked, until the returned function
+   * is called (the request is done). Aborted at once when already revoked.
+   */
+  track(controller: AbortController): () => void {
+    if (!this.alive) {
+      controller.abort(new GrantRevokedError());
+      return noop;
+    }
+    this.calls.add(controller);
+    return () => {
+      this.calls.delete(controller);
+    };
   }
 
   /**
@@ -272,10 +304,11 @@ export class AgentLinkServer implements AgentLinkServerApi {
     const server = this.server;
     this.server = null;
     this.listeningPort = null;
-    for (const grant of [...this.grants.values()]) grant.revoke();
-    this.grants.clear();
+    // Running calls first: aborted by the stop, they are not answered (their sockets are destroyed below).
     for (const controller of [...this.running]) controller.abort();
     this.running.clear();
+    for (const grant of [...this.grants.values()]) grant.revoke();
+    this.grants.clear();
     if (!server) return;
 
     await new Promise<void>((resolve) => {
@@ -338,19 +371,27 @@ export class AgentLinkServer implements AgentLinkServerApi {
 
     const controller = new AbortController();
     this.running.add(controller);
+    const untrack = grant.track(controller);
     let replied = false;
+    let gone = false;
     // `close` before the reply is written means the client went away (or stop() destroyed the socket).
     // Watched from before the body is read, so no disconnect can slip in between.
     res.once("close", () => {
-      if (!replied) controller.abort();
+      if (replied) return;
+      gone = true;
+      controller.abort();
     });
+    // Nobody to answer: the client went away or stop() aborted the call. A revoked grant's call is
+    // still answered (with what the tool made of its aborted signal), so kiro-cli is not left waiting.
+    const abandoned = (): boolean =>
+      gone || (controller.signal.aborted && !(controller.signal.reason instanceof GrantRevokedError));
     try {
       const body = await this.readBody(req);
       if (body === "too-large") {
         replied = true;
         return this.refuse(req, res, 413, `request body over ${this.maxBodyBytes} bytes`);
       }
-      if (body === null || controller.signal.aborted) {
+      if (body === null || abandoned()) {
         this.info(`agent-link ${grant.sessionId ?? "unbound"} - -> aborted`);
         return;
       }
@@ -365,7 +406,7 @@ export class AgentLinkServer implements AgentLinkServerApi {
       const result = await dispatchMcpMessage(message, this.dispatchContext(grant, controller.signal));
       const who = grant.sessionId ?? "unbound";
       const what = describe(result);
-      if (controller.signal.aborted || res.writableEnded || res.destroyed) {
+      if (abandoned() || res.writableEnded || res.destroyed) {
         this.info(`agent-link ${who} ${what} -> aborted`);
         return;
       }
@@ -380,6 +421,7 @@ export class AgentLinkServer implements AgentLinkServerApi {
       }
     } finally {
       this.running.delete(controller);
+      untrack();
     }
   }
 
