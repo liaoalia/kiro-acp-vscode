@@ -5,10 +5,15 @@
  * edits; writes go through a `WorkspaceEdit` and are saved so the file on
  * disk matches what the agent believes it wrote.
  */
+import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type * as acp from "@agentclientprotocol/sdk";
 import { isAbsolutePath, isWithinRoot, normalizeFsPath, sliceLines } from "./pure/textRange.js";
+import { DEFAULT_WRITE_ROOTS, matchWriteRoot } from "./pure/writeRoots.js";
+
+/** User-level setting (scope `machine`: a workspace's own settings cannot widen it). */
+const WRITE_ROOTS_KEY = "fs.allowedWriteRoots";
 
 export interface FsServiceOptions {
   /**
@@ -17,10 +22,16 @@ export interface FsServiceOptions {
    */
   writeInterceptor?: (absPath: string, content: string) => string;
   /**
-   * Ask before writing outside every workspace folder. Defaults to a modal
-   * warning dialog; tests can inject a stub. Return `true` to allow.
+   * Ask before writing outside every workspace folder and every allowed root.
+   * Defaults to a modal warning dialog; tests can inject a stub. `true`
+   * allows this write, `"always"` also adds the file's folder to
+   * `kiroAcp.fs.allowedWriteRoots`.
    */
-  confirmOutsideWorkspace?: (absPath: string) => Promise<boolean>;
+  confirmOutsideWorkspace?: (absPath: string) => Promise<boolean | "always">;
+  /** The configured allowed roots (default: `kiroAcp.fs.allowedWriteRoots` from user settings). */
+  allowedWriteRoots?: () => readonly unknown[];
+  /** Add `folder` to the allowed roots (default: append it to the user setting). */
+  allowWriteRoot?: (folder: string) => Promise<void>;
 }
 
 export interface FsWriteEvent {
@@ -94,10 +105,22 @@ export class FsService implements vscode.Disposable {
     if (!isAbsolutePath(absPath)) {
       throw new Error("path must be absolute");
     }
-    if (!this.isInsideWorkspace(absPath)) {
+    if (!this.isInsideWorkspace(absPath) && !this.isInsideAllowedRoot(absPath)) {
       const confirm = this.options.confirmOutsideWorkspace ?? defaultConfirmOutsideWorkspace;
-      if (!(await confirm(absPath))) {
+      const answer = await confirm(absPath);
+      if (!answer) {
         throw new Error(`Write to ${absPath} denied by user (outside the workspace)`);
+      }
+      if (answer === "always") {
+        const allow = this.options.allowWriteRoot ?? defaultAllowWriteRoot;
+        try {
+          await allow(path.dirname(absPath));
+        } catch (error) {
+          // The write itself was allowed; only remembering the folder failed.
+          void vscode.window.showWarningMessage(
+            `Could not add ${path.dirname(absPath)} to kiroAcp.fs.allowedWriteRoots: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
       }
     }
     const content = this.options.writeInterceptor
@@ -133,14 +156,46 @@ export class FsService implements vscode.Disposable {
     const folders = vscode.workspace.workspaceFolders ?? [];
     return folders.some((f) => f.uri.scheme === "file" && isWithinRoot(absPath, f.uri.fsPath));
   }
+
+  /** Inside a folder of `kiroAcp.fs.allowedWriteRoots` (by default the OS temp folder). */
+  private isInsideAllowedRoot(absPath: string): boolean {
+    const roots = this.options.allowedWriteRoots ? this.options.allowedWriteRoots() : configuredWriteRoots();
+    return matchWriteRoot(absPath, roots, { tmpdir: os.tmpdir(), home: os.homedir(), env: process.env }) !== null;
+  }
 }
 
-async function defaultConfirmOutsideWorkspace(absPath: string): Promise<boolean> {
+/** `kiroAcp.fs.allowedWriteRoots`; a non-array value falls back to the default. */
+function configuredWriteRoots(): readonly unknown[] {
+  const value = vscode.workspace.getConfiguration("kiroAcp").get<unknown>(WRITE_ROOTS_KEY, DEFAULT_WRITE_ROOTS);
+  return Array.isArray(value) ? value : DEFAULT_WRITE_ROOTS;
+}
+
+/** Append `folder` to the user-level `kiroAcp.fs.allowedWriteRoots` (kept as is when already listed). */
+async function defaultAllowWriteRoot(folder: string): Promise<void> {
+  const config = vscode.workspace.getConfiguration("kiroAcp");
+  const current = config.inspect<unknown>(WRITE_ROOTS_KEY)?.globalValue;
+  const list: unknown[] = Array.isArray(current) ? [...current] : [...DEFAULT_WRITE_ROOTS];
+  const listed = list.some(
+    // The same folder (case-insensitive on Windows): each contains the other.
+    (entry) => typeof entry === "string" && isAbsolutePath(entry) && isWithinRoot(entry, folder) && isWithinRoot(folder, entry),
+  );
+  if (!listed) list.push(folder);
+  await config.update(WRITE_ROOTS_KEY, list, vscode.ConfigurationTarget.Global);
+}
+
+async function defaultConfirmOutsideWorkspace(absPath: string): Promise<boolean | "always"> {
+  const folder = path.dirname(absPath);
+  const always = `Always allow in ${folder}`;
   const choice = await vscode.window.showWarningMessage(
     `Kiro wants to write a file outside the workspace:\n${absPath}`,
-    { modal: true },
+    {
+      modal: true,
+      detail: "Folders listed in kiroAcp.fs.allowedWriteRoots (by default the system temp folder) are written without asking.",
+    },
     "Write",
+    always,
     "Deny",
   );
+  if (choice === always) return "always";
   return choice === "Write";
 }

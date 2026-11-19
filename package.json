@@ -267,6 +267,17 @@
           "maximum": 32,
           "markdownDescription": "How many `kiro-cli acp` processes may run at once. Each session gets a process of its own, so sessions in different chat tabs work in parallel (one process runs one turn at a time); every process costs memory. Past the limit, new sessions share the least busy process and take turns there. `1` runs every session in one shared process, as before. Applies at the next start or `Kiro: Restart Agent Process`."
         },
+        "kiroAcp.fs.allowedWriteRoots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "${tmpdir}"
+          ],
+          "scope": "machine",
+          "markdownDescription": "Folders outside the workspace that Kiro may write files to without asking (writes elsewhere outside the workspace show a confirmation, whose **Always allow** button adds the file's folder here). `${tmpdir}` is the system temp folder; `~`, `${home}` and `${env:NAME}` are expanded; an entry that does not resolve to an absolute path is ignored. User settings only: a workspace cannot widen it."
+        },
         "kiroAcp.attachActiveFile": {
           "type": "boolean",
           "default": false,

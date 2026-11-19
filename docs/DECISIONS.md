@@ -57,6 +57,19 @@ Writes go through `WorkspaceEdit` (replace whole document, or `createFile`
 with contents) and are then saved to disk so that subsequent agent commands
 see the file. The edit stays in the editor's undo stack.
 
+**Addendum (writes outside the workspace):** a write outside every
+workspace folder asks first (modal: Write / Always allow in <folder> /
+Deny). Kiro writes scratch files to the system temp folder, and asking for
+each one was constant noise ("VS Code keeps complaining that Kiro writes to
+temp"), so `kiroAcp.fs.allowedWriteRoots` lists folders that never ask,
+by default `${tmpdir}`. Entries expand `${tmpdir}`, `~`/`${home}` and
+`${env:NAME}`; one whose variable is missing or that is not absolute is
+ignored, so a missing variable can never widen the list. The setting has
+`machine` scope: a repository's `.vscode/settings.json` must not be able to
+let the agent write anywhere without asking. **Always allow** appends the
+file's folder to the user setting. Reads are not restricted (D8 is about
+writes; reading outside the workspace never asked).
+
 ## D9. Terminals
 Agent terminals are real child processes started by the extension
 (`child_process.spawn` with `shell: true` so compound commands work). Output

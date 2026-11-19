@@ -1,4 +1,7 @@
 /** F6 — fs/read_text_file with a dirty editor and agent terminals. */
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import * as vscode from "vscode";
 
 import { sharedTerminalName } from "../../src/features/pure/terminalPresentation.js";
@@ -6,6 +9,7 @@ import {
   assert,
   assertEqual,
   closeAllEditors,
+  dialogs,
   fakeAgentReports,
   freshSession,
   runTourAccepting,
@@ -14,6 +18,7 @@ import {
   toolCall,
   waitFor,
   workspacePath,
+  workspaceRoot,
 } from "./harness.js";
 
 /** Every terminal this extension creates (`Kiro · <session>` or `Kiro: <command>`). */
@@ -148,5 +153,97 @@ test("F6.2 terminal.mode=hidden creates no VS Code terminal but the card still g
       .getConfiguration("kiroAcp")
       .update("terminal.mode", previous, vscode.ConfigurationTarget.Workspace);
     await waitFor(() => api.terminal.currentMode() === "shared", 15_000, "terminal mode restored");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Writes outside the workspace (D8 addendum: kiroAcp.fs.allowedWriteRoots)
+// ---------------------------------------------------------------------------
+
+/** Run the `fs-write` scenario for `target` in a fresh session and wait for its turn to end. */
+async function writeThroughAgent(api: Parameters<Parameters<typeof test>[1]>[0]["api"], target: string): Promise<void> {
+  const sessionId = await freshSession(api);
+  await api.controller.prompt(`/scenario fs-write ${target.split(path.sep).join("/")}`, [], sessionId);
+  await waitFor(
+    () => {
+      const s = api.controller.snapshot(sessionId);
+      return !s.turnActive && s.items.length > 1 ? s : undefined;
+    },
+    15_000,
+    "the fs-write turn to end",
+  );
+  assertEqual(fakeAgentReports(api.controller.snapshot(sessionId)).length, 0, "no fake-agent reports");
+}
+
+function fileText(absPath: string): string | null {
+  try {
+    return fs.readFileSync(absPath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+async function withWriteRoots<T>(roots: string[] | undefined, fn: () => Promise<T>): Promise<T> {
+  const config = vscode.workspace.getConfiguration("kiroAcp");
+  const before = config.inspect<string[]>("fs.allowedWriteRoots")?.globalValue;
+  await config.update("fs.allowedWriteRoots", roots, vscode.ConfigurationTarget.Global);
+  try {
+    return await fn();
+  } finally {
+    await vscode.workspace.getConfiguration("kiroAcp").update("fs.allowedWriteRoots", before, vscode.ConfigurationTarget.Global);
+  }
+}
+
+test("F6.3 a write into the system temp folder needs no confirmation (default allowed root)", async ({ api }) => {
+  const target = path.join(os.tmpdir(), `kiro-e2e-roots-${Date.now()}`, "scratch.txt");
+  const dialogsBefore = dialogs.length;
+  await withWriteRoots(undefined, () => writeThroughAgent(api, target));
+  assertEqual(fileText(target), "written by kiro", "the file was written");
+  assertEqual(
+    dialogs.slice(dialogsBefore).filter((d) => d.includes("outside the workspace")).length,
+    0,
+    `no confirmation: ${JSON.stringify(dialogs.slice(dialogsBefore))}`,
+  );
+  fs.rmSync(path.dirname(target), { recursive: true, force: true });
+});
+
+test("F6.4 with no allowed roots a write outside the workspace asks; denied means not written", async ({ api }) => {
+  const target = path.join(path.dirname(workspaceRoot()), `outside-${Date.now()}`, "denied.txt");
+  const dialogsBefore = dialogs.length;
+  await withWriteRoots([], () => writeThroughAgent(api, target));
+  const asked = dialogs.slice(dialogsBefore).filter((d) => d.includes("Kiro wants to write a file outside the workspace"));
+  assertEqual(asked.length, 1, `one confirmation: ${JSON.stringify(dialogs.slice(dialogsBefore))}`);
+  assertEqual(fileText(target), null, "the denied file does not exist");
+});
+
+test("F6.5 'Always allow in <folder>' writes the file and adds its folder to the user setting, so the next write does not ask", async ({ api }) => {
+  const folder = path.join(path.dirname(workspaceRoot()), `always-${Date.now()}`);
+  const first = path.join(folder, "one.txt");
+  const second = path.join(folder, "two.txt");
+  const win = vscode.window as unknown as Record<string, unknown>;
+  const stub = win["showWarningMessage"];
+  const asked: string[] = [];
+  win["showWarningMessage"] = (message: string, ...rest: unknown[]): Promise<unknown> => {
+    asked.push(message);
+    const always = rest.find((item): item is string => typeof item === "string" && item.startsWith("Always allow in "));
+    return Promise.resolve(always);
+  };
+  try {
+    await withWriteRoots([], async () => {
+      await writeThroughAgent(api, first);
+      assertEqual(asked.length, 1, "the first write asked");
+      assertEqual(fileText(first), "written by kiro", "the first file was written");
+      const roots = vscode.workspace.getConfiguration("kiroAcp").inspect<string[]>("fs.allowedWriteRoots")?.globalValue ?? [];
+      assert(
+        roots.some((r) => path.resolve(r).toLowerCase() === path.resolve(folder).toLowerCase()),
+        `the folder was added: ${JSON.stringify(roots)}`,
+      );
+      await writeThroughAgent(api, second);
+      assertEqual(asked.length, 1, "the second write did not ask");
+      assertEqual(fileText(second), "written by kiro", "the second file was written");
+    });
+  } finally {
+    win["showWarningMessage"] = stub;
+    fs.rmSync(folder, { recursive: true, force: true });
   }
 });
