@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -363,6 +363,12 @@
           "minimum": 1,
           "maximum": 50,
           "markdownDescription": "Agent link: how many turns in a row agents may start in each other's sessions (`send_message`, `start_session`) before the next message is refused and both chats say the chain was stopped. A message you type yourself starts the count over. Guards against two agents answering each other for ever."
+        },
+        "kiroAcp.agentLink.autoApprove": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "Answer Kiro's own permission requests for the agent-link tools (`kiro-acp-tabs`: list, read, send, wait, start) automatically, so a conversation between sessions does not show Kiro's card for every message. Sending and starting are still guarded by `#kiroAcp.agentLink.confirm#`; set that to `never` as well to be asked nothing at all. Other tools and other MCP servers are not affected."
         },
         "kiroAcp.agentLink.confirm": {
           "type": "string",

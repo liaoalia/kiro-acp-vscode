@@ -35,7 +35,7 @@ import type { MessageView, PermissionView, ToolCallView, UiState } from "../../s
 // ---------------------------------------------------------------------------
 
 /** Settings a workspace may not override (scope `machine`) are written to the user settings. */
-const MACHINE_SCOPED = new Set(["agentLink.confirm", "agentLink.maxChain", "fs.allowedWriteRoots"]);
+const MACHINE_SCOPED = new Set(["agentLink.confirm", "agentLink.maxChain", "agentLink.autoApprove", "fs.allowedWriteRoots"]);
 
 async function setSetting(key: string, value: unknown): Promise<void> {
   const target = MACHINE_SCOPED.has(key) ? vscode.ConfigurationTarget.Global : vscode.ConfigurationTarget.Workspace;
@@ -63,13 +63,14 @@ let groupSeq = 0;
  */
 async function withLink(
   api: KiroAcpApi,
-  settings: { confirm?: "firstPerPair" | "always" | "never"; maxChain?: number },
+  settings: { confirm?: "firstPerPair" | "always" | "never"; maxChain?: number; autoApprove?: boolean },
   body: (ctx: LinkContext) => Promise<void>,
 ): Promise<void> {
   await ensureReady(api);
   await setSetting("agentLink.enabled", true);
   await setSetting("agentLink.confirm", settings.confirm ?? "never");
   if (settings.maxChain !== undefined) await setSetting("agentLink.maxChain", settings.maxChain);
+  if (settings.autoApprove !== undefined) await setSetting("agentLink.autoApprove", settings.autoApprove);
   const tabs: Tab[] = [];
   const open = async (name: string): Promise<Tab> => {
     const recorder = new Recorder();
@@ -90,6 +91,7 @@ async function withLink(
     if (api.controller.agentMessagesPaused) api.controller.resumeAgentMessages();
     await setSetting("agentLink.confirm", undefined);
     await setSetting("agentLink.maxChain", undefined);
+    await setSetting("agentLink.autoApprove", undefined);
     await setSetting("agentLink.enabled", undefined);
   }
 }
@@ -552,7 +554,8 @@ test("F18.8 confirm: Don't send declines (card failed); always asks every time; 
 });
 
 test("F18.9 confirmation cards and session policies stay apart: Kiro's 'always' never sends, the card offers and keeps none", async ({ api }) => {
-  await withLink(api, { confirm: "firstPerPair" }, async ({ open }) => {
+  // Kiro's own card has to show here, so the extension does not answer it.
+  await withLink(api, { confirm: "firstPerPair", autoApprove: false }, async ({ open }) => {
     const a = await open("a");
     const b = await open("b");
     const c = await open("c");
@@ -926,5 +929,35 @@ test("F18.17 an orchestrator starts a helper, waits for it and reads its answer"
     const helperId = api.controller.listSessions(a.sessionId).find((s) => s.handle === helper)?.sessionId;
     assert(helperId, "the helper is listed");
     assertEqual(userMessages(snapshot(api, helperId)).find((m) => m.origin)?.origin?.handle, hA, "the helper's prompt came from the orchestrator");
+  });
+});
+
+test("F18.18 kiroAcp.agentLink.autoApprove answers Kiro's own card for an agent-link tool; with confirm = never no card shows at all", async ({ api }) => {
+  await withLink(api, { confirm: "never" }, async ({ open }) => {
+    const a = await open("a");
+    const b = await open("b");
+    const hB = handleOf(api, b.sessionId);
+    const mark = a.recorder.mark();
+    const sender = await promptIn(api, a.sessionId, `/scenario link-send-asking ${hB}
+/scenario chat
+from a`);
+    assertEqual(lastCall(sender, "send_message").status, "completed", "sent");
+    assertEqual(a.recorder.ofType("permission", mark).length, 0, "no card in the sender (autoApprove is on by default)");
+    await settled(api, b.sessionId, (s) => userMessages(s).some((m) => m.origin?.sessionId === a.sessionId), "the message in the target");
+
+    // Turned off, Kiro's card shows again (and only Kiro's: confirm is never).
+    await setSetting("agentLink.autoApprove", false);
+    const turn = api.controller.prompt(`/scenario link-send-asking ${hB}
+/scenario chat
+again`, [], a.sessionId);
+    const kiros = await waitFor(
+      () => pendingOf(api, a.sessionId).find((p) => p.title === "Use kiro-acp-tabs/send_message"),
+      15_000,
+      "Kiro's own permission card",
+    );
+    api.permissions.resolve(kiros.requestId, "allow");
+    await withTimeout(turn, 15_000, "the second turn");
+    const again = await settled(api, a.sessionId, () => true, "the second turn to end");
+    assertEqual(lastCall(again, "send_message").status, "completed", "sent after Allow");
   });
 });

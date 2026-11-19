@@ -723,6 +723,17 @@ Still behind `kiroAcp.agentLink.enabled`, off by default.
   minute; only an attempt that passed the other checks counts, a declined
   one too (each asked the user). The order of the checks: self, paused,
   empty, over 32 KiB, chain, rate, then the confirmation.
+- **Kiro's own card for the link's tools is answered by the extension**
+  (`kiroAcp.agentLink.autoApprove`, default on, scope `machine`; added in
+  0.4.1). Kiro asks permission before it runs an MCP tool, and a
+  conversation between two sessions showed that card for every message
+  ("every message needs my confirmation"). `PermissionManager` takes an
+  `autoAllow` hook; the controller answers with the agent's allow option
+  when the request names the server (`kiro-acp-tabs`, or `kiro_acp_tabs`)
+  in its title, raw input, `_meta.kiro.consent` or the title of the tool
+  call it refers to (`src/agentLink/permissionMatch.ts`); a bare tool name
+  is not enough (another server could share it) and is only logged. The
+  extension's own confirmation is never answered this way.
 - **Confirmation as a synthetic permission card, isolated from policies.**
   `kiroAcp.agentLink.confirm` (`firstPerPair` default / `always` / `never`;
   like `maxChain`, scope `machine`, so a repository's `.vscode/settings.json`

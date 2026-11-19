@@ -27,6 +27,13 @@ export interface PermissionManagerOptions {
    * within a session, so the lookup never consults other sessions.
    */
   resolveKind?: (sessionId: string, toolCallId: string) => ToolKind | undefined;
+  /**
+   * The host answers this agent request itself with the agent's allow option
+   * (D30: Kiro's own request for an agent-link tool when
+   * `kiroAcp.agentLink.autoApprove` is on). Never consulted for the
+   * extension's own `local` confirmations.
+   */
+  autoAllow?: (req: acp.RequestPermissionRequest) => boolean;
 }
 
 /** Everything the manager knows about a pending request. */
@@ -186,6 +193,10 @@ export class PermissionManager implements vscode.Disposable {
       (toolCallId ? this.options.resolveKind?.(req.sessionId, toolCallId) : undefined) ??
       "other";
     const options = Array.isArray(req.options) ? req.options : [];
+    if (!local && this.options.autoAllow?.(req)) {
+      const optionId = selectOption(options, "allow");
+      if (optionId !== undefined) return Promise.resolve({ outcome: { outcome: "selected", optionId } });
+    }
     const consent = readConsent(req._meta);
     const auto = decide(this.policy, req.sessionId, subjectOf({ toolKind, consent, local }), options);
     if (auto !== undefined) {

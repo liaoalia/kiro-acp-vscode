@@ -151,6 +151,12 @@ the sending chat may show a card — "Send to s3 “title”: …" with **Send**
 - `always`: every message and every new session asks.
 - `never`: nothing asks (the chain and rate limits still apply).
 
+Kiro itself may ask permission before it runs an MCP tool. For the
+`kiro-acp-tabs` tools the extension answers that request itself
+(`kiroAcp.agentLink.autoApprove`, on by default), so a conversation between
+two sessions does not show Kiro's card for every message; with
+`kiroAcp.agentLink.confirm` set to `never` as well, nothing asks at all.
+
 These cards have no "always allow" buttons, and the session-wide permission
 policies you choose on Kiro's own cards never answer them. Kiro may also ask
 its own permission to use the MCP tool, so a first message can show two cards.
@@ -301,6 +307,7 @@ into a compact header.
 | `kiroAcp.logProtocol` | `false` | Log every JSON-RPC message to the **Kiro ACP** output channel. |
 | `kiroAcp.rememberSessionOptions` | `true` | Remember the mode, model and config options you choose and apply them to every new session (only values the agent advertises are applied). |
 | `kiroAcp.agentLink.enabled` | `false` | Experimental: give every Kiro session the MCP server `kiro-acp-tabs` on `127.0.0.1` (one token per session) so the agents of different chat tabs can list, read, message, wait for and start each other (see [Agents talking to each other](#agents-talking-to-each-other)). Applies to sessions created after the change; turning it off cuts the live ones off too. Needs an agent that advertises `mcpCapabilities.http` (Kiro CLI V3 does). See DECISIONS D30. |
+| `kiroAcp.agentLink.autoApprove` | `true` | Answer Kiro's own permission requests for the agent-link tools (`kiro-acp-tabs`) automatically, so Kiro does not ask for every message between sessions. Sending and starting are still guarded by `kiroAcp.agentLink.confirm`. Only requests that name the `kiro-acp-tabs` server are answered; other tools are untouched. User settings only. |
 | `kiroAcp.agentLink.confirm` | `firstPerPair` | When to ask you before an agent messages another session or starts one: `firstPerPair` (the first message from one session to another; starting a session always asks), `always`, `never`. The question is a **Send** / **Don't send** card in the sending chat. User settings only: a workspace's own settings cannot turn it off. |
 | `kiroAcp.agentLink.maxChain` | `6` | How many turns in a row agents may start in each other's sessions before the next `send_message` / `start_session` is refused and both chats say the chain was stopped (1–50). A message you type yourself starts the count over. User settings only. |
 

@@ -37,6 +37,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
   let controller: ChatController | undefined;
   const permissions = new PermissionManager({
     resolveKind: (sessionId, toolCallId) => controller?.toolCallKind(sessionId, toolCallId),
+    // Kiro's own request for an agent-link tool (D30, kiroAcp.agentLink.autoApprove).
+    autoAllow: (req) => controller?.autoAllowsPermission(req) ?? false,
   });
   const diff = new DiffManager(permissions, { logger });
   const fs = new FsService({ writeInterceptor: (p, c) => diff.interceptWrite(p, c) });

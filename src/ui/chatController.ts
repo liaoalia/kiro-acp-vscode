@@ -81,7 +81,9 @@ import { AgentLinkServer } from "../agentLink/server.js";
 import { AGENT_LINK_INSTRUCTIONS, createAgentLinkTools } from "../agentLink/tools.js";
 import { fitsPeerMessage, framePeerMessage } from "../agentLink/peerMessage.js";
 import { RateLimiter } from "../agentLink/rateLimiter.js";
+import { matchAgentLinkPermission } from "../agentLink/permissionMatch.js";
 import {
+  AGENT_LINK_SERVER_NAME,
   AgentLinkError,
   DEFAULT_MAX_CHAIN,
   LAST_ANSWER_MAX_CHARS,
@@ -1337,6 +1339,38 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
    */
   toolCallKind(sessionId: string, toolCallId: string): ToolKind | undefined {
     return this.sessions.get(sessionId)?.transcript.toolCalls[toolCallId]?.kind;
+  }
+
+  /**
+   * Kiro asks its own permission before it runs an MCP tool. For the agent
+   * link's tools (D30) the extension answers it itself while
+   * `kiroAcp.agentLink.autoApprove` is on: sending and starting are guarded
+   * by the extension's own confirmation (`kiroAcp.agentLink.confirm`), the
+   * other tools only read, and a card per message was reported as noise.
+   */
+  autoAllowsPermission(req: acp.RequestPermissionRequest): boolean {
+    const toolCallId = req.toolCall?.toolCallId;
+    const referenced = toolCallId ? this.sessions.get(req.sessionId)?.transcript.toolCalls[toolCallId]?.title : undefined;
+    const match = matchAgentLinkPermission(req, referenced);
+    if (match.kind === "none") return false;
+    if (match.kind === "near") {
+      // The tool is named without the server: not answered, but logged so the
+      // real request shape can be recorded (protocol-notes, Agent link).
+      this.deps.output.appendLine(
+        `[info] agent-link: a permission request names an agent-link tool but not ${AGENT_LINK_SERVER_NAME}; asking the user: ${JSON.stringify(match.text).slice(0, 300)}`,
+      );
+      return false;
+    }
+    if (!this.agentLinkAutoApprove()) return false;
+    this.deps.output.appendLine(
+      `[info] agent-link: answered Kiro's permission request for ${JSON.stringify(match.text).slice(0, 200)} (kiroAcp.agentLink.autoApprove)`,
+    );
+    return true;
+  }
+
+  /** `kiroAcp.agentLink.autoApprove` (default true). */
+  private agentLinkAutoApprove(): boolean {
+    return vscode.workspace.getConfiguration("kiroAcp").get<boolean>("agentLink.autoApprove", true) !== false;
   }
 
   private async createSession(groupId: string): Promise<ChatSession | null> {
