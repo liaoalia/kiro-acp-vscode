@@ -35,6 +35,7 @@ import "./f14-login.e2e.js";
 import "./f15-usage.e2e.js";
 import "./f16-images.e2e.js";
 import "./f17-agent-link.e2e.js";
+import "./f18-agent-messages.e2e.js";
 import "./f5-selection.e2e.js";
 
 const TEST_TIMEOUT_MS = 60_000;
@@ -85,8 +86,10 @@ function dumpDiagnostics(ctx: TestContext): void {
 }
 
 export async function run(): Promise<void> {
-  const tests = registeredTests();
-  console.log(`[e2e] ${tests.length} tests registered`);
+  // `KIRO_E2E_GREP` (scripts/run-e2e.mjs) narrows the run to the tests whose name contains it.
+  const grep = process.env.KIRO_E2E_GREP;
+  const tests = grep ? registeredTests().filter((t) => t.name.includes(grep)) : registeredTests();
+  console.log(`[e2e] ${tests.length} tests registered${grep ? ` (KIRO_E2E_GREP=${JSON.stringify(grep)})` : ""}`);
   const restoreDialogs = installDialogStubs();
   const api = await getApi();
   const recorder = new Recorder();

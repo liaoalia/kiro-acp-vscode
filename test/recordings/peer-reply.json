@@ -1,0 +1,9 @@
+{
+  "name": "peer-reply",
+  "description": "Agent link (D30), receiving side: replies to the sender with send_message (its reply runs peer-echo there), then reports the result.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "send_message", "arguments": { "to": "{{peer.from}}", "text": "/scenario peer-echo\nReply to {{peer.from}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Reply {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

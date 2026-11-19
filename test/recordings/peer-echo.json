@@ -1,0 +1,8 @@
+{
+  "name": "peer-echo",
+  "description": "Agent link (D30), receiving side: answers with the sender's handle and the exact text the agent received (the framed peer message), so a test can check the frame.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Received from {{peer.from}} (depth {{peer.depth}}):\n{{prompt}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

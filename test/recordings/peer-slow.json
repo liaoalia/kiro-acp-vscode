@@ -1,0 +1,12 @@
+{
+  "name": "peer-slow",
+  "description": "Streams 15 chunks 100 ms apart (about 1.5 s), then a last answer of its own: `Slow peer done.` (what wait_for_session should return).",
+  "steps": [
+    { "kind": "repeat", "times": 15, "steps": [
+      { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "working {{i}} " } } },
+      { "kind": "delay", "ms": 100 }
+    ] },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "Slow peer done." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

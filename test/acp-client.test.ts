@@ -12,6 +12,7 @@ import {
   type SessionEvent,
   type SessionState,
 } from "../src/acp/index.js";
+import { framePeerMessage } from "../src/agentLink/peerMessage.js";
 import { chunkText, FAKE_AGENT, launch, makeServices, rejectFirst, toolUpdates, updatesOf, waitFor } from "./harness.js";
 
 const text = (value: string): acp.ContentBlock[] => [{ type: "text", text: value }];
@@ -1066,6 +1067,52 @@ describe("agent link: mcpServers and the fake agent's mcp_call", () => {
       const before = h.events.length;
       await h.agent.prompt(bare.sessionId, text("/scenario agent-link"));
       assert.match(chunkText(h.events.slice(before)), /\[fake-agent\] mcp_call kiro-acp-tabs\/list_sessions: no http MCP server named 'kiro-acp-tabs' in this session \(servers: none\)/);
+    } finally {
+      await h.agent.stop();
+      await stub.close();
+    }
+  });
+
+  test("the selector line gives args and rest; a framed peer message runs the scenario named in its body", async () => {
+    const token = "tok-args";
+    const stub = await startStubMcp({ token, text: "Delivered" });
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      await h.agent.start();
+      const session = await h.agent.newSession(h.cwd, { mcpServers: [linkEntry(stub.url, token)] });
+      const toolCalls = (): unknown[] => stub.requests.filter((r) => r.method === "tools/call").map((r) => r.params);
+
+      // `arg1` is the first word after the scenario name, `rest` everything after the selector line.
+      let before = h.events.length;
+      await h.agent.prompt(session.sessionId, text("/scenario link-send S2\n/scenario peer-echo\nHello **there**"));
+      assert.deepEqual(toolCalls().at(-1), {
+        name: "send_message",
+        arguments: { to: "S2", text: "/scenario peer-echo\nHello **there**" },
+      });
+      assert.equal(chunkText(h.events.slice(before)), "send_message completed: Delivered");
+
+      // A numeric word is a number; a missing one is null (a whole-string placeholder drops out).
+      await h.agent.prompt(session.sessionId, text("/scenario link-read s3 5"));
+      assert.deepEqual(toolCalls().at(-1), { name: "read_session", arguments: { session: "s3", last: 5 } });
+      await h.agent.prompt(session.sessionId, text("/scenario link-read s3"));
+      assert.deepEqual(toolCalls().at(-1), { name: "read_session", arguments: { session: "s3", last: null } });
+
+      // A framed message names its scenario anywhere in its body; the agent sees the whole frame.
+      const framed = framePeerMessage({ handle: "s7", title: "Sender", tab: "Kiro Chat 1" }, "Please look.\n/scenario peer-echo\nThanks", 3);
+      before = h.events.length;
+      await h.agent.prompt(session.sessionId, text(framed));
+      assert.equal(chunkText(h.events.slice(before)), `Received from s7 (depth 3):\n${framed}`);
+
+      // The peer's handle answers back; a plain prompt with the selector further down runs the launch scenario.
+      const reply = framePeerMessage({ handle: "s9", title: "Asker", tab: "Sidebar" }, "/scenario peer-reply", 1);
+      await h.agent.prompt(session.sessionId, text(reply));
+      assert.deepEqual(toolCalls().at(-1), {
+        name: "send_message",
+        arguments: { to: "s9", text: "/scenario peer-echo\nReply to s9" },
+      });
+      before = h.events.length;
+      await h.agent.prompt(session.sessionId, text("hello\n/scenario peer-echo"));
+      assert.equal(chunkText(h.events.slice(before)), "The answer is 42.");
     } finally {
       await h.agent.stop();
       await stub.close();

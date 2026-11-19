@@ -17,6 +17,20 @@
  * `blockTypes` (the prompt's block types in order, e.g. `text,image`).
  * `--no-image` stops advertising `promptCapabilities.image`.
  *
+ * Arguments of a turn: the rest of the `/scenario <name>` line is `args`, its
+ * words `arg1` … `arg9` (a number when the word is one, null when missing, so
+ * a whole-string `"{{arg2}}"` drops out as "not given"), and everything after
+ * that line is `rest`. `prompt` is the whole text the agent received, `turnId`
+ * an id unique per prompt (for tool call ids that must not repeat).
+ *
+ * Agent-link peer messages (D30): a prompt that starts with the frame of
+ * `src/agentLink/peerMessage.ts` (`[Message from another Kiro agent session — s2 …]`)
+ * takes its `/scenario <name>` line from anywhere in the message body, so a
+ * session that receives a message can answer, wait or call tools; the vars
+ * `peer.from` (the sender's handle), `peer.body` (the text as sent) and
+ * `peer.depth` (the chain position the frame names, 1 when it names none) are
+ * set, "" / 0 for a prompt the user typed. Every prompt is logged to stderr.
+ *
  * MCP servers (v3 only): `initialize` advertises `mcpCapabilities: { http, sse }`
  * like the real CLI; `--no-mcp-http` advertises `{ sse }` only. `session/new`
  * and `session/load` remember the session's `mcpServers` (names and urls are
@@ -166,6 +180,51 @@ function substitute(value, vars) {
     return out;
   }
   return value;
+}
+
+/** How a framed agent-link peer message starts (`PEER_MESSAGE_PREFIX` in src/agentLink/peerMessage.ts). */
+const PEER_MESSAGE_PREFIX = "[Message from another Kiro agent session";
+
+/**
+ * A framed peer message: `{ from, body, depth }` (the sender's handle, the
+ * text between the header and the reply footer, the chain position), or null
+ * when `text` is not one. The header ends at its first `]` + blank line (the
+ * sender's title is JSON-quoted, so it holds no raw line break); the footer
+ * starts at the last blank line + `[Reply with`.
+ */
+function parsePeerMessage(text) {
+  if (!text.startsWith(PEER_MESSAGE_PREFIX)) return null;
+  const from = /^\[Message from another Kiro agent session — (\S+)/.exec(text)?.[1] ?? "";
+  const headerEnd = text.indexOf("]\n\n");
+  const footerStart = text.lastIndexOf("\n\n[Reply with");
+  const start = headerEnd >= 0 ? headerEnd + 3 : 0;
+  const body = text.slice(start, footerStart >= start ? footerStart : undefined);
+  const depth = Number(/This is message (\d+) in a chain/.exec(text.slice(0, start))?.[1] ?? 1);
+  return { from, body, depth };
+}
+
+/**
+ * The `/scenario <name> [args]` selector of a prompt: on its first line, or
+ * (`anywhere`, a peer message's body) on any line. Returns `{ name, args,
+ * rest }` (`rest`: the text after that line), or null.
+ */
+function parseScenarioSelector(source, anywhere) {
+  const re = anywhere ? /^\/scenario[ \t]+([\w-]+)([^\r\n]*)/m : /^\/scenario\s+([\w-]+)([^\r\n]*)/;
+  const m = re.exec(source);
+  if (!m) return null;
+  const rest = source.slice(m.index + m[0].length).replace(/^\r?\n/, "");
+  return { name: m[1], args: m[2].trim(), rest: rest.trim() };
+}
+
+/** `arg1` … `arg9` of a turn: numbers as numbers, missing words as null. */
+function argVars(args) {
+  const words = args ? args.split(/\s+/) : [];
+  const vars = {};
+  for (let i = 1; i <= 9; i++) {
+    const word = words[i - 1];
+    vars[`arg${i}`] = word === undefined ? null : /^-?\d+(\.\d+)?$/.test(word) ? Number(word) : word;
+  }
+  return vars;
 }
 
 function getPath(obj, path) {
@@ -887,9 +946,12 @@ const app = acp
       .join("\n");
     const imageBlocks = blocks.filter((b) => b && b.type === "image");
     let scenario = config.scenario;
-    const selector = /^\/scenario\s+([\w-]+)/.exec(text.trim());
-    if (selector) scenario = selector[1];
+    // A peer message (agent link) names its scenario anywhere in its body.
+    const peer = parsePeerMessage(text);
+    const selector = peer ? parseScenarioSelector(peer.body, true) : parseScenarioSelector(text.trim(), false);
+    if (selector) scenario = selector.name;
     else if (!text.trim() && imageBlocks.length > 0) scenario = "images";
+    log(`prompt ${session.id} (${scenario}${peer ? `, peer message from ${peer.from}` : ""}): ${JSON.stringify(text.length > 400 ? `${text.slice(0, 400)}…` : text)}`);
     // Signed-in agent whose token expired: the real CLI accepts session/new and
     // rejects the prompt with this message (no authMethods were advertised).
     if (scenario === "auth-expired") {
@@ -918,6 +980,15 @@ const app = acp
       sessionId: session.id,
       images: describeImages(blocks),
       blockTypes: blocks.map((b) => b?.type ?? "?").join(","),
+      prompt: text,
+      /** Unique per prompt in this process (`u-7`): tool call ids that must not repeat across turns. */
+      turnId: userMessageId,
+      args: selector?.args ?? "",
+      rest: selector?.rest ?? "",
+      ...argVars(selector?.args ?? ""),
+      "peer.from": peer?.from ?? "",
+      "peer.body": peer?.body ?? "",
+      "peer.depth": peer?.depth ?? 0,
     };
     const turn = { scenario, cancelled: false, signal: abort.signal, abort, vars };
     session.turn = turn;

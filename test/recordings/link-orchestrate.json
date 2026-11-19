@@ -1,0 +1,11 @@
+{
+  "name": "link-orchestrate",
+  "description": "Agent link (D30), an orchestrator: `/scenario link-orchestrate <newTab|sameTab>` + lines: starts a helper session whose prompt is `rest`, waits for it, reads its last two items, then says what the helper answered.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "start_session", "arguments": { "prompt": "{{rest}}", "where": "{{arg1}}" }, "save": { "helper": "structuredContent.session.handle" } },
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "wait_for_session", "arguments": { "session": "{{helper}}" }, "save": { "answer": "structuredContent.lastAnswer" } },
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "read_session", "arguments": { "session": "{{helper}}", "last": 2 } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Helper {{helper}} answered: {{answer}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "link-read",
+  "description": "Agent link (D30): `/scenario link-read <handle> [last]`: reads <handle> with read_session and reports the text.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "read_session", "arguments": { "session": "{{arg1}}", "last": "{{arg2}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "read_session {{mcp.status}}." } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

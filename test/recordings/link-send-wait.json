@@ -1,0 +1,11 @@
+{
+  "name": "link-send-wait",
+  "description": "Agent link (D30): `/scenario link-send-wait <handle> [timeoutSeconds]` + lines: sends `rest` to <handle>, then waits for it with wait_for_session and reports what the wait returned.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "send_message", "arguments": { "to": "{{arg1}}", "text": "{{rest}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "send_message {{mcp.status}}." } } },
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "wait_for_session", "arguments": { "session": "{{arg1}}", "timeoutSeconds": "{{arg2}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "wait_for_session {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

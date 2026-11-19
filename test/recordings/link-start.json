@@ -1,0 +1,9 @@
+{
+  "name": "link-start",
+  "description": "Agent link (D30): `/scenario link-start <newTab|sameTab>` + lines: starts a session with start_session whose prompt is `rest`, then reports the result.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "start_session", "arguments": { "prompt": "{{rest}}", "where": "{{arg1}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "start_session {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "name": "link-send-asking",
+  "description": "Agent link (D30): like link-send, but the agent first asks its own permission for the MCP tool call (kind other, like Kiro may), so the user can see two cards for one message: Kiro's and the extension's confirmation.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "tool_call", "toolCallId": "ask-{{turnId}}", "title": "Use kiro-acp-tabs/send_message", "kind": "other", "status": "pending" } },
+    { "kind": "permission",
+      "toolCall": { "toolCallId": "ask-{{turnId}}", "title": "Use kiro-acp-tabs/send_message", "kind": "other", "status": "pending" },
+      "options": [
+        { "optionId": "allow", "name": "Yes", "kind": "allow_once" },
+        { "optionId": "always", "name": "Always", "kind": "allow_always" },
+        { "optionId": "deny", "name": "No", "kind": "reject_once" }
+      ],
+      "meta": { "kiro": { "consent": { "capability": "mcp", "resource": "kiro-acp-tabs/send_message", "persistableConsent": true } } },
+      "allow": [
+        { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "send_message", "arguments": { "to": "{{arg1}}", "text": "{{rest}}" } }
+      ],
+      "reject": []
+    },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "send_message {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

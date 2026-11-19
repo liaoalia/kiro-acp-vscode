@@ -1,0 +1,11 @@
+{
+  "name": "slow-long",
+  "description": "Streams 100 chunks 100 ms apart (about 10 s) and honours session/cancel at once: a session that stays busy while a test does several things, then is stopped.",
+  "steps": [
+    { "kind": "repeat", "times": 100, "steps": [
+      { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "busy {{i}} " } } },
+      { "kind": "delay", "ms": 100 }
+    ] },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

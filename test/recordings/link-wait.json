@@ -1,0 +1,9 @@
+{
+  "name": "link-wait",
+  "description": "Agent link (D30): `/scenario link-wait <handle> [timeoutSeconds]`: waits for <handle> with wait_for_session and reports what the wait returned.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "wait_for_session", "arguments": { "session": "{{arg1}}", "timeoutSeconds": "{{arg2}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "wait_for_session {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

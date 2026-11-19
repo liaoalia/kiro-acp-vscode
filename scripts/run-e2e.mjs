@@ -14,6 +14,9 @@
  *      out/e2e/test/e2e/index.js as the test entry point.
  *   3. Exits with the test result (0 = all passed).
  *
+ * `KIRO_E2E_GREP=<text>` runs only the tests whose name contains <text>
+ * (while working on one feature; the full suite is what counts).
+ *
  * On Windows `cliPath` is the `kiro-cli-fake.cmd` wrapper: the extension's
  * process layer routes `.cmd`/`.bat` executables through cmd.exe itself
  * (Node refuses to spawn them without a shell, CVE-2024-27980), so the test
@@ -146,7 +149,11 @@ try {
       "--disable-workspace-trust",
       `--user-data-dir=${userDataDir}`,
     ],
-    extensionTestsEnv: { KIRO_E2E_WORKSPACE: workspace },
+    extensionTestsEnv: {
+      KIRO_E2E_WORKSPACE: workspace,
+      // `KIRO_E2E_GREP=F18 npm run test:e2e` runs only the tests whose name contains it.
+      ...(process.env.KIRO_E2E_GREP ? { KIRO_E2E_GREP: process.env.KIRO_E2E_GREP } : {}),
+    },
   });
   exitCode = 0;
 } catch (error) {

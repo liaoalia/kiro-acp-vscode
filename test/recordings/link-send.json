@@ -1,0 +1,9 @@
+{
+  "name": "link-send",
+  "description": "Agent link (D30): `/scenario link-send <handle>` + lines: sends the lines after the selector line (`rest`) to <handle> with send_message, then reports the result. A peer message body that starts with `/scenario <name>` runs that recording in the receiving session.",
+  "steps": [
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "send_message", "arguments": { "to": "{{arg1}}", "text": "{{rest}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "send_message {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "link-send-burst",
+  "description": "Agent link (D30): `/scenario link-send-burst <handle> <n>`: sends <n> short `/scenario chat` messages to <handle> in one turn (the rate limit test), one send_message call each.",
+  "steps": [
+    { "kind": "repeat", "times": "{{arg2}}", "steps": [
+      { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "send_message", "arguments": { "to": "{{arg1}}", "text": "/scenario chat\nburst {{i}}" } }
+    ] },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "burst sent; the last send_message {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}
