@@ -6,7 +6,7 @@
  * `test/recordings/<scenario>.json` when it receives `session/prompt`.
  *
  * Usage:
- *   node test/fake-agent/agent.mjs [acp] [--scenario <name>] [--auth-required] [--engine v2|v3] [--no-image] [--no-mcp-http]
+ *   node test/fake-agent/agent.mjs [acp] [--scenario <name>] [--auth-required] [--engine v2|v3] [--no-image] [--no-mcp-http] [--serial-turns]
  *
  * A leading `acp` argument is ignored so the extension can be pointed at it
  * with `kiroAcp.cliPath = "node"` and `cliArgs = ["<path>/agent.mjs", ...]`.
@@ -83,6 +83,10 @@
  * (`_meta.kiro.kind: "steering_injected"`) followed by an agent chunk
  * `Steered: <text>` inside the running turn; without a turn it fails with
  * -32602. The v2 engine does not register the method (-32601).
+ *
+ * `--serial-turns`: like the real kiro-cli, the process runs one turn at a
+ * time: a `session/prompt` arriving while another turn runs waits until it
+ * ends (why each session gets its own process, D31).
  */
 import * as acp from "@agentclientprotocol/sdk";
 import { readFileSync, existsSync } from "node:fs";
@@ -126,6 +130,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (arg.startsWith("--agent-engine=")) config.engine = arg.slice("--agent-engine=".length);
   else if (arg === "--no-image") config.image = false;
   else if (arg === "--no-mcp-http") config.mcpHttp = false;
+  else if (arg === "--serial-turns") config.serialTurns = true;
   else if (arg === "--list-page-size") config.listPageSize = parsePageSize(argv[++i]);
   else if (arg.startsWith("--list-page-size=")) config.listPageSize = parsePageSize(arg.slice("--list-page-size=".length));
 }
@@ -278,6 +283,24 @@ let sessionCounter = 0;
  */
 const sessionIdSuffix = `${process.pid.toString(36)}${Date.now().toString(36).slice(-3)}`;
 let messageCounter = 0;
+
+/** Tail of the `--serial-turns` queue: settles when the last queued turn ends. */
+let turnQueue = Promise.resolve();
+/**
+ * Wait for this process's turn slot (`--serial-turns`, set via `config.serialTurns`)
+ * and return its release function; without the flag every turn runs at once.
+ */
+function nextTurnSlot() {
+  if (config.serialTurns !== true) return Promise.resolve(() => undefined);
+  let release = () => undefined;
+  const ended = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  const slot = turnQueue.then(() => release);
+  turnQueue = turnQueue.then(() => ended);
+  return slot;
+}
+
 /** cwd reported for the canned past sessions: the first `session/new` cwd, else process.cwd(). */
 let cannedCwdPinned = false;
 
@@ -991,6 +1014,7 @@ const app = acp
       "peer.depth": peer?.depth ?? 0,
     };
     const turn = { scenario, cancelled: false, signal: abort.signal, abort, vars };
+    const releaseTurnSlot = await nextTurnSlot();
     session.turn = turn;
     try {
       const recording = loadRecording(scenario);
@@ -1003,6 +1027,8 @@ const app = acp
       return { stopReason: turn.cancelled ? "cancelled" : "end_turn" };
     } finally {
       if (session.turn === turn) session.turn = null;
+      // The next queued turn starts once this turn's answer has been written.
+      setTimeout(releaseTurnSlot, 0);
     }
   })
   .onNotification(acp.methods.agent.session.cancel, (ctx) => {

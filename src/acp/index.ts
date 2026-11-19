@@ -18,6 +18,8 @@ export {
   KIRO_V2_COMMANDS_AVAILABLE,
   SESSION_SET_MODEL,
 } from "./client.js";
+export { AgentPool, createAgentPool } from "./pool.js";
+export type { AgentPoolOptions, AgentProcessFactory, PooledAgent, PoolProcessInfo } from "./pool.js";
 export { resolveCliPath, shellWrappedCommand, spawnAgentProcess, terminateProcess } from "./process.js";
 export type { ExistsFn, AgentChildProcess, SpawnAgentOptions, ProcessExit } from "./process.js";
 export { createChildStream, interceptNotifications, LineTap, readLines } from "./stream.js";

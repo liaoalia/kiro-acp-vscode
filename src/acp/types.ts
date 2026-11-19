@@ -158,13 +158,21 @@ export type SessionEvent =
   | { type: "turn_failed"; sessionId: string; error: string }
   | { type: "state"; session: SessionState }
   /** Any `_kiro…` notification the layer does not interpret. Surfaced for the log/UI. */
-  | { type: "extension_notification"; method: string; params: unknown };
+  | { type: "extension_notification"; method: string; params: unknown }
+  /**
+   * The agent process hosting these sessions exited or failed without being
+   * asked to (agent pool, D31 (process per session)): these sessions are gone,
+   * every other session keeps running and the connection stays up. Not
+   * emitted for processes the pool stops itself (release, `stop()`).
+   */
+  | { type: "process_exited"; sessionIds: string[]; message: string };
 
 export type Unsubscribe = () => void;
 
 /**
- * Facade over one `kiro-cli acp` process. One process hosts one or more
- * sessions; the extension uses one session at a time.
+ * Facade over one `kiro-cli acp` process (`KiroAgentImpl`), or over one
+ * process per session (`AgentPool`, D31 (process per session)). One process
+ * hosts one or more sessions.
  */
 export interface KiroAgent {
   readonly status: ConnectionStatus;
@@ -205,6 +213,13 @@ export interface KiroAgent {
   authenticate(methodId: string): Promise<void>;
   /** Call a Kiro extension method advertised in `kiroExtensionMethods`. */
   callExtension<T = unknown>(method: string, params: unknown): Promise<T>;
+  /**
+   * The host is done with a session (closed, cleared, failed to restore). An
+   * agent pool forgets which process hosts it and stops that process once it
+   * hosts nothing else (D31 (process per session)). Optional: a single
+   * process simply keeps the session.
+   */
+  releaseSession?(sessionId: string): void;
 }
 
 /** Thrown by the ACP layer for well-known protocol failures. */

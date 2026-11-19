@@ -192,6 +192,11 @@ export class KiroAgentImpl implements KiroAgent {
     return this._agent;
   }
 
+  /** OS process id of the running `kiro-cli` child (null while none runs); the agent pool logs it. */
+  get pid(): number | null {
+    return this.child?.pid ?? null;
+  }
+
   /** Snapshot of the known session state (null when unknown). */
   getSession(sessionId: string): SessionState | null {
     return this.sessions.get(sessionId) ?? null;
