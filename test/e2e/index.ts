@@ -36,6 +36,7 @@ import "./f15-usage.e2e.js";
 import "./f16-images.e2e.js";
 import "./f17-agent-link.e2e.js";
 import "./f18-agent-messages.e2e.js";
+import "./f19-processes.e2e.js";
 import "./f5-selection.e2e.js";
 
 const TEST_TIMEOUT_MS = 60_000;

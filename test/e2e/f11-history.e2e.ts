@@ -27,9 +27,11 @@ test("F11.1 the fake agent advertises session/list + session/load: canBrowseSess
 
 test("F11.2 listPastSessions() returns the canned past sessions with titles, excluding live ones", async ({ api }) => {
   await ensureReady(api);
-  // The fake agent pages `session/list` two entries at a time (newest first).
-  // With at least two live sessions in this workspace the canned past ones
-  // (older) land beyond the first page: the controller must follow nextCursor.
+  // The fake agent pages `session/list` two entries at a time (newest first)
+  // and lists the live sessions of the process asked plus the canned past
+  // ones. Each session now has a process of its own (D31) and the listing
+  // goes to the idle spare, so the canned ones may all be on the first page;
+  // F19.2 (one shared process) checks that the controller follows nextCursor.
   while (api.controller.sessionIds().length < 2) await freshSession(api);
   const entries = await withTimeout(api.controller.listPastSessions(), 15_000, "listPastSessions()");
   const byId = new Map(entries.map((e) => [e.sessionId, e]));
@@ -47,8 +49,9 @@ test("F11.2 listPastSessions() returns the canned past sessions with titles, exc
   for (const entry of entries) {
     assert(!live.has(entry.sessionId), `live session ${entry.sessionId} is not offered as a past session`);
   }
-  // Sessions closed locally earlier (F10) stay on the agent and are listed
-  // too (no session/delete); among the canned ones the newer comes first.
+  // Sessions closed locally stay with the agent (no session/delete; the fake
+  // forgets them with their process, D31); among the canned ones the newer
+  // comes first.
   const ids = entries.map((e) => e.sessionId);
   assert(ids.indexOf(PAST_1) < ids.indexOf("past-2"), `past-1 (newer) is listed before past-2 (${ids.join(",")})`);
 });
