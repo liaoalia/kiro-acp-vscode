@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
-import type { ChatController, ViewHandle } from "./chatController.js";
+import type { ChatController, OpenTabOptions, ViewHandle } from "./chatController.js";
 import type { FromWebview, ToWebview } from "./protocol.js";
 import { getWebviewHtml } from "./webviewHtml.js";
 
@@ -51,15 +51,21 @@ export class ChatPanelManager implements vscode.Disposable {
   }
 
   /**
-   * Open a new chat tab in the active editor group. It displays `sessionId`
-   * when given (the session moves into the tab's own group), otherwise a
-   * fresh session created once the agent is ready.
+   * Open a new chat tab in the active editor group (or, with
+   * `options.besideGroup`, in the editor group of that session group's tab).
+   * It displays `sessionId` when given (the session moves into the tab's own
+   * group), otherwise a fresh session created once the agent is ready. With
+   * `options.preserveFocus` (an agent started the session, D30) the tab opens
+   * without the focus, and the tab of `besideGroup` stays in front when it was
+   * visible, so the user is not taken away from the chat they watch.
    */
-  openNew(sessionId?: string): vscode.WebviewPanel {
+  openNew(sessionId?: string, options: OpenTabOptions = {}): vscode.WebviewPanel {
+    const beside = options.besideGroup ? this.entries.find((e) => e.groupId === options.besideGroup) : undefined;
+    const keepInFront = options.preserveFocus && beside?.panel.visible ? beside : undefined;
     const panel = vscode.window.createWebviewPanel(
       CHAT_PANEL_VIEW_TYPE,
       `${TITLE_PREFIX} ${++this.titleCounter}`,
-      { viewColumn: vscode.ViewColumn.Active },
+      { viewColumn: beside?.panel.viewColumn ?? vscode.ViewColumn.Active, preserveFocus: options.preserveFocus === true },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -70,7 +76,21 @@ export class ChatPanelManager implements vscode.Disposable {
       },
     );
     this.adopt(panel, sessionId);
+    if (keepInFront) {
+      // `visible` is updated asynchronously, so the tab is put back in front
+      // unconditionally; the requests reach the workbench in order.
+      keepInFront.panel.reveal(keepInFront.panel.viewColumn, true);
+      this.recent = keepInFront;
+    }
     return panel;
+  }
+
+  /** Bring the chat tab of `view` to the front (D30: revealing a session); false when it is not one of ours. */
+  revealView(view: ViewHandle): boolean {
+    const entry = this.entries.find((e) => e.view === view);
+    if (!entry) return false;
+    entry.panel.reveal(entry.panel.viewColumn);
+    return true;
   }
 
   /** Reveal the most recently active chat tab, or open the first one. */

@@ -85,6 +85,14 @@
         "title": "Kiro: Forget Remembered Session Options"
       },
       {
+        "command": "kiroAcp.pauseAgentMessages",
+        "title": "Kiro: Pause Agent Messages"
+      },
+      {
+        "command": "kiroAcp.resumeAgentMessages",
+        "title": "Kiro: Resume Agent Messages"
+      },
+      {
         "command": "kiroAcp.acceptDiff",
         "title": "Kiro: Accept Proposed Change",
         "icon": "$(check)"
@@ -225,6 +233,14 @@
         {
           "command": "kiroAcp.openPastSessionInSidebar",
           "when": "false"
+        },
+        {
+          "command": "kiroAcp.pauseAgentMessages",
+          "when": "!kiroAcp.agentMessagesPaused"
+        },
+        {
+          "command": "kiroAcp.resumeAgentMessages",
+          "when": "kiroAcp.agentMessagesPaused"
         }
       ]
     },
@@ -321,6 +337,28 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Experimental. Give every Kiro session a small MCP server (`kiro-acp-tabs`) on `127.0.0.1` so the agent in one chat tab can see the sessions of the other tabs. Each session gets its own token; nothing outside this machine can reach it. Applies to sessions created after the change; turning it off cuts the live sessions off too."
+        },
+        "kiroAcp.agentLink.maxChain": {
+          "type": "integer",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 50,
+          "markdownDescription": "Agent link: how many turns in a row agents may start in each other's sessions (`send_message`, `start_session`) before the next message is refused and both chats say the chain was stopped. A message you type yourself starts the count over. Guards against two agents answering each other for ever."
+        },
+        "kiroAcp.agentLink.confirm": {
+          "type": "string",
+          "enum": [
+            "firstPerPair",
+            "always",
+            "never"
+          ],
+          "enumDescriptions": [
+            "Ask in the sending chat before a session first messages another one; once you allow it, that session may message the other until either closes (default). Starting a new session always asks.",
+            "Ask before every message and every new session.",
+            "Never ask: agents message each other and start sessions on their own (the chain and rate limits still apply)."
+          ],
+          "default": "firstPerPair",
+          "markdownDescription": "Agent link: when to ask you before an agent sends a message to another session (`send_message`) or starts a new one (`start_session`). The question is a card in the sending chat with **Send** / **Don't send**."
         }
       }
     }

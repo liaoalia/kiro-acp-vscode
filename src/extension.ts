@@ -66,6 +66,18 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
   };
   // The agent link names a session's tab the way the user sees it (D30).
   controller.groupLabel = (groupId) => (groupId === SIDEBAR_GROUP ? "Sidebar" : panel.titleOfGroup(groupId));
+  // `start_session { where: "newTab" }` and revealing a session no view shows open a chat tab on it (D30).
+  controller.openTab = (sessionId, options) => {
+    panel.openNew(sessionId, options);
+  };
+  // Clicking "from <title>" on a peer message brings the tab / sidebar showing the sender to the front (D30).
+  controller.revealView = (handle) => {
+    if (handle.groupId === SIDEBAR_GROUP) {
+      view.reveal();
+      return true;
+    }
+    return panel.revealView(handle);
+  };
   // A permission request arrived while no chat was open: show *that* session
   // (a fresh tab would hide the session waiting for an answer).
   controller.onNeedsView = (sessionId) => {
@@ -110,6 +122,18 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     vscode.commands.registerCommand("kiroAcp.login", () => controller.login()),
     vscode.commands.registerCommand("kiroAcp.openPlan", () => plan.open()),
     vscode.commands.registerCommand("kiroAcp.showLog", () => output.show(true)),
+    // Agent link (D30): stop the sessions from messaging / starting each other, and let them again.
+    vscode.commands.registerCommand("kiroAcp.pauseAgentMessages", () => {
+      const dropped = controller.pauseAgentMessages();
+      const discarded = dropped > 0 ? ` ${dropped} queued agent message${dropped === 1 ? " was" : "s were"} discarded.` : "";
+      void vscode.window.showInformationMessage(
+        `Kiro: agent messages paused. Sessions cannot message or start each other until you run Kiro: Resume Agent Messages.${discarded}`,
+      );
+    }),
+    vscode.commands.registerCommand("kiroAcp.resumeAgentMessages", () => {
+      controller.resumeAgentMessages();
+      void vscode.window.showInformationMessage("Kiro: agent messages resumed.");
+    }),
     vscode.commands.registerCommand("kiroAcp.forgetSessionOptions", async () => {
       await controller?.forgetSessionOptions();
       void vscode.window.showInformationMessage("Kiro: remembered session options forgotten; new sessions use the agent's defaults.");

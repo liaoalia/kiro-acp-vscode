@@ -40,11 +40,13 @@ import {
   applyUpdate,
   createTranscript,
   setMessageDelivery,
+  setMessageOrigin,
   snapshotToUiState,
   toModelView,
   withSessionSnapshot,
   type TranscriptState,
 } from "../features/pure/transcript.js";
+import { lastAgentAnswer, transcriptText } from "../features/pure/transcriptText.js";
 import { buildPromptBlocks } from "../features/pure/contentBlocks.js";
 import {
   checkImageAttachment,
@@ -74,17 +76,30 @@ import {
 } from "../features/pure/slashCommands.js";
 import { AgentLinkServer } from "../agentLink/server.js";
 import { AGENT_LINK_INSTRUCTIONS, createAgentLinkTools } from "../agentLink/tools.js";
-import { AgentLinkError } from "../agentLink/types.js";
+import { fitsPeerMessage, framePeerMessage } from "../agentLink/peerMessage.js";
+import { RateLimiter } from "../agentLink/rateLimiter.js";
+import {
+  AgentLinkError,
+  DEFAULT_MAX_CHAIN,
+  LAST_ANSWER_MAX_CHARS,
+  PEER_MESSAGE_MAX_BYTES,
+  PEER_RATE_LIMIT,
+  READ_SESSION_DEFAULT_ITEMS,
+  READ_SESSION_MAX_CHARS,
+  READ_SESSION_MAX_ITEMS,
+} from "../agentLink/types.js";
 import type {
   AgentLinkGrant,
   AgentLinkHost,
   AgentLinkServerApi,
   LinkedSessionInfo,
   LinkedSessionStatus,
+  PeerDelivery,
   SendMessageResult,
   SessionReadResult,
   StartSessionResult,
   StartWhere,
+  WaitOutcome,
   WaitResult,
 } from "../agentLink/types.js";
 import { ContextTracker, searchFiles } from "../features/context.js";
@@ -99,6 +114,7 @@ import type {
   FromWebview,
   ImageAttachment,
   MessageDelivery,
+  MessageOrigin,
   ModelView,
   NoticeView,
   PermissionView,
@@ -162,6 +178,21 @@ export interface AttachViewOptions {
 /** Group of sessions created without any view (API, tests, the first auto-created session). */
 export const DEFAULT_GROUP = "default";
 
+/** How the host opens a chat tab for a session ({@link ChatController.openTab}). */
+export interface OpenTabOptions {
+  /**
+   * Do not take the user away from what they are looking at: the tab opens
+   * without focus, and the chat tab of `besideGroup` stays in front when it
+   * was visible (an agent started the session, not the user; D30).
+   */
+  preserveFocus?: boolean;
+  /** Open the tab in the editor column of this group's chat tab (else the active column). */
+  besideGroup?: string;
+}
+
+/** `kiroAcp.agentLink.confirm`: when a peer message / new session needs the user's OK (D30). */
+export type AgentLinkConfirmMode = "firstPerPair" | "always" | "never";
+
 /** A past session the agent can restore (`session/list` entry, QuickPick-ready; see D21). */
 export interface PastSessionEntry {
   sessionId: string;
@@ -216,6 +247,13 @@ interface QueuedPrompt {
   blocks: acp.ContentBlock[];
   /** View id of the echoed user message (its `queued` badge). */
   messageId: string;
+  /**
+   * Chain depth of the turn this prompt starts (D30): 0 for what the user
+   * typed, the sender's turn depth + 1 for a peer message.
+   */
+  depth: number;
+  /** Set on a peer message (agent link, D30): the sending session. Pausing agent messages drops these. */
+  fromSessionId?: string;
 }
 
 /**
@@ -225,6 +263,8 @@ interface QueuedPrompt {
  */
 interface RestoreEntry {
   sessionId: string;
+  /** Its agent-link handle (`s3`): the agents keep addressing it by the same name (D30). */
+  handle: string;
   groupId: string;
   agentTitle: string | null;
   /** Its title before the restart, for a failure notice. */
@@ -242,6 +282,22 @@ const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
 const MAX_LIST_PAGES = 50;
 const TITLE_MAX = 40;
 const SESSIONS_DEBOUNCE_MS = 50;
+/** Context key of `Kiro: Pause / Resume Agent Messages` (D30). */
+const AGENT_MESSAGES_PAUSED_KEY = "kiroAcp.agentMessagesPaused";
+/** `kiroAcp.agentLink.maxChain` bounds (package.json). */
+const MAX_CHAIN_LIMIT = 50;
+/** Option ids of the agent-link confirmation card (D30). */
+const CONFIRM_ALLOW = "send";
+const CONFIRM_REJECT = "dont-send";
+/**
+ * Consent capabilities of that card (`_meta.kiro.consent`, D23): a message
+ * (resource: the target's session id) and a new session (no resource), apart,
+ * so "allow all messages" never starts sessions.
+ */
+const CONFIRM_CAPABILITY = "agent_link_message";
+const CONFIRM_START_CAPABILITY = "agent_link_start_session";
+/** How much of a peer message / start prompt the confirmation card quotes. */
+const CONFIRM_SNIPPET_MAX = 80;
 /** Webview messages that act on the view's session and may therefore need one assigned first. */
 const NEEDS_SESSION = new Set<FromWebview["type"]>([
   "prompt",
@@ -306,6 +362,16 @@ class ChatSession {
   readonly loggedInfoKinds = new Set<string>();
   /** The first `_kiro/session/context` reply is logged once, to record its real shape. */
   contextReplyLogged = false;
+  /**
+   * Chain depth of the current (or last) turn (D30): 0 when the user started
+   * it, the sender's depth + 1 when a peer message did. A peer message from a
+   * turn already at `kiroAcp.agentLink.maxChain` is refused.
+   */
+  turnDepth = 0;
+  /** `turnGeneration` of the turn whose chain-limit refusal the chats were told about (once per turn, D30). */
+  chainStopNoted = -1;
+  /** Agent-link handle (`s3`, D30): `s<seq>` at creation, kept by a sign-in restore. */
+  readonly handle: string;
   /** Armed by Stop: ends the turn locally when the agent never answers `session/cancel` (D27). */
   cancelTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -324,7 +390,10 @@ class ChatSession {
     readonly seq: number,
     /** The tab / sidebar group the session belongs to (see D20). */
     public groupId: string,
+    /** The handle of the session this one restores after a sign-in (D25, D30); default `s<seq>`. */
+    handle?: string,
   ) {
+    this.handle = handle ?? `s${seq}`;
     this.transcript = withSessionSnapshot(createTranscript(), {
       modes: state.modes,
       configOptions: state.configOptions,
@@ -402,6 +471,12 @@ function asBinding(view: ViewHandle | undefined): ViewBinding | undefined {
   return view instanceof ViewBinding ? view : undefined;
 }
 
+/** A pending `wait_for_session` (D30). */
+interface LinkWaiter {
+  /** Settle the wait when its target reached an outcome (idle, needs input, gone). */
+  check(): void;
+}
+
 // ---------------------------------------------------------------------------
 // Controller
 // ---------------------------------------------------------------------------
@@ -443,9 +518,36 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   private agentLinkRefused = false;
   /** Agent-link grants (bearer tokens) by session id. */
   private readonly linkGrants = new Map<string, AgentLinkGrant>();
+  /** `send_message` + `start_session` per sending session (D30). */
+  private readonly peerRate = new RateLimiter(PEER_RATE_LIMIT.messages, PEER_RATE_LIMIT.windowMs);
+  /**
+   * `kiroAcp.agentLink.confirm: firstPerPair`: the targets each sender may
+   * message without asking again (the user allowed it once), until either
+   * session goes away.
+   */
+  private readonly peerConsents = new Map<string, Set<string>>();
+  /** `Kiro: Pause Agent Messages` (not persisted): send / start refuse with `paused`. */
+  private peerMessagesPaused = false;
+  /** Pending `wait_for_session` calls, checked whenever a session's turn, queue or permissions change. */
+  private readonly linkWaiters = new Set<LinkWaiter>();
+  private linkWaitersCheckQueued = false;
+  /** Mints the tool call ids of the agent-link confirmation cards. */
+  private linkConfirmSeq = 0;
+  /** Mints the placeholder groups `start_session { where: "newTab" }` creates its session in. */
+  private linkStartSeq = 0;
 
   /** Human name of a session group for the agent link (`tab-3` → "Kiro Chat 3"); set by the host. */
   groupLabel: ((groupId: string) => string | null) | null = null;
+
+  /**
+   * Open a new chat tab displaying `sessionId` (the session moves into the
+   * tab's group): `start_session { where: "newTab" }` and revealing a session
+   * whose group has no open view (D30). Set by the host.
+   */
+  openTab: ((sessionId: string, options?: OpenTabOptions) => void) | null = null;
+
+  /** Bring the chat tab / sidebar of `view` to the front; false when the host does not know it. Set by the host. */
+  revealView: ((view: ViewHandle) => boolean) | null = null;
 
   /**
    * Called when a session waits for the user (permission request) while no
@@ -801,6 +903,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         title: s.title(),
         status: this.statusOf(s),
         updatedAt: s.updatedAt,
+        handle: s.handle,
       }));
   }
 
@@ -1027,6 +1130,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       if (session.loading || session.closing || session.transcript.items.length === 0) continue;
       entries.push({
         sessionId: session.id,
+        handle: session.handle,
         groupId: session.groupId,
         agentTitle: session.agentTitle,
         title: session.title(),
@@ -1059,6 +1163,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       }
       if (this.closedGroups.has(entry.groupId) || this.sessions.has(entry.sessionId)) continue;
       const result = await this.loadInto(agent, entry.sessionId, {
+        handle: entry.handle,
         groupId: entry.groupId,
         views: entry.views.filter((v) => this.views.has(v) && v.displayed === null),
         focus: entry.focused,
@@ -1115,6 +1220,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         this.deps.permissions.cancelAll(session.id);
         if (session.turnActive) this.endTurn(session, "error");
       }
+      // A `wait_for_session` on any of them ends `closed`: no turn can run until a restart (D30).
+      this.notifyLinkWaiters();
     }
     this.setConnection(this.connectionFromAgent(change.status, change.message));
     if (change.status === "error" && change.message) {
@@ -1272,51 +1379,594 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     this.deps.output.appendLine(`[info] agent-link stopped (${reason})`);
   }
 
-  /** `/capabilities` line. */
+  /**
+   * `/capabilities`: the server on its first line (`on — 127.0.0.1:<port>, …`
+   * / `off (<why>)`), then, while sessions get it, the tools, the chain limit
+   * and the confirmation mode, and whether agent messages are paused.
+   */
   private describeAgentLink(): string {
     const server = this.agentLink;
+    let line: string;
+    let offered: boolean;
     if (server?.port) {
       const sessions = this.linkGrants.size;
-      return `on — 127.0.0.1:${server.port}, ${sessions} session${sessions === 1 ? "" : "s"} linked`;
+      line = `on — 127.0.0.1:${server.port}, ${sessions} session${sessions === 1 ? "" : "s"} linked`;
+      offered = true;
+    } else {
+      const reason = this.agentLinkUnavailable();
+      line = reason ? `off (${reason})` : "on (starts with the next session)";
+      offered = reason === null;
     }
-    const reason = this.agentLinkUnavailable();
-    return reason ? `off (${reason})` : "on (starts with the next session)";
+    const details: string[] = [];
+    if (offered) {
+      const tools = createAgentLinkTools(this).map((tool) => `\`${tool.definition.name}\``);
+      details.push(
+        `- tools: ${tools.join(", ") || "none"}`,
+        `- chain limit: ${this.agentLinkMaxChain()} agent-started turns in a row (\`kiroAcp.agentLink.maxChain\`)`,
+        `- confirmation: \`${this.agentLinkConfirmMode()}\` (\`kiroAcp.agentLink.confirm\`)`,
+      );
+    }
+    if (this.peerMessagesPaused) details.push("- agent messages paused (`Kiro: Resume Agent Messages` resumes them)");
+    return [line, ...details].join("\n");
+  }
+
+  /** `kiroAcp.agentLink.maxChain`: 1–50, default {@link DEFAULT_MAX_CHAIN}. */
+  private agentLinkMaxChain(): number {
+    const value = vscode.workspace.getConfiguration("kiroAcp").get<unknown>("agentLink.maxChain", DEFAULT_MAX_CHAIN);
+    if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MAX_CHAIN;
+    return Math.min(MAX_CHAIN_LIMIT, Math.max(1, Math.floor(value)));
+  }
+
+  /** `kiroAcp.agentLink.confirm`, default `firstPerPair`. */
+  private agentLinkConfirmMode(): AgentLinkConfirmMode {
+    const value = vscode.workspace.getConfiguration("kiroAcp").get<unknown>("agentLink.confirm", "firstPerPair");
+    return value === "always" || value === "never" ? value : "firstPerPair";
   }
 
   /** {@link AgentLinkHost}: every live session as the agent link shows it, most recent first. */
   listSessions(callerSessionId: string): LinkedSessionInfo[] {
     return this.sortedSessions()
       .filter((s) => !s.closing)
-      .map((s) => ({
-        handle: `s${s.seq}`,
-        sessionId: s.id,
-        title: s.title(),
-        tab: this.tabLabel(s.groupId),
-        status: this.linkStatusOf(s),
-        self: s.id === callerSessionId,
-      }));
+      .map((s) => this.linkedInfo(s, callerSessionId));
   }
 
-  // CONTRACT STUBS (plan Tasks 8–11): implemented by the host work package.
-
-  /** {@link AgentLinkHost.readSession}. */
-  readSession(_callerSessionId: string, _target: string, _last: number): SessionReadResult {
-    throw new AgentLinkError("not_ready", "read_session is not implemented yet");
+  private linkedInfo(session: ChatSession, callerSessionId: string): LinkedSessionInfo {
+    return {
+      handle: session.handle,
+      sessionId: session.id,
+      title: session.title(),
+      tab: this.tabLabel(session.groupId),
+      status: this.linkStatusOf(session),
+      self: session.id === callerSessionId,
+    };
   }
 
-  /** {@link AgentLinkHost.sendMessage}. */
-  sendMessage(_callerSessionId: string, _target: string, _text: string, _signal: AbortSignal): Promise<SendMessageResult> {
-    return Promise.reject(new AgentLinkError("not_ready", "send_message is not implemented yet"));
+  /** The calling session: a tool call only speaks for a live one. */
+  private linkCaller(callerSessionId: string): ChatSession {
+    const caller = this.sessions.get(callerSessionId);
+    if (!caller) throw new AgentLinkError("closed", "Your own session is closed; nothing was done.");
+    return this.liveLinkCaller(caller);
   }
 
-  /** {@link AgentLinkHost.waitForSession}. */
-  waitForSession(_callerSessionId: string, _target: string, _timeoutMs: number, _signal: AbortSignal): Promise<WaitResult> {
-    return Promise.reject(new AgentLinkError("not_ready", "wait_for_session is not implemented yet"));
+  /** `caller` if it is still live (checked again after every await). */
+  private liveLinkCaller(caller: ChatSession): ChatSession {
+    if (this.sessions.get(caller.id) !== caller || caller.closing) {
+      throw new AgentLinkError("closed", "Your own session is closing; nothing was done.");
+    }
+    return caller;
   }
 
-  /** {@link AgentLinkHost.startSession}. */
-  startSession(_callerSessionId: string, _prompt: string, _where: StartWhere, _signal: AbortSignal): Promise<StartSessionResult> {
-    return Promise.reject(new AgentLinkError("not_ready", "start_session is not implemented yet"));
+  /**
+   * The live session `target` names (D30): a handle (`s3`, any case) or a
+   * session id. Refuses a session that is closing (`closed`) or still being
+   * restored (`restoring`).
+   */
+  private linkTarget(target: string): ChatSession {
+    const wanted = typeof target === "string" ? target.trim() : "";
+    const lower = wanted.toLowerCase();
+    const session = [...this.sessions.values()].find((s) => s.handle.toLowerCase() === lower || s.id === wanted);
+    if (!wanted || !session) {
+      throw new AgentLinkError(
+        "unknown_session",
+        `No live session ${JSON.stringify(wanted)}. Call list_sessions for the sessions and their handles.`,
+      );
+    }
+    return this.liveLinkTarget(session);
+  }
+
+  /** `session` if it is still live and restored (checked again after every await). */
+  private liveLinkTarget(session: ChatSession): ChatSession {
+    if (this.sessions.get(session.id) !== session || session.closing) {
+      throw new AgentLinkError("closed", `Session ${session.handle} is closed.`);
+    }
+    if (session.loading) {
+      throw new AgentLinkError("restoring", `Session ${session.handle} is still being restored; try again in a moment.`);
+    }
+    return session;
+  }
+
+  private pausedError(): AgentLinkError {
+    return new AgentLinkError(
+      "paused",
+      "The user paused agent messages (Kiro: Pause Agent Messages); nothing was sent. Tell the user what you wanted to send instead.",
+    );
+  }
+
+  /**
+   * The checks a peer message or a new session's prompt passes before the
+   * user is asked (D30), in order: paused, empty, too long, chain limit, rate
+   * limit. Only an attempt that passed the others counts against the rate (a
+   * declined one too: the cards are not free either). Returns the text to
+   * send (trimmed) and the chain depth of the turn it will start. `target` is
+   * null for `start_session`.
+   */
+  private gatePeerMessage(caller: ChatSession, text: string, target: ChatSession | null): { text: string; depth: number } {
+    if (this.peerMessagesPaused) throw this.pausedError();
+    const trimmed = typeof text === "string" ? text.trim() : "";
+    if (!trimmed) throw new AgentLinkError("empty_text", "The message is empty; nothing was sent.");
+    if (!fitsPeerMessage(trimmed)) {
+      throw new AgentLinkError(
+        "too_long",
+        `The message is over ${PEER_MESSAGE_MAX_BYTES / 1024} KiB; nothing was sent. Shorten it, or send the details in several messages.`,
+      );
+    }
+    const depth = caller.turnDepth + 1;
+    const max = this.agentLinkMaxChain();
+    if (depth > max) {
+      this.noteChainStopped(caller, target, max);
+      throw new AgentLinkError(
+        "chain_limit",
+        `Agent message chain stopped: your turn was started by ${caller.turnDepth} agent messages in a row ` +
+          `(limit ${max}, kiroAcp.agentLink.maxChain). Do not send more; finish your answer for the user, who can continue the conversation.`,
+      );
+    }
+    if (!this.peerRate.take(caller.id)) {
+      const seconds = Math.max(1, Math.ceil(this.peerRate.retryAfterMs(caller.id) / 1000));
+      throw new AgentLinkError(
+        "rate_limited",
+        `Too many messages: a session may send ${PEER_RATE_LIMIT.messages} per ${PEER_RATE_LIMIT.windowMs / 1000} s. ` +
+          `Nothing was sent; try again in ${seconds} s.`,
+      );
+    }
+    return { text: trimmed, depth };
+  }
+
+  /**
+   * The chain limit stopped `caller`'s message: say so in both chats, the
+   * agents will not (D30). Once per turn: an agent that tries again in the
+   * same turn gets the refusal, the chats no second notice.
+   */
+  private noteChainStopped(caller: ChatSession, target: ChatSession | null, max: number): void {
+    this.deps.output.appendLine(
+      `[info] agent-link ${caller.handle} -> ${target?.handle ?? "new session"} refused: chain limit (depth ${caller.turnDepth}, max ${max})`,
+    );
+    if (caller.chainStopNoted === caller.turnGeneration) return;
+    caller.chainStopNoted = caller.turnGeneration;
+    const turns = `${caller.turnDepth} agent-started turn${caller.turnDepth === 1 ? "" : "s"} in a row`;
+    const limit = `kiroAcp.agentLink.maxChain = ${max}`;
+    this.notice(
+      caller,
+      "info",
+      `Agent message chain stopped: this session tried to message ${target ? target.handle : "a new session"} after ${turns} (${limit}). Send a message yourself to go on.`,
+    );
+    if (target) {
+      this.notice(
+        target,
+        "info",
+        `Agent message chain stopped: ${caller.handle} ${JSON.stringify(caller.title())} tried to message this session after ${turns} (${limit}).`,
+      );
+    }
+  }
+
+  /** Whether `kiroAcp.agentLink.confirm` wants the user asked before `callerId` messages `targetId` (null: a new session). */
+  private needsPeerConfirmation(callerId: string, targetId: string | null): boolean {
+    const mode = this.agentLinkConfirmMode();
+    if (mode === "never") return false;
+    if (mode === "always" || targetId === null) return true;
+    return !(this.peerConsents.get(callerId)?.has(targetId) ?? false);
+  }
+
+  private rememberPeerConsent(callerId: string, targetId: string): void {
+    let targets = this.peerConsents.get(callerId);
+    if (!targets) {
+      targets = new Set<string>();
+      this.peerConsents.set(callerId, targets);
+    }
+    targets.add(targetId);
+  }
+
+  /**
+   * A session went away (closed, `/clear`, failed restore, restart): its pair
+   * consents and rate history go too, and the waits on it end `closed` (D30).
+   */
+  private forgetLinkSession(sessionId: string): void {
+    this.peerConsents.delete(sessionId);
+    for (const targets of this.peerConsents.values()) targets.delete(sessionId);
+    this.peerRate.forget(sessionId);
+    this.notifyLinkWaiters();
+  }
+
+  /**
+   * Ask the user in `caller`'s chat (D30): a permission card synthesized
+   * through the PermissionManager, so it renders, resolves and makes the
+   * caller `needs_input` like any other request. The card is also a tool call
+   * in the caller's transcript: a `state` snapshot (tab switch, reload) only
+   * renders permissions of tool calls it knows, and the call keeps the
+   * decision on record. True for "Send" only; "Don't send", a cancel (the
+   * turn ended, the session closed) and an aborted `signal` are a no.
+   */
+  private async confirmPeerAction(
+    caller: ChatSession,
+    title: string,
+    consent: { capability: string; resource?: string },
+    declinedText: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const toolCallId = `agent-link-confirm-${++this.linkConfirmSeq}`;
+    this.applyLocalUpdate(caller, { sessionUpdate: "tool_call", toolCallId, title, kind: "other", status: "pending" });
+    let allowed = false;
+    try {
+      const response = await this.deps.permissions.request(
+        {
+          sessionId: caller.id,
+          toolCall: { toolCallId, title, kind: "other", status: "pending" },
+          options: [
+            { optionId: CONFIRM_ALLOW, name: "Send", kind: "allow_once" },
+            { optionId: CONFIRM_REJECT, name: "Don't send", kind: "reject_once" },
+          ],
+          _meta: { kiro: { consent } },
+        },
+        signal,
+      );
+      allowed = !signal.aborted && response.outcome.outcome === "selected" && response.outcome.optionId === CONFIRM_ALLOW;
+    } finally {
+      // Only this very session: it may have closed (or been restored anew) meanwhile.
+      if (this.sessions.get(caller.id) === caller) {
+        this.applyLocalUpdate(
+          caller,
+          allowed
+            ? { sessionUpdate: "tool_call_update", toolCallId, status: "completed" }
+            : {
+                sessionUpdate: "tool_call_update",
+                toolCallId,
+                status: "failed",
+                content: [{ type: "content", content: { type: "text", text: declinedText } }],
+              },
+        );
+      }
+    }
+    this.deps.output.appendLine(`[info] agent-link ${caller.handle} confirmation: ${allowed ? "allowed" : "declined"}`);
+    return allowed;
+  }
+
+  /**
+   * Deliver a peer message (D30): echoed in `target` as a user message with
+   * its origin (the raw text, no frame), sent to the agent framed by
+   * `framePeerMessage`. An idle target starts a turn now (not awaited); a
+   * busy one (turn running or prompts queued) holds it in its D22 queue,
+   * badged `queued`. Never `_session/steer`. The caller has checked that both
+   * sessions are live.
+   */
+  private deliverPeerMessage(sender: ChatSession, target: ChatSession, text: string, depth: number): PeerDelivery {
+    const agent = this.agent;
+    if (!agent || agent.status !== "ready") {
+      throw new AgentLinkError("not_ready", "Kiro is not running (or needs a sign-in); nothing was sent.");
+    }
+    const senderTitle = sender.title();
+    const framed = framePeerMessage(
+      { handle: sender.handle, title: senderTitle, tab: this.tabLabel(sender.groupId) },
+      text,
+      depth,
+    );
+    const blocks: acp.ContentBlock[] = [{ type: "text", text: framed }];
+    const busy = target.turnActive || target.queue.length > 0;
+    if (target.firstPrompt === null) target.firstPrompt = truncateTitle(text);
+    const messageId = this.echoUserMessage(target, text, [], busy ? "queued" : undefined);
+    const origin: MessageOrigin = { sessionId: sender.id, handle: sender.handle, title: senderTitle };
+    target.transcript = setMessageOrigin(target.transcript, messageId, origin);
+    this.postTo(target.id, { type: "messageOrigin", messageId, origin });
+    const delivery: PeerDelivery = busy ? "queued" : "started";
+    this.deps.output.appendLine(`[info] agent-link ${sender.handle} -> ${target.handle} message (${delivery}, depth ${depth})`);
+    if (busy) this.enqueue(target, { text, chips: [], blocks, messageId, depth, fromSessionId: sender.id });
+    else void this.runTurn(agent, target, blocks, depth);
+    return delivery;
+  }
+
+  /** {@link AgentLinkHost.readSession}: the last `last` items of `target` as text; the caller may read itself. */
+  readSession(callerSessionId: string, target: string, last: number): SessionReadResult {
+    this.linkCaller(callerSessionId);
+    const session = this.linkTarget(target);
+    const items = Number.isFinite(last)
+      ? Math.min(READ_SESSION_MAX_ITEMS, Math.max(1, Math.floor(last)))
+      : READ_SESSION_DEFAULT_ITEMS;
+    const rendered = transcriptText(session.transcript, { last: items, maxChars: READ_SESSION_MAX_CHARS });
+    return {
+      session: this.linkedInfo(session, callerSessionId),
+      text: rendered.text,
+      items: rendered.items,
+      truncated: rendered.truncated,
+    };
+  }
+
+  /**
+   * {@link AgentLinkHost.sendMessage} (D30): checks (self, paused, empty, too
+   * long, chain, rate), the user's confirmation when `kiroAcp.agentLink.confirm`
+   * wants one, then {@link deliverPeerMessage}.
+   */
+  async sendMessage(callerSessionId: string, target: string, text: string, signal: AbortSignal): Promise<SendMessageResult> {
+    const caller = this.linkCaller(callerSessionId);
+    const session = this.linkTarget(target);
+    if (session === caller) {
+      throw new AgentLinkError("self", "That is your own session; a session cannot message itself.");
+    }
+    const gated = this.gatePeerMessage(caller, text, session);
+    if (this.needsPeerConfirmation(caller.id, session.id)) {
+      const title = `Send to ${session.handle} ${JSON.stringify(session.title())}: ${confirmSnippet(gated.text)}`;
+      const allowed = await this.confirmPeerAction(
+        caller,
+        title,
+        { capability: CONFIRM_CAPABILITY, resource: session.id },
+        "Not sent.",
+        signal,
+      );
+      if (!allowed) {
+        throw new AgentLinkError("declined", `The user declined; the message was not sent to ${session.handle}.`);
+      }
+      // Either session may have closed, or agent messages been paused, while the card waited.
+      this.liveLinkCaller(caller);
+      this.liveLinkTarget(session);
+      if (this.peerMessagesPaused) throw this.pausedError();
+      this.rememberPeerConsent(caller.id, session.id);
+    }
+    const delivery = this.deliverPeerMessage(caller, session, gated.text, gated.depth);
+    return { to: this.linkedInfo(session, caller.id), delivery };
+  }
+
+  /**
+   * {@link AgentLinkHost.waitForSession} (D30): resolves at once when `target`
+   * is idle (no turn, nothing queued) or waits for the user; otherwise when it
+   * gets there, closes, the agent goes away, or after `timeoutMs`. Aborting
+   * `signal` (the caller's tool call went away) rejects. Every path removes
+   * the waiter, its timer and its abort listener.
+   */
+  waitForSession(callerSessionId: string, target: string, timeoutMs: number, signal: AbortSignal): Promise<WaitResult> {
+    let caller: ChatSession;
+    let session: ChatSession;
+    try {
+      caller = this.linkCaller(callerSessionId);
+      session = this.linkTarget(target);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    if (session === caller) {
+      return Promise.reject(new AgentLinkError("self", "That is your own session; a session cannot wait for itself."));
+    }
+    if (signal.aborted) return Promise.reject(abortReason(signal));
+    const result = (outcome: WaitOutcome): WaitResult => {
+      const live = outcome !== "closed" && this.sessions.get(session.id) === session;
+      return {
+        session: live ? this.linkedInfo(session, caller.id) : null,
+        outcome,
+        // A closed session's last answer is still worth having.
+        lastAnswer: lastAgentAnswer(session.transcript, LAST_ANSWER_MAX_CHARS),
+      };
+    };
+    const now = this.waitOutcome(session);
+    if (now) return Promise.resolve(result(now));
+    const seconds = Math.round(Math.max(0, timeoutMs) / 1000);
+    this.deps.output.appendLine(`[info] agent-link ${caller.handle} waits for ${session.handle} (up to ${seconds} s)`);
+    return new Promise<WaitResult>((resolve, reject) => {
+      const finish = (settle: () => void, what: string): void => {
+        if (!this.linkWaiters.delete(waiter)) return;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+        this.deps.output.appendLine(`[info] agent-link ${caller.handle} wait for ${session.handle}: ${what}`);
+        settle();
+      };
+      const waiter: LinkWaiter = {
+        check: () => {
+          // The waiting session went away: nobody needs the answer any more.
+          if (this.sessions.get(caller.id) !== caller) {
+            finish(() => reject(new AgentLinkError("closed", "Your own session closed while waiting.")), "caller closed");
+            return;
+          }
+          const outcome = this.waitOutcome(session);
+          if (outcome) finish(() => resolve(result(outcome)), outcome);
+        },
+      };
+      const onAbort = (): void => finish(() => reject(abortReason(signal)), "aborted");
+      const timer = setTimeout(() => finish(() => resolve(result("timeout")), "timeout"), Math.max(0, timeoutMs));
+      this.linkWaiters.add(waiter);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
+  /** Where a waited-for session stands (D30); null while it still works. */
+  private waitOutcome(session: ChatSession): WaitOutcome | null {
+    if (this.sessions.get(session.id) !== session || this.agentDown()) return "closed";
+    // Closing (`/clear`, its tab closed): `closed` once it is gone; a `/clear`
+    // whose replacement failed leaves it usable, so it is not reported yet.
+    if (session.closing) return null;
+    if (this.pendingFor(session.id).length > 0) return "needs_input";
+    if (!session.turnActive && session.queue.length === 0 && !session.loading) return "idle";
+    return null;
+  }
+
+  /**
+   * Re-check the pending waits once the current synchronous work is done:
+   * a turn that ends may start the next queued one at once (`endTurn` →
+   * `handleStopReason` → `drainQueue`), and only the settled state says
+   * whether the session is really idle (D30).
+   */
+  private notifyLinkWaiters(): void {
+    if (this.linkWaiters.size === 0 || this.linkWaitersCheckQueued) return;
+    this.linkWaitersCheckQueued = true;
+    queueMicrotask(() => {
+      this.linkWaitersCheckQueued = false;
+      for (const waiter of [...this.linkWaiters]) waiter.check();
+    });
+  }
+
+  /**
+   * {@link AgentLinkHost.startSession} (D30): the gates of `send_message`
+   * (paused, empty, too long, chain, rate), the user's confirmation unless
+   * `kiroAcp.agentLink.confirm` is `never`, then a new session (`sameTab`: in
+   * the caller's group, its view keeps showing the caller; `newTab`: in a new
+   * chat tab that does not take the focus) that gets `prompt` as a peer
+   * message from the caller.
+   */
+  async startSession(callerSessionId: string, prompt: string, where: StartWhere, signal: AbortSignal): Promise<StartSessionResult> {
+    const caller = this.linkCaller(callerSessionId);
+    const gated = this.gatePeerMessage(caller, prompt, null);
+    if (this.agentLinkConfirmMode() !== "never") {
+      const allowed = await this.confirmPeerAction(
+        caller,
+        `Start a new session: ${confirmSnippet(gated.text)}`,
+        { capability: CONFIRM_START_CAPABILITY },
+        "Not started.",
+        signal,
+      );
+      if (!allowed) throw new AgentLinkError("declined", "The user declined; no session was started.");
+      this.liveLinkCaller(caller);
+      if (this.peerMessagesPaused) throw this.pausedError();
+    }
+    if (!this.agent || this.agent.status !== "ready") {
+      throw new AgentLinkError("not_ready", "Kiro is not running (or needs a sign-in); no session was started.");
+    }
+    // `newTab`: created in a group no view lists, so no other view adopts it
+    // as a spare while `session/new` runs; the new tab then takes it over.
+    const newTab = where === "newTab" && this.openTab !== null;
+    const groupId = newTab ? `agent-link-start-${++this.linkStartSeq}` : caller.groupId;
+    const created = await this.createSession(groupId);
+    if (!created) {
+      throw new AgentLinkError("not_ready", "The new session could not be created; see the Kiro ACP output for why.");
+    }
+    if (this.sessions.get(caller.id) !== caller || caller.closing || this.closedGroups.has(groupId)) {
+      // The caller (or its tab) went away during `session/new`: nobody wants the session any more.
+      await this.closeSession(created.id);
+      throw new AgentLinkError("closed", "Your own session closed before the new one started; it was closed again.");
+    }
+    if (this.sessions.get(created.id) !== created || created.closing) {
+      throw new AgentLinkError("closed", "The new session was closed before it got the prompt.");
+    }
+    if (signal.aborted || this.peerMessagesPaused) {
+      // Stop in the caller (its tool call is gone, so it would never learn the
+      // new handle) or the user paused agent messages meanwhile.
+      await this.closeSession(created.id);
+      throw signal.aborted ? abortReason(signal) : this.pausedError();
+    }
+    if (newTab) {
+      try {
+        this.openTab?.(created.id, { preserveFocus: true, besideGroup: caller.groupId });
+      } catch (error) {
+        this.deps.output.appendLine(`[warn] agent-link: could not open a tab for ${created.handle}: ${errorMessage(error)}`);
+      }
+      if (created.groupId === groupId) {
+        // The host showed it nowhere: keep it where the caller's user can find it.
+        created.groupId = caller.groupId;
+        this.scheduleSessions();
+      }
+    }
+    this.deps.output.appendLine(
+      `[info] agent-link ${caller.handle} started ${created.handle} (${where}${where === "newTab" && !newTab ? ", no tab hook: same tab" : ""})`,
+    );
+    const delivery = this.deliverPeerMessage(caller, created, gated.text, gated.depth);
+    return { session: this.linkedInfo(created, caller.id), delivery };
+  }
+
+  // ---------------------------------------------------------------------
+  // Pause (Kiro: Pause / Resume Agent Messages, D30)
+  // ---------------------------------------------------------------------
+
+  /** True while agent messages are paused. */
+  get agentMessagesPaused(): boolean {
+    return this.peerMessagesPaused;
+  }
+
+  /**
+   * `Kiro: Pause Agent Messages`: drop the queued peer messages of every
+   * session (the usual "discarded" notice) and refuse `send_message` /
+   * `start_session` with `paused` until resumed. Turns already running go
+   * on. Not persisted. Returns how many queued messages were dropped.
+   */
+  pauseAgentMessages(): number {
+    this.peerMessagesPaused = true;
+    void vscode.commands.executeCommand("setContext", AGENT_MESSAGES_PAUSED_KEY, true);
+    let dropped = 0;
+    for (const session of this.sessions.values()) dropped += this.discardPeerMessages(session);
+    this.deps.output.appendLine(`[info] agent-link messages paused (${dropped} queued message(s) discarded)`);
+    return dropped;
+  }
+
+  /** `Kiro: Resume Agent Messages`. */
+  resumeAgentMessages(): void {
+    this.peerMessagesPaused = false;
+    void vscode.commands.executeCommand("setContext", AGENT_MESSAGES_PAUSED_KEY, false);
+    this.deps.output.appendLine("[info] agent-link messages resumed");
+  }
+
+  /** Drop the queued peer messages of `session`, keeping what the user queued. Returns how many. */
+  private discardPeerMessages(session: ChatSession): number {
+    const kept: QueuedPrompt[] = [];
+    let dropped = 0;
+    for (const item of session.queue.splice(0)) {
+      if (item.fromSessionId === undefined) {
+        kept.push(item);
+        continue;
+      }
+      this.setDelivery(session, item.messageId, null);
+      dropped++;
+    }
+    session.queue.push(...kept);
+    this.discardQueue(session, dropped);
+    if (dropped > 0) this.notifyLinkWaiters();
+    return dropped;
+  }
+
+  // ---------------------------------------------------------------------
+  // Reveal (clicking "from <title>" on a peer message, D30)
+  // ---------------------------------------------------------------------
+
+  /**
+   * Show `sessionId` wherever it lives: the tab / sidebar displaying it is
+   * revealed; else a view of its group displays it; else (its group has no
+   * open view, e.g. `default`) a new tab opens on it. A session that is gone
+   * gets an info notice in the requesting view.
+   */
+  private revealSession(sessionId: string, requester: ViewBinding | undefined): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing) {
+      const text = "That session is closed.";
+      const shownId = requester ? requester.sessionId : this.focusedId;
+      const shown = shownId ? this.sessions.get(shownId) : undefined;
+      if (shown) this.notice(shown, "info", text);
+      else if (requester) this.postView(requester, { type: "notice", notice: { id: `n-${++this.noticeSeq}`, severity: "info", text } });
+      else this.notice(null, "info", text);
+      return;
+    }
+    const views = [...this.views].filter((v) => !v.follows);
+    const showing = views.find((v) => v.displayed === sessionId);
+    if (showing) {
+      this.revealBinding(showing);
+      return;
+    }
+    const groupView = views.find((v) => v.groupId !== null && v.groupId === session.groupId);
+    if (groupView) {
+      this.setViewSession(groupView, sessionId);
+      this.revealBinding(groupView);
+      return;
+    }
+    if (this.openTab) {
+      this.openTab(sessionId);
+      return;
+    }
+    // No host (tests): the views that follow the focus show it.
+    this.focus(sessionId);
+  }
+
+  private revealBinding(view: ViewBinding): void {
+    this.revealView?.(view);
+    this.focusView(view);
   }
 
   private linkStatusOf(session: ChatSession): LinkedSessionStatus {
@@ -1522,12 +2172,15 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
 
   /** Forget every session (agent restart). */
   private endAllSessions(): void {
+    const ids = [...this.sessions.keys()];
     for (const session of this.sessions.values()) {
       this.deps.permissions.cancelAll(session.id);
       this.deps.permissions.clearPolicies(session.id);
       this.revokeLink(session.id);
     }
     this.sessions.clear();
+    // Waits on them end `closed`; a restored session starts with no consents or rate history (D30).
+    for (const id of ids) this.forgetLinkSession(id);
     for (const view of this.views) {
       if (view.follows || view.displayed === null) continue;
       view.displayed = null;
@@ -1735,6 +2388,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     agent: KiroAgent,
     sessionId: string,
     target: {
+      /** A sign-in restore keeps the session's agent-link handle (D30); a past session gets a new one. */
+      handle?: string;
       groupId: string;
       views: readonly ViewBinding[];
       focus: boolean;
@@ -1753,7 +2408,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       availableCommands: [],
       meta: null,
     };
-    const session = new ChatSession(placeholder, ++this.sessionSeq, target.groupId);
+    const session = new ChatSession(placeholder, ++this.sessionSeq, target.groupId, target.handle);
     session.loading = true;
     session.agentTitle = target.agentTitle;
     this.sessions.set(sessionId, session);
@@ -1781,6 +2436,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       if (this.sessions.get(sessionId) === session) {
         this.sessions.delete(sessionId);
         this.revokeLink(sessionId);
+        this.forgetLinkSession(sessionId);
         this.deps.permissions.cancelAll(sessionId);
         this.deps.permissions.clearPolicies(sessionId);
         for (const v of this.views) {
@@ -1791,6 +2447,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       return message;
     }
     session.loading = false;
+    this.notifyLinkWaiters();
     // The replay touched it; a session coming back keeps its place in the list.
     if (target.updatedAt === undefined) session.touch();
     else session.updatedAt = target.updatedAt;
@@ -1854,6 +2511,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     this.deps.permissions.clearPolicies(sessionId);
     this.sessions.delete(sessionId);
     this.revokeLink(sessionId);
+    this.forgetLinkSession(sessionId);
     this.deps.output.appendLine(`[info] session ${sessionId} closed`);
 
     const wasFocused = this.focusedId === sessionId;
@@ -1942,6 +2600,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     }
     this.postTo(session.id, stopReason ? { type: "turn", active, stopReason } : { type: "turn", active });
     this.scheduleSessions();
+    this.notifyLinkWaiters();
   }
 
   // ---------------------------------------------------------------------
@@ -2072,11 +2731,13 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
 
   /**
    * `session/prompt` for `session`, already echoed: flips the turn state and
-   * reports the stop reason (or the failure) when the agent answers.
+   * reports the stop reason (or the failure) when the agent answers. `depth`
+   * is the turn's agent-link chain depth (D30): 0 for what the user sent.
    */
-  private async runTurn(agent: KiroAgent, session: ChatSession, blocks: acp.ContentBlock[]): Promise<void> {
+  private async runTurn(agent: KiroAgent, session: ChatSession, blocks: acp.ContentBlock[], depth = 0): Promise<void> {
     session.turnGeneration++;
     const generation = session.turnGeneration;
+    session.turnDepth = depth;
     this.setTurnActive(session, true);
     try {
       const response = await agent.prompt(session.id, blocks);
@@ -2172,7 +2833,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     if (session.steerUnsupported) {
       const messageId = this.echoUserMessage(session, text, chips, "queued", images);
       this.deps.contextTracker.clearExplicit();
-      this.enqueue(session, { text, chips, blocks, messageId });
+      this.enqueue(session, { text, chips, blocks, messageId, depth: 0 });
       return;
     }
     const messageId = this.echoUserMessage(session, text, chips, "steering", images);
@@ -2205,7 +2866,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         session.steerUnsupported = true;
       }
       this.setDelivery(session, messageId, "queued");
-      this.enqueue(session, { text, chips, blocks, messageId });
+      this.enqueue(session, { text, chips, blocks, messageId, depth: 0 });
     }
   }
 
@@ -2234,13 +2895,15 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     // The echo happened mid-turn, so the previous answer may still be open:
     // close it so the new turn's answer starts a message of its own.
     session.transcript = { ...session.transcript, openMessage: null };
-    void this.runTurn(agent, session, next.blocks);
+    // A queued peer message starts its turn at its own chain depth (D30).
+    void this.runTurn(agent, session, next.blocks, next.depth);
   }
 
   /** Clear the badges of every queued prompt and forget them. Returns how many were dropped. */
   private discardRemaining(session: ChatSession): number {
     const dropped = session.queue.splice(0);
     for (const item of dropped) this.setDelivery(session, item.messageId, null);
+    if (dropped.length > 0) this.notifyLinkWaiters();
     return dropped.length;
   }
 
@@ -2514,6 +3177,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       }
     }
     this.scheduleSessions();
+    // A session that now waits for the user ends the waits on it (`needs_input`, D30).
+    this.notifyLinkWaiters();
   }
 
   // ---------------------------------------------------------------------
@@ -2563,6 +3228,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         return;
       case "selectSession":
         this.selectSession(message.sessionId, binding);
+        return;
+      case "revealSession":
+        this.revealSession(message.sessionId, binding);
         return;
       case "closeSession":
         await this.closeSession(message.sessionId);
@@ -2907,6 +3575,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
             return created;
           }
           session.closing = false; // the replacement failed: the session stays usable
+          this.notifyLinkWaiters(); // a wait on it goes on judging it (D30)
           return null;
         })();
         session.replacement = replacement;
@@ -3100,6 +3769,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
     void this.agent?.stop();
     this.agent = null;
+    // No agent: every pending wait ends `closed` now, its timer cleared (D30).
+    for (const waiter of [...this.linkWaiters]) waiter.check();
     void this.stopAgentLink("disposed");
     this.views.clear();
     for (const d of this.disposables.splice(0)) d.dispose();
@@ -3163,6 +3834,21 @@ export function relativeTime(iso: string | null, now: number = Date.now()): stri
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(then).toLocaleDateString();
+}
+
+/** A peer message as the confirmation card quotes it (D30): whitespace collapsed, ~80 characters, in quotes. */
+function confirmSnippet(text: string): string {
+  // By code point, so the cut never splits a surrogate pair.
+  const chars = [...text.replace(/\s+/g, " ").trim()];
+  const cut =
+    chars.length <= CONFIRM_SNIPPET_MAX ? chars.join("") : `${chars.slice(0, CONFIRM_SNIPPET_MAX - 1).join("").trimEnd()}…`;
+  return JSON.stringify(cut);
+}
+
+/** What an aborted `signal` rejects with: its reason when it is an error. */
+function abortReason(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error ? reason : new Error("The call was cancelled.");
 }
 
 /** First line of the prompt, whitespace collapsed, cut to ~40 characters. */
