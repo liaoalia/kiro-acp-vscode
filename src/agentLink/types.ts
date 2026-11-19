@@ -1,9 +1,9 @@
 /**
  * Agent link (DECISIONS D30): a small MCP server on loopback HTTP that the
  * extension hands to every Kiro session through `session/new` /
- * `session/load` `mcpServers`, so the agent in one chat tab can see the other
- * live sessions (and, in later stages, read them, message them and wait for
- * them). Every session gets its own bearer token, so each tool call names the
+ * `session/load` `mcpServers`, so the agent in one chat tab can list the other
+ * live sessions, read them, message them, wait for them and start new ones.
+ * Every session gets its own bearer token, so each tool call names the
  * session that made it.
  *
  * This module is the contract between the MCP layer (`protocol.ts`,

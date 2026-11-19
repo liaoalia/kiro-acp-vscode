@@ -366,8 +366,9 @@ class ChatSession {
   contextReplyLogged = false;
   /**
    * Chain depth of the current (or last) turn (D30): 0 when the user started
-   * it, the sender's depth + 1 when a peer message did. A peer message from a
-   * turn already at `kiroAcp.agentLink.maxChain` is refused.
+   * it, the sender's depth + 1 when a peer message did, and 0 again once the
+   * user steers text into it. A peer message from a turn already at
+   * `kiroAcp.agentLink.maxChain` is refused.
    */
   turnDepth = 0;
   /** `turnGeneration` of the turn whose chain-limit refusal the chats were told about (once per turn, D30). */
@@ -2850,6 +2851,16 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     try {
       const result = await agent.callExtension(STEER_METHOD, params);
       this.deps.output.appendLine(`[info] steer ${session.id}: accepted ${safeJson(result)}`);
+      // The user took part in this turn, so from here on it counts as one the
+      // user started (D30): its agent messages start a new chain, as the
+      // chain-stop notice and the docs promise ("send a message yourself").
+      if (session.turnActive && session.turnGeneration === generation && session.turnDepth > 0) {
+        this.deps.output.appendLine(
+          `[info] agent-link ${session.handle}: chain depth ${session.turnDepth} -> 0 (the user steered the turn)`,
+        );
+        session.turnDepth = 0;
+        session.chainStopNoted = -1;
+      }
     } catch (error) {
       const code = error instanceof AcpError && error.code !== undefined ? ` (${error.code})` : "";
       this.deps.output.appendLine(

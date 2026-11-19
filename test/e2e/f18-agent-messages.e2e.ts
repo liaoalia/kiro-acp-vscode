@@ -403,6 +403,43 @@ test("F18.5 kiroAcp.agentLink.maxChain = 1: a send from a peer-started turn is r
   });
 });
 
+test("F18.5b maxChain = 1: text the user steers into a peer-started turn starts the chain over, so its reply goes out", async ({ api }) => {
+  await withLink(api, { maxChain: 1 }, async ({ open }) => {
+    const a = await open("a");
+    const b = await open("b");
+    const hA = handleOf(api, a.sessionId);
+    const hB = handleOf(api, b.sessionId);
+    const sender = await promptIn(api, a.sessionId, `/scenario link-send ${hB}\n/scenario peer-reply-late`);
+    assertEqual(outcomeOf(lastCall(sender, "send_message")).data.delivery, "started", "the first message (depth 1) goes");
+
+    // The target's peer-started turn (depth 1 = maxChain) is still working: the user steers it.
+    await waitFor(
+      () => {
+        const s = snapshot(api, b.sessionId);
+        return s.turnActive && agentText(s).includes("Working on it.") ? s : undefined;
+      },
+      10_000,
+      "the target's turn running",
+    );
+    await withTimeout(api.controller.prompt("Go ahead and answer.", [], b.sessionId), 10_000, "steering the target");
+
+    const target = await settled(api, b.sessionId, (s) => agentText(s).includes("Reply "), "the target's reply turn");
+    const reply = lastCall(target, "send_message");
+    assertEqual(reply.status, "completed", `the reply is not refused: ${JSON.stringify(reply)}`);
+    assert(
+      !target.notices.some((n) => n.text.startsWith("Agent message chain stopped")),
+      `no chain notice in the target: ${JSON.stringify(target.notices)}`,
+    );
+    const back = await settled(
+      api,
+      a.sessionId,
+      (s) => userMessages(s).some((m) => m.origin?.sessionId === b.sessionId),
+      "the reply in the sender",
+    );
+    assertEqual(userMessages(back).filter((m) => m.origin?.handle === hB).length, 1, `one reply from ${hB} reached ${hA}`);
+  });
+});
+
 test("F18.6 the 11th message within a minute is refused (rate_limited); the first ten are delivered", async ({ api }) => {
   await withLink(api, {}, async ({ open }) => {
     const a = await open("a");

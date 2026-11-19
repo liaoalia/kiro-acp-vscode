@@ -1,0 +1,11 @@
+{
+  "name": "peer-reply-late",
+  "description": "Agent link (D30), receiving side: works a while (time for the user to steer the turn), then replies to the sender with send_message (its reply runs peer-echo there) and reports the result.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Working on it. " } } },
+    { "kind": "delay", "ms": 2500 },
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "send_message", "arguments": { "to": "{{peer.from}}", "text": "/scenario peer-echo\nLate reply to {{peer.from}}" } },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "Reply {{mcp.status}}: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}
