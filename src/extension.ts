@@ -10,7 +10,7 @@ import { createClientServices } from "./features/services.js";
 import { TerminalService } from "./features/terminal.js";
 import { ChatController } from "./ui/chatController.js";
 import { ChatPanelManager } from "./ui/chatPanel.js";
-import { CHAT_VIEW_ID, ChatViewProvider } from "./ui/chatView.js";
+import { CHAT_VIEW_ID, ChatViewProvider, SIDEBAR_GROUP } from "./ui/chatView.js";
 
 /** Exposed via `vscode.extensions.getExtension("liaoalia.kiro-acp").exports` for integration tests. */
 export interface KiroAcpApi {
@@ -64,6 +64,8 @@ export function activate(context: vscode.ExtensionContext): KiroAcpApi {
     if (chatInEditor()) panel.open();
     else view.reveal();
   };
+  // The agent link names a session's tab the way the user sees it (D30).
+  controller.groupLabel = (groupId) => (groupId === SIDEBAR_GROUP ? "Sidebar" : panel.titleOfGroup(groupId));
   // A permission request arrived while no chat was open: show *that* session
   // (a fresh tab would hide the session waiting for an answer).
   controller.onNeedsView = (sessionId) => {

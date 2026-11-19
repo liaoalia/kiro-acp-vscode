@@ -154,6 +154,10 @@ Contract (written first): `ImageAttachment`, `ImageSegment.name/src`, `Connectio
 - [x] tests: e2e F14.2 (two sessions of one tab back in order, no extra empty session, focus kept; a session the new process cannot load → fresh session + named warning)
 - [x] docs: README, DECISIONS D25
 
+### ➕ Task 23: Agent link, stage 1 — experimental, off by default (0.3.12)
+- [x] tracked in its own plan: `docs/plans/2026-11-13-agent-link.md` (Stage 1, Tasks 1–6); DECISIONS D30
+- [ ] ⚠️ real CLI check on a signed-in machine (that plan's Task 7) — 0.3.12 is released so it can be installed there
+
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages
 - [ ] `_kiro/terminal/shell_type`: implement once its params/reply are recorded from the log

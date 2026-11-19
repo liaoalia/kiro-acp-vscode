@@ -4,5 +4,5 @@
     "noEmit": false,
     "outDir": "out"
   },
-  "include": ["src/acp/**/*.ts", "src/features/pure/**/*.ts", "test/**/*.ts"]
+  "include": ["src/acp/**/*.ts", "src/agentLink/**/*.ts", "src/features/pure/**/*.ts", "test/**/*.ts"]
 }

@@ -284,6 +284,37 @@ organisation-managed account; raw exchange not yet captured):
   **mode** (Default/Autonomous), **Memory reflection**, **Autopilot** and
   **Content Collection**; no `effortLevel` option was advertised.
 
+## Agent link (client-supplied MCP server) **[unverified]**
+
+With `kiroAcp.agentLink.enabled` on (D30), every `session/new` / `session/load`
+carries one entry:
+
+```json
+{ "type": "http", "name": "kiro-acp-tabs", "url": "http://127.0.0.1:<port>/mcp",
+  "headers": [{ "name": "Authorization", "value": "Bearer <per-session token>" }] }
+```
+
+The **Kiro ACP** output channel logs `agent-link listening on …`, one
+`agent-link <session|unbound> <method>[ <tool>] -> <status>` line per MCP
+request and `agent-link refused <status>: <reason>` for refused ones; `/capabilities`
+ends with `Agent link: on — 127.0.0.1:<port>, N sessions linked` (or why it is off).
+None of this has been seen against the real CLI yet. To record, on a signed-in
+machine, with the setting on and two chat tabs open, ask the agent in one tab
+to "list the other chat sessions with the kiro-acp-tabs tool", then fill in:
+
+- Does V3 accept the entry on `session/new` at all (no `[warn] agent-link: the
+  agent rejected session/new…`)? Does it connect at `session/new` (an
+  `initialize` line right away) or only when a tool is first used?
+- Does each session call with **its own** token (the `agent-link` lines name the
+  calling session; ask from both tabs)? If V3 de-duplicates MCP servers by name
+  across sessions, the calls of tab 2 would arrive as tab 1.
+- The `session/request_permission` it sends for an MCP tool: `toolCall.kind`,
+  `title`, options, `_meta.kiro.consent` (capability / resource).
+- How the tool appears in `tool_call` titles (e.g. `kiro-acp-tabs/list_sessions`,
+  `@kiro-acp-tabs/list_sessions`) and what `_kiro/mcp/status` reports.
+- Which MCP client and protocol version it uses: the `agent-link … initialize
+  (client <name> <version>, protocol <requested> -> <negotiated>)` line.
+
 ## Verification
 
 | # | Feature | Fake agent (unit + extension-host E2E) | Real `kiro-cli acp` |
@@ -296,6 +327,7 @@ organisation-managed account; raw exchange not yet captured):
 | 6 | Client fs (dirty buffers, WorkspaceEdit writes) and terminal methods | ✅ `test/acp-client.test.ts`, `test/e2e/f6-fs-terminal.e2e.ts` | ⏳ |
 | 7 | Permissions: allow once / always for session / reject per tool kind | ✅ `test/features-permissionPolicy.test.ts`, `test/e2e/f7-permissions.e2e.ts` | ⏳ |
 | 8 | Image attachments (paste / drop / pick → ACP `image` blocks, D29) | ✅ `test/features-images.test.ts`, `test/webview-attachments.test.ts`, `test/e2e/f16-images.e2e.ts` (the fake agent reports the image blocks it received) | ⏳ (`promptCapabilities.image: true` is advertised; whether Kiro forwards the `uri` field or limits sizes below 5 MB is unknown) |
+| 9 | Agent link: per-session MCP server `kiro-acp-tabs`, tool `list_sessions` (D30) | ✅ `test/agentLink-*.test.ts` (dispatch, server guards and tokens, tool text), `test/acp-client.test.ts` (`mcpServers` on new/load, the fake agent's `mcp_call`), `test/e2e/f17-agent-link.e2e.ts` (two tabs see each other; setting off; agent without `mcpCapabilities.http`) | ⏳ see "Agent link" above |
 
 To complete the right-hand column: install Kiro CLI, run `kiro-cli login`,
 then (a) `node scripts/record-acp.mjs --prompt "hello" --out docs/recordings/kiro-initialize.ndjson`

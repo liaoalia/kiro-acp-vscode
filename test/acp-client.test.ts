@@ -1,5 +1,7 @@
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import type * as acp from "@agentclientprotocol/sdk";
 import {
   AcpError,
@@ -782,4 +784,314 @@ test("_session/steer (fake agent): injected into the running turn on v3, -32602 
   } finally {
     await v2.agent.stop();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Agent link (D30): mcpServers reach the fake agent, which acts as the MCP client
+// ---------------------------------------------------------------------------
+
+interface StubRequest {
+  method: string;
+  authorization: string | undefined;
+  protocolVersion: string | undefined;
+  accept: string | undefined;
+  contentType: string | undefined;
+  params: unknown;
+}
+
+interface StubMcp {
+  url: string;
+  requests: StubRequest[];
+  close(): Promise<void>;
+}
+
+/**
+ * A minimal MCP Streamable HTTP server on 127.0.0.1: `initialize`, 202 for
+ * notifications, `tools/call` answering `text`. A request without
+ * `Authorization: Bearer <token>` gets 403. `sse` answers `tools/call` as an
+ * event stream; `hangToolsCall` never answers it.
+ */
+async function startStubMcp(options: { token: string; text?: string; sse?: boolean; hangToolsCall?: boolean }): Promise<StubMcp> {
+  const requests: StubRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const message = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as { id?: number; method?: string; params?: unknown };
+      requests.push({
+        method: message.method ?? "?",
+        authorization: req.headers.authorization,
+        protocolVersion: req.headers["mcp-protocol-version"] as string | undefined,
+        accept: req.headers.accept,
+        contentType: req.headers["content-type"],
+        params: message.params,
+      });
+      if (req.method !== "POST" || req.headers.authorization !== `Bearer ${options.token}`) {
+        res.writeHead(403, { "Content-Type": "text/plain" }).end("forbidden");
+        return;
+      }
+      if (message.id === undefined) {
+        res.writeHead(202).end();
+        return;
+      }
+      const reply = (result: unknown, sse = false): void => {
+        const payload = JSON.stringify({ jsonrpc: "2.0", id: message.id, result });
+        if (sse) res.writeHead(200, { "Content-Type": "text/event-stream" }).end(`event: message\ndata: ${payload}\n\n`);
+        else res.writeHead(200, { "Content-Type": "application/json" }).end(payload);
+      };
+      if (message.method === "initialize") {
+        const requested = (message.params as { protocolVersion?: string } | undefined)?.protocolVersion;
+        reply({ protocolVersion: requested ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "stub", version: "0.0.0" } });
+      } else if (message.method === "tools/call") {
+        if (options.hangToolsCall) return;
+        reply({ content: [{ type: "text", text: options.text ?? "stub sessions" }] }, options.sse);
+      } else {
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Method not found" } }),
+        );
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/mcp`,
+    requests,
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+function linkEntry(url: string, token: string, name = "kiro-acp-tabs", type: "http" | "sse" = "http"): acp.McpServer {
+  return { type, name, url, headers: [{ name: "Authorization", value: `Bearer ${token}` }] };
+}
+
+/** The `tool_call` the fake agent opened for an `mcp_call` (title `<server>/<tool>`). */
+function mcpToolCall(events: SessionEvent[], title = "kiro-acp-tabs/list_sessions"): acp.ToolCall & { sessionUpdate: "tool_call" } {
+  const call = updatesOf(events, "tool_call").find(
+    (u): u is acp.ToolCall & { sessionUpdate: "tool_call" } => u.sessionUpdate === "tool_call" && u.title === title,
+  );
+  assert.ok(call, `no tool_call titled ${title}`);
+  return call;
+}
+
+function contentText(update: acp.ToolCallUpdate | undefined): string {
+  return (update?.content ?? []).map((c) => (c.type === "content" && c.content.type === "text" ? c.content.text : "")).join("");
+}
+
+function stderrLines(h: { logger: { traces: Array<{ direction: string; payload: string }> } }): string[] {
+  return h.logger.traces.filter((t) => t.direction === "stderr").map((t) => t.payload);
+}
+
+describe("agent link: mcpServers and the fake agent's mcp_call", () => {
+  test("V3 advertises mcpCapabilities http and sse; --no-mcp-http drops http and session/new refuses an http server; v2 advertises none", async () => {
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      const info = await h.agent.start();
+      assert.deepEqual(info.agentCapabilities.mcpCapabilities, { http: true, sse: true });
+    } finally {
+      await h.agent.stop();
+    }
+
+    const strict = launch({ args: ["--scenario", "chat", "--no-mcp-http"] });
+    try {
+      const info = await strict.agent.start();
+      assert.notEqual(info.agentCapabilities.mcpCapabilities?.http, true);
+      assert.equal(info.agentCapabilities.mcpCapabilities?.sse, true);
+      await assert.rejects(
+        () => strict.agent.newSession(strict.cwd, { mcpServers: [linkEntry("http://127.0.0.1:9/mcp", "tok-strict")] }),
+        (e: unknown) => e instanceof AcpError && e.code === -32602 && /kiro-acp-tabs/.test(e.message),
+      );
+      // The refusal is not an auth problem, and the client can retry without the server.
+      assert.equal(strict.agent.status, "ready");
+      const session = await strict.agent.newSession(strict.cwd);
+      assert.ok(session.sessionId);
+      assert.ok(!stderrLines(strict).some((l) => l.includes("tok-strict")), "header values are never logged");
+    } finally {
+      await strict.agent.stop();
+    }
+
+    const v2 = launch({ args: ["--scenario", "chat", "--engine", "v2"] });
+    try {
+      const info = await v2.agent.start();
+      assert.equal(info.agentCapabilities.mcpCapabilities, undefined);
+    } finally {
+      await v2.agent.stop();
+    }
+  });
+
+  test("session/new forwards mcpServers: /scenario agent-link calls the stub with the session's bearer token", async () => {
+    const token = "tok-new-session";
+    const stub = await startStubMcp({ token });
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      await h.agent.start();
+      const session = await h.agent.newSession(h.cwd, { mcpServers: [linkEntry(stub.url, token)] });
+
+      const sent = h.logger.traces.find((t) => t.direction === "send" && t.payload.includes('"session/new"'));
+      assert.ok(sent);
+      const newRequest = JSON.parse(sent.payload) as { params: acp.NewSessionRequest };
+      assert.deepEqual(newRequest.params.mcpServers, [linkEntry(stub.url, token)]);
+      await waitFor(
+        () => stderrLines(h).some((l) => l.includes(`session/new ${session.sessionId} mcpServers: kiro-acp-tabs (http ${stub.url})`)),
+        5000,
+        "the agent to log the received server",
+      );
+
+      const response = await h.agent.prompt(session.sessionId, text("/scenario agent-link"));
+      assert.equal(response.stopReason, "end_turn");
+      const transcript = chunkText(h.events);
+      assert.ok(!transcript.includes("[fake-agent]"), `fake agent reported a problem: ${transcript}`);
+      assert.equal(transcript, "Let me list the other sessions. Sessions: stub sessions");
+
+      const call = mcpToolCall(h.events);
+      assert.equal(call.kind, "other");
+      assert.equal(call.status, "in_progress");
+      assert.deepEqual(call.rawInput, {});
+      const updates = toolUpdates(h.events, call.toolCallId);
+      const last = updates[updates.length - 1];
+      assert.equal(last?.status, "completed");
+      assert.equal(contentText(last), "stub sessions");
+      assert.deepEqual(last?.rawOutput, { content: [{ type: "text", text: "stub sessions" }] });
+
+      // initialize → notifications/initialized → tools/call, every one with the session's token.
+      assert.deepEqual(
+        stub.requests.map((r) => r.method),
+        ["initialize", "notifications/initialized", "tools/call"],
+      );
+      for (const request of stub.requests) {
+        assert.equal(request.authorization, `Bearer ${token}`);
+        assert.equal(request.contentType, "application/json");
+        assert.match(request.accept ?? "", /application\/json/);
+        assert.match(request.accept ?? "", /text\/event-stream/);
+      }
+      const init = stub.requests[0]!.params as { protocolVersion: string; clientInfo: { name: string } };
+      assert.equal(init.protocolVersion, "2025-06-18");
+      assert.equal(init.clientInfo.name, "fake-kiro");
+      assert.equal(stub.requests[2]!.protocolVersion, "2025-06-18");
+      assert.deepEqual(stub.requests[2]!.params, { name: "list_sessions", arguments: {} });
+      assert.ok(!stderrLines(h).some((l) => l.includes(token)), "header values are never logged");
+    } finally {
+      await h.agent.stop();
+      await stub.close();
+    }
+  });
+
+  test("session/load forwards mcpServers; an event-stream answer is read too", async () => {
+    const token = "tok-loaded-session";
+    const stub = await startStubMcp({ token, text: "stub sessions over sse", sse: true });
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      await h.agent.start();
+      await h.agent.loadSession("past-1", h.cwd, { mcpServers: [linkEntry(stub.url, token)] });
+      const sent = h.logger.traces.find((t) => t.direction === "send" && t.payload.includes('"session/load"'));
+      assert.ok(sent);
+      assert.deepEqual((JSON.parse(sent.payload) as { params: acp.LoadSessionRequest }).params.mcpServers, [linkEntry(stub.url, token)]);
+      await waitFor(
+        () => stderrLines(h).some((l) => l.includes(`session/load past-1 mcpServers: kiro-acp-tabs (http ${stub.url})`)),
+        5000,
+        "the agent to log the loaded server",
+      );
+
+      const before = h.events.length;
+      const response = await h.agent.prompt("past-1", text("/scenario agent-link"));
+      assert.equal(response.stopReason, "end_turn");
+      const turn = h.events.slice(before);
+      assert.equal(chunkText(turn), "Let me list the other sessions. Sessions: stub sessions over sse");
+      const call = mcpToolCall(turn);
+      assert.equal(toolUpdates(turn, call.toolCallId).at(-1)?.status, "completed");
+      assert.ok(stub.requests.length === 3 && stub.requests.every((r) => r.authorization === `Bearer ${token}`));
+    } finally {
+      await h.agent.stop();
+      await stub.close();
+    }
+  });
+
+  test("a 403 from the server fails the tool call and the fake agent reports it", async () => {
+    const stub = await startStubMcp({ token: "tok-live" });
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      await h.agent.start();
+      const session = await h.agent.newSession(h.cwd, { mcpServers: [linkEntry(stub.url, "tok-revoked")] });
+      const response = await h.agent.prompt(session.sessionId, text("/scenario agent-link"));
+      assert.equal(response.stopReason, "end_turn");
+
+      const call = mcpToolCall(h.events);
+      const last = toolUpdates(h.events, call.toolCallId).at(-1);
+      assert.equal(last?.status, "failed");
+      assert.equal(contentText(last), "HTTP 403 at initialize: forbidden");
+      assert.deepEqual(last?.rawOutput, { error: { message: "forbidden", status: 403 } });
+      const transcript = chunkText(h.events);
+      assert.ok(
+        transcript.includes("[fake-agent] mcp_call kiro-acp-tabs/list_sessions failed: HTTP 403 at initialize: forbidden"),
+        transcript,
+      );
+      // The error text is what later steps see.
+      assert.ok(transcript.endsWith("Sessions: HTTP 403 at initialize: forbidden"), transcript);
+      assert.deepEqual(
+        stub.requests.map((r) => r.method),
+        ["initialize"],
+      );
+    } finally {
+      await h.agent.stop();
+      await stub.close();
+    }
+  });
+
+  test("a server name the session was not given is reported and nothing is called", async () => {
+    const token = "tok-elsewhere";
+    const stub = await startStubMcp({ token });
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      await h.agent.start();
+      // An sse entry with the right name and an http entry with another name: neither matches.
+      const session = await h.agent.newSession(h.cwd, {
+        mcpServers: [linkEntry(stub.url, token, "kiro-acp-tabs", "sse"), linkEntry(stub.url, token, "other-server")],
+      });
+      const response = await h.agent.prompt(session.sessionId, text("/scenario agent-link"));
+      assert.equal(response.stopReason, "end_turn");
+      const transcript = chunkText(h.events);
+      assert.ok(
+        transcript.includes("[fake-agent] mcp_call kiro-acp-tabs/list_sessions: no http MCP server named 'kiro-acp-tabs' in this session"),
+        transcript,
+      );
+      assert.equal(updatesOf(h.events, "tool_call").length, 0);
+      assert.equal(stub.requests.length, 0);
+
+      // A session without any servers reports the same.
+      const bare = await h.agent.newSession(h.cwd);
+      const before = h.events.length;
+      await h.agent.prompt(bare.sessionId, text("/scenario agent-link"));
+      assert.match(chunkText(h.events.slice(before)), /\[fake-agent\] mcp_call kiro-acp-tabs\/list_sessions: no http MCP server named 'kiro-acp-tabs' in this session \(servers: none\)/);
+    } finally {
+      await h.agent.stop();
+      await stub.close();
+    }
+  });
+
+  test("session/cancel aborts a pending mcp_call", async () => {
+    const token = "tok-hang";
+    const stub = await startStubMcp({ token, hangToolsCall: true });
+    const h = launch({ args: ["--scenario", "chat"] });
+    try {
+      await h.agent.start();
+      const session = await h.agent.newSession(h.cwd, { mcpServers: [linkEntry(stub.url, token)] });
+      const pending = h.agent.prompt(session.sessionId, text("/scenario agent-link"));
+      await waitFor(() => stub.requests.some((r) => r.method === "tools/call"), 5000, "the tools/call request");
+      await h.agent.cancel(session.sessionId);
+      const response = await pending;
+      assert.equal(response.stopReason, "cancelled");
+      const call = mcpToolCall(h.events);
+      const last = toolUpdates(h.events, call.toolCallId).at(-1);
+      assert.equal(last?.status, "failed");
+      assert.equal((last?._meta as { kiro: { failureReason: string } }).kiro.failureReason, "cancelled");
+      assert.ok(!chunkText(h.events).includes("[fake-agent]"), "a cancelled call is not reported");
+    } finally {
+      await h.agent.stop();
+      await stub.close();
+    }
+  });
 });

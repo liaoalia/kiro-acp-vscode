@@ -616,3 +616,54 @@ prompt carrying images otherwise (with a notice; nothing is sent).
 - **Slash commands:** `/plan <text>` and agent commands forward the images
   with the text; a command the extension handles itself (`/help`, `/mode`,
   …) does not send them, and a notice says so.
+
+## D30. Agent link: sessions reach each other through an MCP server on loopback
+Agents in different tabs should see (later: read, message, wait for, start)
+each other, the way agents in agterm tabs do through `agtermctl` and a unix
+socket. Plan: `docs/plans/2026-11-13-agent-link.md`. Stage 1 ships the
+transport and one read-only tool, `list_sessions`, behind
+`kiroAcp.agentLink.enabled` (off by default until the real CLI is checked).
+
+- **MCP, not a CLI in the terminal.** agterm gives each shell
+  `$AGTERM_SESSION_ID` and a CLI. Our agent's commands run in our terminal
+  too, so an env var + CLI would work, but the agent would have to be taught
+  the CLI, every call would be a shell command (with its own permission
+  prompt and output parsing), and Windows quoting gets in the way. MCP tools
+  are what the agent already knows how to discover and call, with a schema.
+  ACP lets the client hand MCP servers to a session (`mcpServers` on
+  `session/new` / `session/load`), and Kiro CLI V3 advertises
+  `mcpCapabilities: { http, sse }`, so no Kiro configuration is touched.
+- **HTTP on 127.0.0.1, port 0, stateless.** `src/agentLink/server.ts`
+  speaks the Streamable HTTP transport with JSON replies only (no SSE
+  stream, no `Mcp-Session-Id`): `POST /mcp`, one JSON-RPC message per
+  request; `GET`/`DELETE` are 405. No new dependency (`node:http`); the
+  dispatch (`protocol.ts`) is pure and unit-tested. The server starts with
+  the first session that gets it and stops when the setting is turned off
+  or the extension deactivates. The extension still makes no outbound
+  network calls; it listens on loopback for kiro-cli only.
+- **Who is calling: one bearer token per session.** The token is minted
+  before `session/new` (the session id is not known yet) and bound when the
+  agent answers; for `session/load` it is minted bound. A `tools/call` on a
+  token not yet bound waits up to 10 s for the bind. Closing a session,
+  `/clear`, a restart or turning the setting off revokes its token. A tool
+  call therefore always knows its session, the way `AGTERM_SESSION_ID`
+  tells agterm. **[unverified]** whether Kiro keeps the servers of
+  different sessions apart when they share a name (protocol-notes).
+- **Guards.** Unknown, missing or revoked token, a `Host` other than
+  `127.0.0.1:<port>` / `localhost:<port>` (DNS rebinding) or any `Origin`
+  header (a browser) is refused with **403, never 401**: a 401 can make an
+  MCP client start an OAuth discovery, and Kiro has an OAuth flow for MCP
+  servers. Bodies are capped at 1 MiB. Tokens are never logged.
+- **An agent that refuses the server never blocks a session.**
+  `session/new` is retried without the server (then without the remembered
+  hints, D24), and once the agent accepted a session only without it, the
+  server is not offered again until the agent restarts. `session/load` is
+  not retried: a failed load may already have replayed history.
+- **Addressing.** Sessions are named by a short handle (`s<creation
+  order>`), their title and the tab title ("Kiro Chat 2", "Sidebar"); the
+  ACP session id stays inside the extension.
+- **Delivery (stage 2) goes through the queue of D22**, never through
+  `_session/steer`: an idle target starts a turn, a busy one shows the
+  message as *queued* and gets it when its turn ends. Unlike agterm we know
+  exactly when a turn ends, so "wait for the other agent" needs no screen
+  scraping.

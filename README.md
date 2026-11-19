@@ -6,9 +6,12 @@ A VS Code extension that talks to the [Kiro](https://kiro.dev) agent over the
 official ACP TypeScript SDK. The goal is a Claude Code–like chat experience in
 VS Code on top of Kiro.
 
-The extension itself makes **no network calls** and has **no telemetry**. All
-network access happens inside `kiro-cli`, which inherits your environment
-(including `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`).
+The extension itself makes **no outbound network calls** and has **no
+telemetry**. All network access happens inside `kiro-cli`, which inherits your
+environment (including `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`). The only
+socket the extension opens is the optional agent link
+(`kiroAcp.agentLink.enabled`, off by default): a listener on `127.0.0.1` that
+only `kiro-cli` sessions holding a per-session token can use.
 
 ## Features
 
@@ -171,6 +174,7 @@ into a compact header.
 | `kiroAcp.terminal.outputByteLimit` | `1048576` | Bytes of terminal output retained for the agent when it does not specify a limit. |
 | `kiroAcp.logProtocol` | `false` | Log every JSON-RPC message to the **Kiro ACP** output channel. |
 | `kiroAcp.rememberSessionOptions` | `true` | Remember the mode, model and config options you choose and apply them to every new session (only values the agent advertises are applied). |
+| `kiroAcp.agentLink.enabled` | `false` | Experimental: give every Kiro session the MCP server `kiro-acp-tabs` on `127.0.0.1` (one token per session) so the agent in one chat tab can see the sessions of the other tabs (`list_sessions`: handle, title, tab, status). Applies to sessions created after the change; turning it off cuts the live ones off too. Needs an agent that advertises `mcpCapabilities.http` (Kiro CLI V3 does). See DECISIONS D30. |
 
 With the default `shared` mode every command the agent runs during a session
 goes into a single `Kiro · <session>` terminal: each command is introduced by

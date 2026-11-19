@@ -20,6 +20,8 @@ const TITLE_PREFIX = "Kiro Chat";
 interface PanelEntry {
   panel: vscode.WebviewPanel;
   view: ViewHandle;
+  /** The controller session group of the tab (`tab-N`). */
+  groupId: string;
 }
 
 export class ChatPanelManager implements vscode.Disposable {
@@ -94,6 +96,11 @@ export class ChatPanelManager implements vscode.Disposable {
     return this.entries.find((e) => e.panel === panel)?.view.sessionId ?? null;
   }
 
+  /** The title of the chat tab owning session group `groupId` ("Kiro Chat 2"), or null when no open tab owns it. */
+  titleOfGroup(groupId: string): string | null {
+    return this.entries.find((e) => e.groupId === groupId)?.panel.title ?? null;
+  }
+
   /** The controller view handle of a chat tab (null when the tab is not one of ours). */
   viewOf(panel: vscode.WebviewPanel): ViewHandle | null {
     return this.entries.find((e) => e.panel === panel)?.view ?? null;
@@ -135,7 +142,7 @@ export class ChatPanelManager implements vscode.Disposable {
     // sessions it never showed (D20).
     const groupId = `tab-${++this.groupCounter}`;
     const view = this.controller.attachView(poster, { prefer: "fresh", groupId });
-    const entry: PanelEntry = { panel, view };
+    const entry: PanelEntry = { panel, view, groupId };
     this.entries.push(entry);
     this.recent = entry;
     if (sessionId) view.setSession(sessionId);

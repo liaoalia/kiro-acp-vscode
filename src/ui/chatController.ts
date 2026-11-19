@@ -72,6 +72,15 @@ import {
   type SlashAction,
   type SlashContext,
 } from "../features/pure/slashCommands.js";
+import { AgentLinkServer } from "../agentLink/server.js";
+import { AGENT_LINK_INSTRUCTIONS, createAgentLinkTools } from "../agentLink/tools.js";
+import type {
+  AgentLinkGrant,
+  AgentLinkHost,
+  AgentLinkServerApi,
+  LinkedSessionInfo,
+  LinkedSessionStatus,
+} from "../agentLink/types.js";
 import { ContextTracker, searchFiles } from "../features/context.js";
 import { DiffManager } from "../features/diff.js";
 import { PermissionManager } from "../features/permissions.js";
@@ -391,7 +400,7 @@ function asBinding(view: ViewHandle | undefined): ViewBinding | undefined {
 // Controller
 // ---------------------------------------------------------------------------
 
-export class ChatController implements vscode.Disposable {
+export class ChatController implements vscode.Disposable, AgentLinkHost {
   private agent: KiroAgent | null = null;
   private agentInfo: AgentInfo | null = null;
   /** `_kiro/session/context` rejected the after-turn poll (D26): not asked again until a restart. */
@@ -418,6 +427,19 @@ export class ChatController implements vscode.Disposable {
   private readonly pastTitles = new Map<string, string | null>();
   /** Groups whose tab was closed: a sign-in restart restores nothing into them (D20, D25). */
   private readonly closedGroups = new Set<string>();
+  /** The agent-link MCP server (D30), started for the first session that gets it. */
+  private agentLink: AgentLinkServerApi | null = null;
+  private agentLinkStarting: Promise<AgentLinkServerApi | null> | null = null;
+  /**
+   * The agent failed `session/new` with the agent-link server and succeeded
+   * without it: the server is not offered again until the agent restarts.
+   */
+  private agentLinkRefused = false;
+  /** Agent-link grants (bearer tokens) by session id. */
+  private readonly linkGrants = new Map<string, AgentLinkGrant>();
+
+  /** Human name of a session group for the agent link (`tab-3` → "Kiro Chat 3"); set by the host. */
+  groupLabel: ((groupId: string) => string | null) | null = null;
 
   /**
    * Called when a session waits for the user (permission request) while no
@@ -437,6 +459,13 @@ export class ChatController implements vscode.Disposable {
     this.disposables.push(
       deps.permissions.onDidChange(() => this.syncPermissions()),
       deps.contextTracker.onDidChange((chips) => this.postAll({ type: "chips", chips })),
+      // Turning the agent link off takes it away from the live sessions too
+      // (their tokens stop working); turning it on applies to new sessions.
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration("kiroAcp.agentLink.enabled") && !this.agentLinkSetting()) {
+          void this.stopAgentLink("kiroAcp.agentLink.enabled was turned off");
+        }
+      }),
     );
   }
 
@@ -906,6 +935,7 @@ export class ChatController implements vscode.Disposable {
     this.endAllSessions();
     await this.teardownAgent();
     this.agentInfo = null;
+    this.agentLinkRefused = false;
     this.agent = agent;
     this.unsubscribers.push(
       agent.onConnectionChange((change) => this.onConnectionChange(change)),
@@ -1109,16 +1139,25 @@ export class ChatController implements vscode.Disposable {
   private async createSession(groupId: string): Promise<ChatSession | null> {
     const agent = this.agent;
     if (!agent) return null;
+    let grant: AgentLinkGrant | null = null;
     try {
       const remembered = this.rememberSessionOptionsEnabled() ? this.rememberedSessionOptions() : null;
-      const state = await this.newSessionWithHints(agent, remembered);
+      // The session id is not known before `session/new` answers: the grant is
+      // issued unbound and bound right after (D30).
+      grant = await this.issueLinkGrant();
+      const { state, linked } = await this.newSessionWithHints(agent, remembered, grant ? [grant.mcpServer()] : []);
+      if (grant && linked) this.keepLinkGrant(state.sessionId, grant);
+      else grant?.revoke();
       const session = new ChatSession(state, ++this.sessionSeq, groupId);
       this.sessions.set(session.id, session);
-      this.deps.output.appendLine(`[info] session ${session.id} opened (group ${groupId})`);
+      this.deps.output.appendLine(
+        `[info] session ${session.id} opened (group ${groupId}${linked ? ", agent link" : ""})`,
+      );
       this.scheduleSessions();
       if (remembered) await this.applyRememberedOptions(agent, session, remembered);
       return session;
     } catch (error) {
+      grant?.revoke();
       const message = errorMessage(error);
       if (this.agent?.status === "auth_required") {
         this.setConnection(this.connectionFromAgent("auth_required", "Sign in to Kiro to start a session."));
@@ -1127,6 +1166,147 @@ export class ChatController implements vscode.Disposable {
       }
       return null;
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Agent link (D30): an MCP server every session can call
+  // ---------------------------------------------------------------------
+
+  /** `kiroAcp.agentLink.enabled` (default false while the real CLI is unverified). */
+  private agentLinkSetting(): boolean {
+    return vscode.workspace.getConfiguration("kiroAcp").get<boolean>("agentLink.enabled", false);
+  }
+
+  /** Why new sessions get no agent-link server, or null when they do. */
+  private agentLinkUnavailable(): string | null {
+    if (!this.agentLinkSetting()) return "kiroAcp.agentLink.enabled is off";
+    if (this.agentInfo?.agentCapabilities.mcpCapabilities?.http !== true) {
+      return "the agent does not advertise mcpCapabilities.http";
+    }
+    if (this.agentLinkRefused) return "the agent rejected it on session/new";
+    return null;
+  }
+
+  /** The running server, started on first use; null when it cannot listen (logged). */
+  private ensureAgentLink(): Promise<AgentLinkServerApi | null> {
+    if (this.agentLink) return Promise.resolve(this.agentLink);
+    if (this.agentLinkStarting) return this.agentLinkStarting;
+    const server = new AgentLinkServer({
+      tools: createAgentLinkTools(this),
+      logger: {
+        info: (message) => this.deps.output.appendLine(`[info] ${message}`),
+        warn: (message) => this.deps.output.appendLine(`[warn] ${message}`),
+      },
+      version: this.extensionVersion(),
+      instructions: AGENT_LINK_INSTRUCTIONS,
+    });
+    const starting = server.start().then(
+      () => {
+        this.agentLink = server;
+        this.deps.output.appendLine(`[info] agent-link listening on ${server.url ?? "?"}`);
+        return server;
+      },
+      (error: unknown) => {
+        this.deps.output.appendLine(`[warn] agent-link could not start: ${errorMessage(error)}`);
+        return null;
+      },
+    );
+    // Cleared once settled, so a later start after stopAgentLink() builds a
+    // new server instead of handing out the stopped one.
+    const tracked: Promise<AgentLinkServerApi | null> = starting.finally(() => {
+      if (this.agentLinkStarting === tracked) this.agentLinkStarting = null;
+    });
+    this.agentLinkStarting = tracked;
+    return tracked;
+  }
+
+  /**
+   * A grant for a session about to be created (unbound) or loaded (bound to
+   * `sessionId`), or null when sessions get no agent link right now.
+   */
+  private async issueLinkGrant(sessionId?: string): Promise<AgentLinkGrant | null> {
+    if (this.agentLinkUnavailable() !== null) return null;
+    const server = await this.ensureAgentLink();
+    if (!server) return null;
+    try {
+      return server.issue(sessionId);
+    } catch (error) {
+      this.deps.output.appendLine(`[warn] agent-link grant failed: ${errorMessage(error)}`);
+      return null;
+    }
+  }
+
+  /** Bind `grant` to `sessionId` and keep it until the session goes away. */
+  private keepLinkGrant(sessionId: string, grant: AgentLinkGrant): void {
+    grant.bind(sessionId);
+    const previous = this.linkGrants.get(sessionId);
+    if (previous && previous !== grant) previous.revoke();
+    this.linkGrants.set(sessionId, grant);
+  }
+
+  /** The session is gone: its token stops working. */
+  private revokeLink(sessionId: string): void {
+    const grant = this.linkGrants.get(sessionId);
+    if (!grant) return;
+    grant.revoke();
+    this.linkGrants.delete(sessionId);
+  }
+
+  private async stopAgentLink(reason: string): Promise<void> {
+    const server = this.agentLink ?? (this.agentLinkStarting ? await this.agentLinkStarting : null);
+    this.agentLink = null;
+    this.agentLinkStarting = null;
+    this.linkGrants.clear();
+    if (!server) return;
+    try {
+      await server.stop();
+    } catch (error) {
+      this.deps.output.appendLine(`[warn] agent-link stop failed: ${errorMessage(error)}`);
+    }
+    this.deps.output.appendLine(`[info] agent-link stopped (${reason})`);
+  }
+
+  /** `/capabilities` line. */
+  private describeAgentLink(): string {
+    const server = this.agentLink;
+    if (server?.port) {
+      const sessions = this.linkGrants.size;
+      return `on — 127.0.0.1:${server.port}, ${sessions} session${sessions === 1 ? "" : "s"} linked`;
+    }
+    const reason = this.agentLinkUnavailable();
+    return reason ? `off (${reason})` : "on (starts with the next session)";
+  }
+
+  /** {@link AgentLinkHost}: every live session as the agent link shows it, most recent first. */
+  listSessions(callerSessionId: string): LinkedSessionInfo[] {
+    return this.sortedSessions()
+      .filter((s) => !s.closing)
+      .map((s) => ({
+        handle: `s${s.seq}`,
+        sessionId: s.id,
+        title: s.title(),
+        tab: this.tabLabel(s.groupId),
+        status: this.linkStatusOf(s),
+        self: s.id === callerSessionId,
+      }));
+  }
+
+  private linkStatusOf(session: ChatSession): LinkedSessionStatus {
+    if (session.loading) return "restoring";
+    const status = this.statusOf(session);
+    if (status === "running") return "working";
+    if (status === "needs_input") return "needs_input";
+    return "idle";
+  }
+
+  private tabLabel(groupId: string): string {
+    const label = this.groupLabel?.(groupId);
+    if (label) return label;
+    return groupId === DEFAULT_GROUP ? "no tab" : groupId;
+  }
+
+  private extensionVersion(): string {
+    return (this.deps.context.extension.packageJSON as { version?: string }).version ?? "0.0.0";
   }
 
   // ---------------------------------------------------------------------
@@ -1191,25 +1371,55 @@ export class ChatController implements vscode.Disposable {
 
   /**
    * `session/new` with `_meta.kiro { modeId, modelId }` hints when remembered
-   * (Kiro V3 reads them; other agents ignore `_meta`). Should the agent reject
-   * the hinted request, it is retried without hints so a stale id never
-   * blocks session creation.
+   * (Kiro V3 reads them; other agents ignore `_meta`) and with `mcpServers`
+   * (the agent link, D30). Should the agent reject the request, it is retried
+   * first without the servers, then without the hints too, so neither a stale
+   * id nor an agent that refuses our server ever blocks session creation.
+   * `linked` says whether the session got the servers. An agent that refused
+   * the servers and then accepted the session without them is not offered
+   * them again until it restarts.
    */
-  private async newSessionWithHints(agent: KiroAgent, remembered: RememberedSessionOptions | null): Promise<SessionState> {
+  private async newSessionWithHints(
+    agent: KiroAgent,
+    remembered: RememberedSessionOptions | null,
+    mcpServers: acp.McpServer[] = [],
+  ): Promise<{ state: SessionState; linked: boolean }> {
     const cwd = this.workspaceRoot();
     const kiro: Record<string, string> = {};
     if (remembered?.modeId) kiro.modeId = remembered.modeId;
     const modelId = remembered?.modelId ?? remembered?.configOptions["model"];
     if (typeof modelId === "string" && modelId) kiro.modelId = modelId;
-    if (Object.keys(kiro).length === 0) return agent.newSession(cwd);
-    try {
-      return await agent.newSession(cwd, { meta: { kiro } });
-    } catch (error) {
-      this.deps.output.appendLine(
-        `[warn] session/new with remembered hints ${safeJson(kiro)} failed (${errorMessage(error)}); retrying without them`,
-      );
-      return agent.newSession(cwd);
+    const hinted = Object.keys(kiro).length > 0;
+    const linked = mcpServers.length > 0;
+    const attempts: Array<{ hints: boolean; servers: boolean }> = [{ hints: hinted, servers: linked }];
+    if (linked) attempts.push({ hints: hinted, servers: false });
+    if (hinted) attempts.push({ hints: false, servers: false });
+    for (const [index, attempt] of attempts.entries()) {
+      const options: { meta?: Record<string, unknown>; mcpServers?: acp.McpServer[] } = {};
+      if (attempt.hints) options.meta = { kiro };
+      if (attempt.servers) options.mcpServers = mcpServers;
+      try {
+        const state = await agent.newSession(cwd, Object.keys(options).length > 0 ? options : undefined);
+        if (linked && !attempt.servers) {
+          this.agentLinkRefused = true;
+          this.deps.output.appendLine("[warn] agent-link: the agent rejected session/new with the agent-link server; not offered again until it restarts");
+        }
+        return { state, linked: attempt.servers };
+      } catch (error) {
+        const next = attempts[index + 1];
+        // Signed out (or gone): retrying cannot help, and the caller shows the sign-in banner.
+        if (!next || agent.status !== "ready") throw error;
+        const dropped = [
+          attempt.servers && !next.servers ? "the agent-link server" : null,
+          attempt.hints && !next.hints ? `remembered hints ${safeJson(kiro)}` : null,
+        ].filter((part): part is string => part !== null);
+        this.deps.output.appendLine(
+          `[warn] session/new with ${dropped.join(" and ")} failed (${errorMessage(error)}); retrying without ${dropped.length > 1 ? "them" : "it"}`,
+        );
+      }
     }
+    // Unreachable: the last attempt either returns or throws.
+    throw new Error("session/new failed");
   }
 
   /**
@@ -1287,6 +1497,7 @@ export class ChatController implements vscode.Disposable {
     for (const session of this.sessions.values()) {
       this.deps.permissions.cancelAll(session.id);
       this.deps.permissions.clearPolicies(session.id);
+      this.revokeLink(session.id);
     }
     this.sessions.clear();
     for (const view of this.views) {
@@ -1522,16 +1733,26 @@ export class ChatController implements vscode.Disposable {
     for (const view of target.views) this.setViewSession(view, sessionId);
     if (target.focus) this.focus(sessionId);
     const restoring = this.notice(session, "info", "Restoring session…");
+    // The id is known up front, so the grant is issued bound (D30). A load is
+    // not retried without it: a failed load may already have replayed history.
+    let grant: AgentLinkGrant | null = null;
     try {
-      const state = await agent.loadSession(sessionId, cwd);
+      grant = await this.issueLinkGrant(sessionId);
+      const state = await agent.loadSession(sessionId, cwd, grant ? { mcpServers: [grant.mcpServer()] } : undefined);
+      if (grant) {
+        if (this.sessions.get(sessionId) === session) this.keepLinkGrant(sessionId, grant);
+        else grant.revoke();
+      }
       // The client already emitted a `state` event for it; merging again is harmless.
       this.applySessionState(session, state);
     } catch (error) {
+      grant?.revoke();
       const message = errorMessage(error);
       this.deps.output.appendLine(`[error] session ${sessionId} restore failed: ${message}`);
       // Only this very object: the id may have been closed and restored again meanwhile.
       if (this.sessions.get(sessionId) === session) {
         this.sessions.delete(sessionId);
+        this.revokeLink(sessionId);
         this.deps.permissions.cancelAll(sessionId);
         this.deps.permissions.clearPolicies(sessionId);
         for (const v of this.views) {
@@ -1604,6 +1825,7 @@ export class ChatController implements vscode.Disposable {
     this.deps.permissions.cancelAll(sessionId);
     this.deps.permissions.clearPolicies(sessionId);
     this.sessions.delete(sessionId);
+    this.revokeLink(sessionId);
     this.deps.output.appendLine(`[info] session ${sessionId} closed`);
 
     const wasFocused = this.focusedId === sessionId;
@@ -2816,6 +3038,7 @@ export class ChatController implements vscode.Disposable {
       lines.push("", `**Agent commands:** ${commands.map((c) => `\`/${c.name}\``).join(", ")}`);
     }
     lines.push("", `Remembered for new sessions: ${this.describeRememberedOptions()}`);
+    lines.push("", `Agent link: ${this.describeAgentLink()}`);
     return lines.join("\n");
   }
 
@@ -2849,6 +3072,7 @@ export class ChatController implements vscode.Disposable {
     for (const unsubscribe of this.unsubscribers.splice(0)) unsubscribe();
     void this.agent?.stop();
     this.agent = null;
+    void this.stopAgentLink("disposed");
     this.views.clear();
     for (const d of this.disposables.splice(0)) d.dispose();
   }

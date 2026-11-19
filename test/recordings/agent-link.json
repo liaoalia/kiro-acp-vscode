@@ -1,0 +1,10 @@
+{
+  "name": "agent-link",
+  "description": "Agent link (D30): lists the live sessions through the kiro-acp-tabs MCP server the client handed to the session, then says what it got.",
+  "steps": [
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m1", "content": { "type": "text", "text": "Let me list the other sessions. " } } },
+    { "kind": "mcp_call", "server": "kiro-acp-tabs", "tool": "list_sessions", "arguments": {} },
+    { "kind": "update", "update": { "sessionUpdate": "agent_message_chunk", "messageId": "m2", "content": { "type": "text", "text": "Sessions: {{mcp.text}}" } } },
+    { "kind": "stop", "stopReason": "end_turn" }
+  ]
+}
