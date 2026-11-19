@@ -56,6 +56,11 @@
 - [x] protocol-notes: real-CLI checklist "Process per session (D31)" — three tabs in parallel; memory and start time per process; whether `session/list` from one process sees sessions created by another; `session/load` of a session live in another process; concurrent writes to Kiro's session store; exit and reload; sign-in; shared MCP servers; verification row 10
 - [x] agent-link plan follow-up ticked
 
+### ➕ Review and release (0.4.0, 2026-11-19)
+- [x] revmux round 23-process-pool (comprehensive, all four agents real, codex 171k): 4 minors + 1 pre-existing major, all fixed in ec86bc5 — closing a session (and ending every session) kills its running commands (F12.11); only the newest load of an id binds it; session/list cursors looked up, not consumed; D31 matched to the code (the controller holds an `AgentPool`; authenticate / cursor routing; `max = 1` is the way back)
+- [x] found by the full e2e run before the round: session/list pages could reach a process that never issued the cursor (54fc8a2)
+- [x] round 24-final over the whole release: no gating finding
+
 ### Task 5: ⚠️ Real CLI check (user, signed-in machine)
 - [ ] three tabs prompted at once all answer at once; record process memory and startup time
 - [ ] the rest of the protocol-notes checklist "Process per session (D31)": `session/list` across processes, `session/load` of a session live elsewhere, concurrent writes to the session store, exit and reload, sign-in, shared MCP servers

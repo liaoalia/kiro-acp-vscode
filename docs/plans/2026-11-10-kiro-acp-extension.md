@@ -156,7 +156,13 @@ Contract (written first): `ImageAttachment`, `ImageSegment.name/src`, `Connectio
 
 ### ➕ Task 23: Agent link, stage 1 — experimental, off by default (0.3.12)
 - [x] tracked in its own plan: `docs/plans/2026-11-13-agent-link.md` (Stage 1, Tasks 1–6); DECISIONS D30
-- [ ] ⚠️ real CLI check on a signed-in machine (that plan's Task 7) — 0.3.12 is released so it can be installed there
+- [x] ⚠️ real CLI check on a signed-in machine (that plan's Task 7): Kiro calls `list_sessions` (2026-11-19)
+
+### ➕ Task 24: Agents talking to each other, one process per session, temp writes (0.4.0)
+- [x] agent link stages 2–4 (read / send / wait / start, confirmation, chain and rate limits, pause): `docs/plans/2026-11-13-agent-link.md`, DECISIONS D30 addendum
+- [x] one `kiro-cli` process per session (`AgentPool`, `kiroAcp.agentProcesses.max`): `docs/plans/2026-11-19-process-per-session.md`, DECISIONS D31 — the real CLI ran one turn per process, so tabs prompted at once waited for each other
+- [x] writes to the system temp folder no longer ask (`kiroAcp.fs.allowedWriteRoots`, "Always allow in <folder>"), DECISIONS D8 addendum
+- [ ] ⚠️ real CLI checks (protocol-notes: agent-link tools, D31 checklist)
 
 ## Follow-ups (from revmux rounds, not blocking)
 - [ ] webview transcript renderer: memoise messages by content (id + segment count + text length) so a snapshot (reload, session switch, restore) does not re-render unchanged messages

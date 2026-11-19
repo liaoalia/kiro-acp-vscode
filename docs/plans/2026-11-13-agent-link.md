@@ -148,4 +148,4 @@ Decisions taken for the packages:
 ### Task 12: Verify and ship
 - [ ] ⚠️ every tool against a signed-in kiro-cli; tune tool descriptions / server `instructions` until Kiro uses them unprompted; record in protocol-notes
 - [ ] decide whether `kiroAcp.agentLink.enabled` becomes `true` by default (➕ the README section "Agents talking to each other" with a suggested steering text was written in package D; revisit it after the real-CLI check)
-- [ ] version bump, revmux review rounds, release tag
+- [x] version bump, revmux review rounds, release tag: 0.4.0 (2026-11-19). revmux task `since-v0.2.2`: round 22-agent-messages (comprehensive: 2 minors — a steered user message did not reset the chain depth, a stale module header — fixed in bc7154d; codex hollow at 21k tokens), 24-final over the whole release (1 minor: confirm / maxChain could be overridden by a workspace — now scope machine, fb9e397; codex 37k tokens, probably hollow)
