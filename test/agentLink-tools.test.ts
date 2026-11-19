@@ -30,9 +30,19 @@ test("formatSessionList says when there is nobody else, or when the caller is no
   assert.match(formatSessionList([sessions[0]!]), /^Your own session is not listed/);
 });
 
+/** Host methods a test does not exercise. */
+const unusedHost: AgentLinkHost = {
+  listSessions: () => assert.fail("listSessions not expected"),
+  readSession: () => assert.fail("readSession not expected"),
+  sendMessage: () => assert.fail("sendMessage not expected"),
+  waitForSession: () => assert.fail("waitForSession not expected"),
+  startSession: () => assert.fail("startSession not expected"),
+};
+
 test("list_sessions asks the host for the caller's view and returns text plus structured content", async () => {
   const asked: string[] = [];
   const host: AgentLinkHost = {
+    ...unusedHost,
     listSessions(caller) {
       asked.push(caller);
       return sessions;

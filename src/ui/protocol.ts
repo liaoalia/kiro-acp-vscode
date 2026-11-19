@@ -106,11 +106,27 @@ export type MessageSegment = TextSegment | ResourceSegment | ImageSegment;
  */
 export type MessageDelivery = "steering" | "queued";
 
+/**
+ * A user message that another agent session sent through the agent link
+ * (`send_message` / `start_session`, D30): the bubble says "from <title>" and
+ * clicking it reveals the sender (`revealSession`).
+ */
+export interface MessageOrigin {
+  /** The sending session. */
+  sessionId: string;
+  /** Its agent-link handle (`s2`). */
+  handle: string;
+  /** Its title when the message was sent. */
+  title: string;
+}
+
 export interface MessageView {
   id: string;
   role: MessageRole;
   segments: MessageSegment[];
   delivery?: MessageDelivery;
+  /** Set on user messages sent by another agent session (D30). */
+  origin?: MessageOrigin;
 }
 
 export type ToolKind =
@@ -256,6 +272,8 @@ export interface SessionSummary {
   status: SessionStatus;
   /** Epoch ms of the last activity, for ordering. */
   updatedAt: number;
+  /** Agent-link handle (`s3`) the agents use for this session; shown in the item's hover (D30). */
+  handle?: string;
 }
 
 export interface TranscriptItemMessage {
@@ -346,6 +364,8 @@ export type ToWebview =
   | { type: "chunk"; messageId: string; role: MessageRole; segment: MessageSegment }
   /** Update (or clear with `null`) the delivery badge of a user message. */
   | { type: "messageDelivery"; messageId: string; delivery: MessageDelivery | null }
+  /** Mark a user message as sent by another agent session (D30); posted right after its echo. */
+  | { type: "messageOrigin"; messageId: string; origin: MessageOrigin }
   | { type: "toolCall"; call: ToolCallView }
   | { type: "plan"; entries: PlanEntryView[] }
   | { type: "permission"; request: PermissionView }
@@ -389,6 +409,12 @@ export type FromWebview =
   | { type: "newSession" }
   /** Display an existing session in this webview. */
   | { type: "selectSession"; sessionId: string }
+  /**
+   * Show `sessionId` wherever it lives (D30: clicking "from <title>" on a peer
+   * message): reveal the chat tab / sidebar that displays it, or display it in
+   * its group's view; a notice when it no longer exists.
+   */
+  | { type: "revealSession"; sessionId: string }
   /** Close (forget) a session; if it is displayed, the webview shows the next one. */
   | { type: "closeSession"; sessionId: string }
   /** Open the host's picker of past sessions (`session/list`); the chosen one is loaded into this webview. */

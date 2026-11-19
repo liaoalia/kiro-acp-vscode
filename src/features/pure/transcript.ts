@@ -11,6 +11,7 @@ import type {
   ConfigOptionView,
   ImageSegment,
   MessageDelivery,
+  MessageOrigin,
   MessageRole,
   MessageSegment,
   MessageView,
@@ -513,6 +514,20 @@ export function setMessageDelivery(
     changed = true;
     const { delivery: _dropped, ...rest } = item.message;
     return { ...item, message: delivery ? { ...rest, delivery } : rest };
+  });
+  return changed ? { ...state, items } : state;
+}
+
+/**
+ * Mark the user message with view id `messageId` as sent by another agent
+ * session (D30). Unknown ids leave the state untouched.
+ */
+export function setMessageOrigin(state: TranscriptState, messageId: string, origin: MessageOrigin): TranscriptState {
+  let changed = false;
+  const items = state.items.map((item) => {
+    if (item.type !== "message" || item.message.id !== messageId) return item;
+    changed = true;
+    return { ...item, message: { ...item.message, origin: { ...origin } } };
   });
   return changed ? { ...state, items } : state;
 }

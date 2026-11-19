@@ -110,9 +110,132 @@ export interface LinkedSessionInfo {
   self: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Stages 2–4: reading, messages, waiting, starting (plan Tasks 8–11)
+// ---------------------------------------------------------------------------
+
+/** Text of one `send_message` / `start_session` prompt: at most this many UTF-8 bytes. */
+export const PEER_MESSAGE_MAX_BYTES = 32 * 1024;
+/** `read_session` `last` default and cap (transcript items: messages and tool calls). */
+export const READ_SESSION_DEFAULT_ITEMS = 20;
+export const READ_SESSION_MAX_ITEMS = 200;
+/** `read_session` text is cut to this many characters (oldest items dropped first). */
+export const READ_SESSION_MAX_CHARS = 16_000;
+/** `wait_for_session` `timeoutSeconds` default and cap. */
+export const WAIT_DEFAULT_SECONDS = 120;
+export const WAIT_MAX_SECONDS = 600;
+/** The last answer returned by `wait_for_session` / shown in errors: at most this many characters. */
+export const LAST_ANSWER_MAX_CHARS = 8_000;
+/** `kiroAcp.agentLink.maxChain` default: peer-started turns in a row before `send_message` is refused. */
+export const DEFAULT_MAX_CHAIN = 6;
+/** Messages (`send_message` + `start_session`) one session may send per window. */
+export const PEER_RATE_LIMIT = { messages: 10, windowMs: 60_000 } as const;
+
+/** Why the host refused a peer operation. The tools turn it into an `isError` result carrying the message. */
+export type AgentLinkErrorCode =
+  /** No live session has that handle / id. */
+  | "unknown_session"
+  /** The target is closing. */
+  | "closed"
+  /** The target is still being restored (`session/load`). */
+  | "restoring"
+  /** A session cannot message / wait for itself. */
+  | "self"
+  /** Empty (whitespace-only) text. */
+  | "empty_text"
+  /** Text over {@link PEER_MESSAGE_MAX_BYTES}. */
+  | "too_long"
+  /** The caller's turn was started by a chain of peer messages already `maxChain` long. */
+  | "chain_limit"
+  /** Over {@link PEER_RATE_LIMIT}. */
+  | "rate_limited"
+  /** Agent messages are paused (`Kiro: Pause Agent Messages`). */
+  | "paused"
+  /** The user declined the confirmation. */
+  | "declined"
+  /** The agent is not running / signed out, or the session could not be created. */
+  | "not_ready"
+  /** A malformed argument (wrong type, out of range). */
+  | "invalid_argument";
+
+export class AgentLinkError extends Error {
+  constructor(
+    readonly code: AgentLinkErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentLinkError";
+  }
+}
+
+/** `read_session`: the target and the plain-text tail of its transcript. */
+export interface SessionReadResult {
+  session: LinkedSessionInfo;
+  /** Rendered by `transcriptText()` (src/features/pure/transcriptText.ts). */
+  text: string;
+  /** Transcript items rendered. */
+  items: number;
+  /** Older items (or characters) were left out. */
+  truncated: boolean;
+}
+
+/** How a peer message was delivered: `started` = the target was idle and a turn began; `queued` = held until its turn ends. */
+export type PeerDelivery = "started" | "queued";
+
+export interface SendMessageResult {
+  to: LinkedSessionInfo;
+  delivery: PeerDelivery;
+}
+
+/**
+ * How `wait_for_session` ended: the target's turn ended and nothing is queued
+ * (`idle`), it waits for the user (`needs_input`: a permission request), the
+ * wait timed out (`timeout`), or the target went away (`closed`).
+ */
+export type WaitOutcome = "idle" | "needs_input" | "timeout" | "closed";
+
+export interface WaitResult {
+  /** The target as it is now; null when it closed. */
+  session: LinkedSessionInfo | null;
+  outcome: WaitOutcome;
+  /** Text of the target's last agent message (≤ {@link LAST_ANSWER_MAX_CHARS}), null when none. */
+  lastAnswer: string | null;
+}
+
+/** Where `start_session` opens the new session: a new chat tab, or the caller's tab / sidebar. */
+export type StartWhere = "newTab" | "sameTab";
+
+export interface StartSessionResult {
+  session: LinkedSessionInfo;
+  delivery: PeerDelivery;
+}
+
+/**
+ * What the chat controller exposes to the tools. `target` is a handle
+ * (`s3`, case-insensitive) or a session id. Semantic refusals throw
+ * {@link AgentLinkError}; argument types and ranges are checked by the tools
+ * before the call.
+ */
 export interface AgentLinkHost {
   /** Every live session, as seen by `callerSessionId` (which is marked `self`). */
   listSessions(callerSessionId: string): LinkedSessionInfo[];
+  /** The last `last` transcript items of `target` as text (the caller may read itself). */
+  readSession(callerSessionId: string, target: string, last: number): SessionReadResult;
+  /**
+   * Deliver `text` to `target` as a user turn framed as a message from the
+   * caller (D30): an idle target starts a turn now, a busy one queues it.
+   * May ask the user first (`kiroAcp.agentLink.confirm`); `signal` aborts
+   * that wait. Never steers a running turn.
+   */
+  sendMessage(callerSessionId: string, target: string, text: string, signal: AbortSignal): Promise<SendMessageResult>;
+  /**
+   * Resolve when `target` is idle with nothing queued, needs the user, or
+   * closes, or after `timeoutMs`. An already idle target resolves at once.
+   * Aborting `signal` rejects.
+   */
+  waitForSession(callerSessionId: string, target: string, timeoutMs: number, signal: AbortSignal): Promise<WaitResult>;
+  /** Create a session (`where`) and deliver `prompt` to it as a peer message from the caller. */
+  startSession(callerSessionId: string, prompt: string, where: StartWhere, signal: AbortSignal): Promise<StartSessionResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +260,10 @@ export interface AgentLinkGrant {
   mcpServer(): acp.McpServer;
   /** Tie the grant to `sessionId`; pending `tools/call`s waiting for it proceed. */
   bind(sessionId: string): void;
-  /** Refuse the token from now on (HTTP 403); pending calls waiting for a bind fail. */
+  /**
+   * Refuse the token from now on (HTTP 403); pending calls waiting for a bind
+   * fail, and running tool calls made with it are aborted (their `signal`).
+   */
   revoke(): void;
 }
 
@@ -167,7 +293,7 @@ export interface AgentLinkServerApi {
   readonly port: number | null;
   /** Mint a grant, bound to `sessionId` when given. Throws when the server is not started. */
   issue(sessionId?: string): AgentLinkGrant;
-  /** Revoke every grant bound to `sessionId`. */
+  /** Revoke every grant bound to `sessionId` (aborting their running tool calls). */
   revokeSession(sessionId: string): void;
   /** Live grants bound to a session. */
   readonly boundCount: number;

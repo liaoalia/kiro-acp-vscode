@@ -73,8 +73,29 @@
 
 ### Task 7: ⚠️ Real CLI check (blocked: kiro-cli is signed out on this machine; run on a signed-in machine)
 - [x] ➕ release Stage 1 as 0.3.12 (setting still off by default) so the signed-in machine can install it from GitHub Releases; no revmux round for Stage 1 yet
-- [ ] with the setting on, ask Kiro to "list the other sessions with the kiro-acp-tabs tool"; record in protocol-notes: does V3 connect at all, when (at `session/new` or on first use), does each session call with its own token (no de-duplication by server name across sessions), the permission request it sends for an MCP tool (kind, options, `_meta.kiro.consent`), how the tool is named in `tool_call` titles, what `_kiro/mcp/status` reports
-- [ ] go / no-go: if V3 ignores client-supplied http servers, ➕ add a stdio relay (`dist/agentLinkRelay.js`, run with VS Code's Node via `ELECTRON_RUN_AS_NODE=1`, URL + token in `env`) in front of the same server; if it de-duplicates by name, ➕ make the server name per session
+- [x] ➕ 2026-11-19, user on a signed-in machine with 0.3.12: Kiro called `list_sessions` and saw the sessions of the other tabs — V3 accepts a client-supplied http MCP server and calls it
+- [ ] the details are not recorded yet (moved to Task 12): with the setting on, ask Kiro to "list the other sessions with the kiro-acp-tabs tool"; record in protocol-notes: does V3 connect at all, when (at `session/new` or on first use), does each session call with its own token (no de-duplication by server name across sessions), the permission request it sends for an MCP tool (kind, options, `_meta.kiro.consent`), how the tool is named in `tool_call` titles, what `_kiro/mcp/status` reports
+- [x] go / no-go: **go** (no stdio relay needed). Had V3 ignored client-supplied http servers, the plan was: ➕ add a stdio relay (`dist/agentLinkRelay.js`, run with VS Code's Node via `ELECTRON_RUN_AS_NODE=1`, URL + token in `env`) in front of the same server; if it de-duplicates by name, ➕ make the server name per session
+
+## Stages 2–4: contracts and work packages (2026-11-19)
+
+Contracts written first and committed, so the packages can run in parallel worktrees:
+- `src/agentLink/types.ts`: `AgentLinkHost` gains `readSession`, `sendMessage`, `waitForSession`, `startSession`; `AgentLinkError` + `AgentLinkErrorCode`; result types; limits (`PEER_MESSAGE_MAX_BYTES` 32 KiB, `READ_SESSION_*`, `WAIT_DEFAULT_SECONDS` 120 / `WAIT_MAX_SECONDS` 600, `LAST_ANSWER_MAX_CHARS`, `DEFAULT_MAX_CHAIN` 6, `PEER_RATE_LIMIT` 10/min); a revoked grant aborts its running calls
+- `src/ui/protocol.ts`: `MessageOrigin` (`MessageView.origin`), `SessionSummary.handle`, `ToWebview` `messageOrigin`, `FromWebview` `revealSession`; `setMessageOrigin` in `src/features/pure/transcript.ts`
+- stubs to implement: `src/agentLink/peerMessage.ts` (`framePeerMessage`, `fitsPeerMessage`), `src/agentLink/rateLimiter.ts` (`RateLimiter`), `src/features/pure/transcriptText.ts` (`transcriptText`, `lastAgentAnswer`), the four host methods in `ChatController`
+
+Packages (file ownership; nobody edits the contract files except to fix a real defect, reported back):
+- **A — tools and pure modules**: `src/agentLink/tools.ts`, `src/agentLink/server.ts` (revoke aborts), `src/agentLink/peerMessage.ts`, `src/agentLink/rateLimiter.ts`, `src/features/pure/transcriptText.ts`; tests `test/agentLink-tools.test.ts`, `test/agentLink-server.test.ts`, `test/agentLink-peer.test.ts`, `test/features-transcriptText.test.ts`
+- **B — host**: `src/ui/chatController.ts`, `src/ui/chatPanel.ts`, `src/extension.ts`, `package.json` (settings `kiroAcp.agentLink.maxChain`, `kiroAcp.agentLink.confirm`; commands pause / resume)
+- **C — webview**: `src/webview/*`, `media/*` (styles), tests `test/webview-*.test.ts`, `test/transcript.test.ts`
+- **D — after merge, sequential**: fake agent + recordings, e2e F17.4+, docs (README section, DECISIONS D30 addendum, protocol-notes checklist for the new tools), this plan
+
+Decisions taken for the packages:
+- a peer message is echoed in the target as a user bubble with `origin` (its raw text); the agent gets `framePeerMessage(...)`; delivery reuses the D22 queue (`started` when idle, `queued` when busy), never `_session/steer`
+- chain depth: a turn started by a peer message has depth = sender's turn depth + 1 (a user-started turn has 0); `send_message` / `start_session` from a turn of depth ≥ `maxChain` is refused (`chain_limit`) with a notice in both sessions
+- confirmation (`kiroAcp.agentLink.confirm`: `firstPerPair` default / `always` / `never`): a permission card in the sender's chat, synthesized through `PermissionManager.request` (options allow_once "Send" / reject_once "Don't send"); `firstPerPair` remembers an allowed (sender, target) pair for the life of both sessions
+- `wait_for_session` and `start_session`'s first message use the same delivery; `start_session` `newTab` opens a chat tab (`ChatPanelManager.openNew`) whose session receives the prompt, `sameTab` creates the session in the caller's group without switching the caller's view
+- handles stay `s<seq>` and survive a sign-in restore (carried in `RestoreEntry`)
 
 ## Stage 2 — Messages between sessions
 

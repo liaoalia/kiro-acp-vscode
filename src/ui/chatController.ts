@@ -74,12 +74,18 @@ import {
 } from "../features/pure/slashCommands.js";
 import { AgentLinkServer } from "../agentLink/server.js";
 import { AGENT_LINK_INSTRUCTIONS, createAgentLinkTools } from "../agentLink/tools.js";
+import { AgentLinkError } from "../agentLink/types.js";
 import type {
   AgentLinkGrant,
   AgentLinkHost,
   AgentLinkServerApi,
   LinkedSessionInfo,
   LinkedSessionStatus,
+  SendMessageResult,
+  SessionReadResult,
+  StartSessionResult,
+  StartWhere,
+  WaitResult,
 } from "../agentLink/types.js";
 import { ContextTracker, searchFiles } from "../features/context.js";
 import { DiffManager } from "../features/diff.js";
@@ -1289,6 +1295,28 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         status: this.linkStatusOf(s),
         self: s.id === callerSessionId,
       }));
+  }
+
+  // CONTRACT STUBS (plan Tasks 8–11): implemented by the host work package.
+
+  /** {@link AgentLinkHost.readSession}. */
+  readSession(_callerSessionId: string, _target: string, _last: number): SessionReadResult {
+    throw new AgentLinkError("not_ready", "read_session is not implemented yet");
+  }
+
+  /** {@link AgentLinkHost.sendMessage}. */
+  sendMessage(_callerSessionId: string, _target: string, _text: string, _signal: AbortSignal): Promise<SendMessageResult> {
+    return Promise.reject(new AgentLinkError("not_ready", "send_message is not implemented yet"));
+  }
+
+  /** {@link AgentLinkHost.waitForSession}. */
+  waitForSession(_callerSessionId: string, _target: string, _timeoutMs: number, _signal: AbortSignal): Promise<WaitResult> {
+    return Promise.reject(new AgentLinkError("not_ready", "wait_for_session is not implemented yet"));
+  }
+
+  /** {@link AgentLinkHost.startSession}. */
+  startSession(_callerSessionId: string, _prompt: string, _where: StartWhere, _signal: AbortSignal): Promise<StartSessionResult> {
+    return Promise.reject(new AgentLinkError("not_ready", "start_session is not implemented yet"));
   }
 
   private linkStatusOf(session: ChatSession): LinkedSessionStatus {
