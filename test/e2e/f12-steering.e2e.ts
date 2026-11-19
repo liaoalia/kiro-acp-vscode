@@ -383,3 +383,27 @@ test("F12.9 Stop kills the session's running command, so an agent waiting on it 
   assert(term && term.type === "terminal", "the card keeps its terminal");
   assert(term.exitCode !== undefined, `the killed command has an exit status (${JSON.stringify(term)})`);
 });
+
+test("F12.11 closing a session stops its running command too: its kiro-cli process is stopped and could not release it (D31)", async ({ api, recorder }) => {
+  const sessionId = await freshSession(api);
+  const mark = recorder.mark();
+  const turn = api.controller.prompt("/scenario hang-terminal", [], sessionId);
+  await waitFor(
+    () => recorder.ofType("toolCall", mark).some((t) => t.call.content.some((c) => c.type === "terminal")),
+    15_000,
+    "the tool card to show its terminal",
+  );
+  await sleep(300); // let the command start
+  const card = toolCall(api.controller.snapshot(sessionId), "call-service");
+  const term = card.content.find((c) => c.type === "terminal");
+  assert(term && term.type === "terminal", "the card shows its terminal");
+  assertEqual(api.terminal.snapshot(term.terminalId)?.exitCode, undefined, "the command runs");
+
+  await api.controller.closeSession(sessionId);
+  await withTimeout(turn.catch(() => undefined), 15_000, "prompt() to settle after the close");
+  await waitFor(
+    () => (api.terminal.snapshot(term.terminalId)?.exitCode !== undefined ? true : undefined),
+    10_000,
+    "the closed session's command to be stopped",
+  );
+});

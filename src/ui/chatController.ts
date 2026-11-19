@@ -1233,7 +1233,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
    * (it exited, or wants a sign-in again) the rest are left for Past sessions.
    */
   private async restoreSessions(
-    agent: KiroAgent,
+    agent: AgentPool,
     plan: readonly RestoreEntry[],
   ): Promise<Array<{ entry: RestoreEntry; message: string }>> {
     const failed: Array<{ entry: RestoreEntry; message: string } | undefined> = [];
@@ -2271,6 +2271,16 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       this.deps.permissions.clearPolicies(session.id);
       this.revokeLink(session.id);
     }
+    // The processes that started their commands are going away, and the
+    // commands are ours (children of the extension host), so they stop too —
+    // as on close (revmux round 23).
+    void Promise.all(ids.map((id) => this.deps.terminal.killSession(id))).then(
+      (killed) => {
+        const all = killed.flat();
+        if (all.length > 0) this.deps.output.appendLine(`[info] killed running terminal(s) ${all.join(", ")} (sessions ended)`);
+      },
+      (error: unknown) => this.deps.output.appendLine(`[warn] killing the sessions' terminals failed: ${errorMessage(error)}`),
+    );
     this.sessions.clear();
     // Waits on them end `closed`; a restored session starts with no consents or rate history (D30).
     for (const id of ids) this.forgetLinkSession(id);
@@ -2478,7 +2488,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
    * the error message is returned; focus is the caller's to fix.
    */
   private async loadInto(
-    agent: KiroAgent,
+    agent: AgentPool,
     sessionId: string,
     target: {
       /** A sign-in restore keeps the session's agent-link handle (D30); a past session gets a new one. */
@@ -2521,7 +2531,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       }
       // Closed while loading: its release came before the pool bound it, so
       // the process it got is let go now, unless the id lives on (restored again).
-      if (!this.sessions.has(sessionId)) agent.releaseSession?.(sessionId);
+      if (!this.sessions.has(sessionId)) agent.releaseSession(sessionId);
       // The client already emitted a `state` event for it; merging again is harmless.
       this.applySessionState(session, state);
     } catch (error) {
@@ -2536,7 +2546,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         this.deps.permissions.cancelAll(sessionId);
         this.deps.permissions.clearPolicies(sessionId);
         // No process keeps it (D31); a no-op when the pool never bound it.
-        agent.releaseSession?.(sessionId);
+        agent.releaseSession(sessionId);
         for (const v of this.views) {
           if (!v.follows && v.displayed === sessionId) this.setViewSession(v, target.fallback);
         }
@@ -2720,6 +2730,17 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     }
     this.deps.permissions.cancelAll(sessionId);
     this.deps.permissions.clearPolicies(sessionId);
+    // Its commands are children of the extension host, not of kiro-cli: the
+    // process stopped below never gets to release them, so they are stopped
+    // here (D27, D31; revmux round 23).
+    void this.deps.terminal.killSession(sessionId).then(
+      (killed) => {
+        if (killed.length > 0) {
+          this.deps.output.appendLine(`[info] session ${sessionId}: killed its running terminal(s) ${killed.join(", ")} (session closed)`);
+        }
+      },
+      (error: unknown) => this.deps.output.appendLine(`[warn] session ${sessionId}: killing its terminals failed: ${errorMessage(error)}`),
+    );
     this.sessions.delete(sessionId);
     this.revokeLink(sessionId);
     this.forgetLinkSession(sessionId);

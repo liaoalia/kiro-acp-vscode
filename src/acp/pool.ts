@@ -100,6 +100,9 @@ export class AgentPool implements KiroAgent {
   private readonly bindings = new Map<string, PoolEntry>();
   /** `session/list` `nextCursor` → the process that issued it (pages of one listing stay on one process). */
   private readonly cursorIssuers = new Map<string, PoolEntry>();
+  /** Session id → the newest `loadSession` attempt still running for it (only that one may bind). */
+  private readonly latestLoad = new Map<string, number>();
+  private lastLoadAttempt = 0;
   /** Process stops in flight (release, unused process), awaited by `stop()`. */
   private readonly exiting = new Set<Promise<void>>();
   private readonly connectionListeners = new Set<(change: ConnectionStateChange) => void>();
@@ -215,7 +218,19 @@ export class AgentPool implements KiroAgent {
     const owner = this.bindings.get(sessionId);
     if (owner) return owner.agent.loadSession(sessionId, cwd, options);
     // Replayed history needs no binding: every process's events are forwarded.
-    return this.openSession((agent) => agent.loadSession(sessionId, cwd, options));
+    // Only the newest load of an id may bind it: a session closed and opened
+    // again while its first load was still running must not be taken back by
+    // that older load when it lands last (revmux round 23).
+    const attempt = ++this.lastLoadAttempt;
+    this.latestLoad.set(sessionId, attempt);
+    try {
+      return await this.openSession(
+        (agent) => agent.loadSession(sessionId, cwd, options),
+        () => this.latestLoad.get(sessionId) === attempt,
+      );
+    } finally {
+      if (this.latestLoad.get(sessionId) === attempt) this.latestLoad.delete(sessionId);
+    }
   }
 
   /**
@@ -262,8 +277,10 @@ export class AgentPool implements KiroAgent {
     // from there even if the spare changed in between (a session took it).
     let entry: PoolEntry;
     if (options?.cursor !== undefined) {
+      // Looked up, not consumed: two listings at once (e.g. the History button
+      // and the in-chat browser) may hold the same cursor (revmux round 23).
+      // Old ones leave the map by the size bound below.
       const issuer = this.cursorIssuers.get(options.cursor);
-      this.cursorIssuers.delete(options.cursor);
       if (!issuer || !this.entries.has(issuer) || !isLive(issuer)) {
         throw new AcpError("session/list cursor expired: the process that issued it is gone; list again from the start");
       }
@@ -273,6 +290,8 @@ export class AgentPool implements KiroAgent {
     }
     const page = await entry.agent.listSessions(options);
     if (page.nextCursor !== null) {
+      // Re-inserted so a cursor in use counts as the newest for the bound below.
+      this.cursorIssuers.delete(page.nextCursor);
       this.cursorIssuers.set(page.nextCursor, entry);
       // Cursors of abandoned listings must not pile up.
       while (this.cursorIssuers.size > MAX_TRACKED_CURSORS) {
@@ -429,7 +448,11 @@ export class AgentPool implements KiroAgent {
    * is none) or, once `maxProcesses` run, on the process with the fewest
    * sessions; bind the session to it and pre-warm the next spare.
    */
-  private async openSession(request: (agent: KiroAgent) => Promise<SessionState>): Promise<SessionState> {
+  private async openSession(
+    request: (agent: KiroAgent) => Promise<SessionState>,
+    /** False when a newer load of the same id started meanwhile: the result is returned unbound. */
+    stillWanted: () => boolean = () => true,
+  ): Promise<SessionState> {
     this.requireRunning();
     let entry = this.spare;
     let shared = false;
@@ -454,6 +477,11 @@ export class AgentPool implements KiroAgent {
     }
     entry.pending--;
     if (!this.entries.has(entry)) throw new AcpError("agent stopped");
+    if (!stillWanted()) {
+      this.log(`session ${state.sessionId}: a newer load replaced this one; process ${entry.id} not bound`);
+      if (entry.sessions.size === 0 && entry.pending === 0) this.idle(entry, "superseded load");
+      return state;
+    }
     this.bind(state.sessionId, entry, shared);
     this.ensureSpare();
     return state;

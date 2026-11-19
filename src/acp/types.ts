@@ -189,7 +189,10 @@ export interface KiroAgent {
   newSession(cwd: string, options?: { mcpServers?: acp.McpServer[]; meta?: Record<string, unknown> }): Promise<SessionState>;
   /**
    * `session/list` (requires `agentCapabilities.sessionCapabilities.list`).
-   * Rejects with AcpError when the agent did not advertise it.
+   * Rejects with AcpError when the agent did not advertise it. Through the
+   * agent pool (D31) a `cursor` goes back to the process that issued it, and
+   * the call rejects ("cursor expired … list again from the start") when that
+   * process is gone.
    */
   listSessions(options?: { cwd?: string; cursor?: string }): Promise<{ sessions: SessionListEntry[]; nextCursor: string | null }>;
   /**
@@ -213,13 +216,6 @@ export interface KiroAgent {
   authenticate(methodId: string): Promise<void>;
   /** Call a Kiro extension method advertised in `kiroExtensionMethods`. */
   callExtension<T = unknown>(method: string, params: unknown): Promise<T>;
-  /**
-   * The host is done with a session (closed, cleared, failed to restore). An
-   * agent pool forgets which process hosts it and stops that process once it
-   * hosts nothing else (D31 (process per session)). Optional: a single
-   * process simply keeps the session.
-   */
-  releaseSession?(sessionId: string): void;
 }
 
 /** Thrown by the ACP layer for well-known protocol failures. */

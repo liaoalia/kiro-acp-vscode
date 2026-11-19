@@ -797,11 +797,21 @@ process per session. Plan: `docs/plans/2026-11-19-process-per-session.md`.
 
 - **A pool behind the same facade.** `AgentPool` (`src/acp/pool.ts`)
   implements `KiroAgent` over several `KiroAgentImpl` processes, so the
-  controller still talks to one `KiroAgent`. Session-scoped calls (prompt,
-  cancel, mode, config option, model, an extension call whose params name a
-  `sessionId`) go to the process hosting the session; process-wide calls
-  (`session/list`, `authenticate`, extension calls without a session) go to
-  the spare, else any ready process. The client services (fs, terminals,
+  agent calls themselves look as before; the controller holds an
+  `AgentPool` (not just a `KiroAgent`) because it also uses what only the
+  pool has: `releaseSession`, `processes()`, `maxProcesses`. Session-scoped
+  calls (prompt, cancel, mode, config option, model, an extension call whose
+  params name a `sessionId`) go to the process hosting the session;
+  process-wide calls go to the spare, else any ready process — except
+  `authenticate`, which goes first to the process that asked for the
+  sign-in (it offered the methods the banner shows, and only it turns back
+  to ready), and the later pages of one `session/list`, which go back to the
+  process that issued the cursor (a cursor is that process's; when it is
+  gone the call fails with "cursor expired … list again from the start"
+  instead of asking another process). A `session/load` of an id that a newer
+  load of the same id overtook is returned unbound and its process let go,
+  so a session closed and opened again while its first load ran keeps the
+  newer process. The client services (fs, terminals,
   permissions) were already keyed by session id and are shared. A process's
   own log lines carry `process N:`; the pool logs every spawn, assignment,
   release and exit (`agent-pool: …`).
@@ -873,8 +883,14 @@ process per session. Plan: `docs/plans/2026-11-19-process-per-session.md`.
   keeps sessions in memory per process: only its canned past sessions load
   into another process, so the e2e tests (F19) reload those; a fresh fake
   session cannot be loaded elsewhere, which F19.4 uses for the failure path.
+- **Closing stops the commands.** An agent's terminal commands are children
+  of the extension host, not of `kiro-cli`, and a closed session's process
+  is stopped right after `session/cancel`, before it could release them; so
+  closing a session (and ending every session on restart) kills its running
+  commands, as Stop does (D27).
 - **How to change.** `kiroAcp.agentProcesses.max = 1` brings the shared
   process back (an exit is still handled per session: the one process dying
   ends every session, and each reloads on its next message). Dropping the
-  pool altogether is one line in `ChatController.startAgent`
-  (`createKiroAgent`).
+  pool altogether is not a one-line change: the controller uses the pool's
+  own API (`releaseSession`, `processes()`, `maxProcesses`); setting the
+  limit to 1 is the supported way back.

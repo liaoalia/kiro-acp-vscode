@@ -85,7 +85,15 @@ interface PoolHarness {
   cwd: string;
 }
 
-function launchPool(options: { args?: string[]; maxProcesses?: number; command?: string } = {}): PoolHarness {
+function launchPool(
+  options: {
+    args?: string[];
+    maxProcesses?: number;
+    command?: string;
+    /** Wrap pool process N's agent (e.g. to slow one call down). */
+    wrap?: (processId: number, agent: PooledAgent) => PooledAgent;
+  } = {},
+): PoolHarness {
   const services = makeServices();
   const logger = makeLogger(false);
   const cwd = process.cwd();
@@ -106,7 +114,8 @@ function launchPool(options: { args?: string[]; maxProcesses?: number; command?:
       );
       made.push(agent);
       agents.push(agent);
-      return recordCalls(agent, processId, calls);
+      const recorded = recordCalls(agent, processId, calls);
+      return options.wrap ? options.wrap(processId, recorded) : recorded;
     },
     { maxProcesses: options.maxProcesses ?? 8, logger },
   );
@@ -458,6 +467,63 @@ test("session/list pages follow their cursor to the process that issued it, even
     // A listing from the start goes to the spare again.
     await h.pool.listSessions();
     assert.deepEqual(h.calls.at(-1), { process: spare.id, method: "listSessions" });
+  } finally {
+    await h.pool.stop();
+  }
+});
+
+test("session/list: two listings holding the same cursor both get their next page", async () => {
+  const h = launchPool({ args: ["--scenario", "chat", "--list-page-size", "1"] });
+  try {
+    await h.pool.start();
+    const [a, b] = await Promise.all([h.pool.listSessions(), h.pool.listSessions()]);
+    assert.ok(a.nextCursor && a.nextCursor === b.nextCursor, "the same cursor");
+    const nextA = await h.pool.listSessions({ cursor: a.nextCursor });
+    const nextB = await h.pool.listSessions({ cursor: b.nextCursor! });
+    assert.deepEqual(nextA.sessions.map((s) => s.sessionId), ["past-2"]);
+    assert.deepEqual(nextB.sessions.map((s) => s.sessionId), ["past-2"]);
+  } finally {
+    await h.pool.stop();
+  }
+});
+
+test("loadSession: an older load of an id that lands after a newer one does not take the session back", async () => {
+  // Process 1 (the spare) answers session/load late; process 2 (spawned for
+  // the second load of the same id) answers first.
+  const h = launchPool({
+    args: ["--scenario", "chat"],
+    wrap: (processId, agent) =>
+      processId !== 1
+        ? agent
+        : new Proxy(agent, {
+            get(target, property) {
+              const value: unknown = Reflect.get(target, property, target);
+              if (property !== "loadSession" || typeof value !== "function") return value;
+              return async (...args: unknown[]) => {
+                await delay(1500);
+                return (value as (...a: unknown[]) => unknown).apply(target, args);
+              };
+            },
+          }),
+  });
+  try {
+    await h.pool.start();
+    const older = h.pool.loadSession("past-1", h.cwd);
+    await delay(50);
+    const newer = await h.pool.loadSession("past-1", h.cwd);
+    assert.equal(newer.sessionId, "past-1");
+    const newerHost = hostOf(h.pool, "past-1");
+    assert.notEqual(newerHost.id, 1, "the newer load ran in process 2");
+    await older;
+    assert.equal(hostOf(h.pool, "past-1").id, newerHost.id, "still bound to the newer load's process");
+    assert.ok(
+      h.pool.processes().every((p) => p.id !== 1 || !p.sessionIds.includes("past-1")),
+      "the older load's process does not host it",
+    );
+    // The session still prompts in its process.
+    h.calls.length = 0;
+    await h.pool.prompt("past-1", text("hello"));
+    assert.deepEqual(h.calls, [{ process: newerHost.id, method: "prompt" }]);
   } finally {
     await h.pool.stop();
   }
