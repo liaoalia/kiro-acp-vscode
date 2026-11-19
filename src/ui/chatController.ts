@@ -1547,6 +1547,12 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     return value === "always" || value === "never" ? value : "firstPerPair";
   }
 
+  /** `kiroAcp.agentLink.startIn`: where `start_session` opens the new session (default the caller's tab). */
+  private agentLinkStartIn(): "callerTab" | "newTab" | "asRequested" {
+    const value = vscode.workspace.getConfiguration("kiroAcp").get<unknown>("agentLink.startIn", "callerTab");
+    return value === "newTab" || value === "asRequested" ? value : "callerTab";
+  }
+
   /** {@link AgentLinkHost}: every live session as the agent link shows it, most recent first. */
   listSessions(callerSessionId: string): LinkedSessionInfo[] {
     return this.sortedSessions()
@@ -1960,9 +1966,15 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     if (!this.agent || this.agent.status !== "ready") {
       throw new AgentLinkError("not_ready", "Kiro is not running (or needs a sign-in); no session was started.");
     }
+    // Where it opens is the user's call (`kiroAcp.agentLink.startIn`): by
+    // default in the caller's own tab, so it shows in the session list the
+    // user works from — sessions opened in new tabs were reported as
+    // invisible ("they work, but I don't see them").
+    const startIn = this.agentLinkStartIn();
+    const wanted: StartWhere = startIn === "asRequested" ? where : startIn === "newTab" ? "newTab" : "sameTab";
     // `newTab`: created in a group no view lists, so no other view adopts it
     // as a spare while `session/new` runs; the new tab then takes it over.
-    const newTab = where === "newTab" && this.openTab !== null;
+    const newTab = wanted === "newTab" && this.openTab !== null;
     const groupId = newTab ? `agent-link-start-${++this.linkStartSeq}` : caller.groupId;
     const created = await this.createSession(groupId);
     if (!created) {
@@ -1995,7 +2007,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       }
     }
     this.deps.output.appendLine(
-      `[info] agent-link ${caller.handle} started ${created.handle} (${where}${where === "newTab" && !newTab ? ", no tab hook: same tab" : ""})`,
+      `[info] agent-link ${caller.handle} started ${created.handle} (${newTab ? "newTab" : "sameTab"}; asked ${where}, kiroAcp.agentLink.startIn ${startIn})`,
     );
     const delivery = this.deliverPeerMessage(caller, created, gated.text, gated.depth);
     return { session: this.linkedInfo(created, caller.id), delivery };

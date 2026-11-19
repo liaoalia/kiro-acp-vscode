@@ -770,6 +770,13 @@ Still behind `kiroAcp.agentLink.enabled`, off by default.
   title and its chain depth come from it). `sameTab` creates it in the
   caller's group without switching the caller's view; `newTab` opens a chat
   tab on it without taking the focus (the caller's tab stays in front).
+  Which one is the user's call (`kiroAcp.agentLink.startIn`, added in
+  0.4.2): by default `callerTab`, whatever `where` the agent asked. Sessions
+  started in new tabs behind the user's tab were reported as invisible
+  ("they work and their MCP works, but they are not in the list"): the user
+  works from one tab's session list, so that is where they now appear;
+  `newTab` / `asRequested` bring the old behaviour back. The tool's own
+  default `where` is `sameTab` too.
   A caller that closed, or a Stop, while `session/new` ran closes the new
   session again: nobody would learn its handle.
 - **Pause.** `Kiro: Pause Agent Messages` (not persisted) drops the queued

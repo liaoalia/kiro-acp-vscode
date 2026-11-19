@@ -366,8 +366,9 @@ function startSessionTool(host: AgentLinkHost): AgentLinkTool {
       title: "Start a chat session",
       description:
         "Start a new Kiro chat session in this window and give it `prompt` as a message from you (like " +
-        'send_message, so its agent knows it comes from another agent session). `where`: "newTab" (default) ' +
-        'opens it in a new chat tab, "sameTab" adds it to your own chat tab without switching away from you. ' +
+        'send_message, so its agent knows it comes from another agent session). By default it is added to ' +
+        "your own chat tab's session list, without switching away from you; `where` is a wish (\"newTab\" for a " +
+        "new chat tab, \"sameTab\" for your own tab) that the user's settings may override. " +
         "Returns the new session's handle: use wait_for_session to wait for it and read_session to read its " +
         "work. Use it to hand off a separate piece of work that can run in parallel; write the prompt so it " +
         "stands on its own. The user may be asked to confirm. `prompt` is at most 32 KiB.",
@@ -378,8 +379,8 @@ function startSessionTool(host: AgentLinkHost): AgentLinkTool {
           where: {
             type: "string",
             enum: [...START_WHERE],
-            default: "newTab",
-            description: 'Where to open it: "newTab" (a new chat tab) or "sameTab" (your own chat tab).',
+            default: "sameTab",
+            description: "Where you would like it: \"sameTab\" (your own chat tab) or \"newTab\" (a new chat tab). The user's settings may override it.",
           },
         },
         required: ["prompt"],
@@ -397,7 +398,7 @@ function startSessionTool(host: AgentLinkHost): AgentLinkTool {
       return guarded(async () => {
         checkKnown(args, ["prompt", "where"]);
         const prompt = requiredString(args, "prompt", "the first message of the new session");
-        const where = optionalEnum(args, "where", START_WHERE, "newTab");
+        const where = optionalEnum(args, "where", START_WHERE, "sameTab");
         const started = await host.startSession(caller.sessionId, prompt, where, caller.signal);
         const s = started.session;
         return textResult(

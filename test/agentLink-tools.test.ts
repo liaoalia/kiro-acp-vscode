@@ -369,7 +369,7 @@ test("wait_for_session refuses malformed arguments without asking the host", asy
 
 // start_session --------------------------------------------------------------
 
-test("start_session defaults to a new tab, passes the signal and names the new session", async () => {
+test("start_session defaults to the caller's tab, passes the signal and names the new session", async () => {
   const s4: LinkedSessionInfo = {
     handle: "s4",
     sessionId: "sess-4",
@@ -388,15 +388,15 @@ test("start_session defaults to a new tab, passes the signal and names the new s
   };
   const tool = toolOf(host, "start_session");
   const result = await tool.call({ prompt: "Write the tests for auth.ts" }, caller);
-  assert.deepEqual(asked[0]!.slice(0, 3), ["sess-1", "Write the tests for auth.ts", "newTab"]);
+  assert.deepEqual(asked[0]!.slice(0, 3), ["sess-1", "Write the tests for auth.ts", "sameTab"], "sameTab by default");
   assert.equal(asked[0]![3], caller.signal);
   assert.match(
     textOf(result),
-    /^Started s4 "New session" in tab "Kiro Chat 3" and sent it your prompt: it started working on it now\. /,
+    /^Started s4 "New session" in tab "Kiro Chat 1" and sent it your prompt: it started working on it now\. /,
   );
   assert.match(textOf(result), /wait_for_session \(session: "s4"\)/);
   assert.deepEqual(result.structuredContent, {
-    session: { handle: "s4", title: "New session", tab: "Kiro Chat 3", status: "working", self: false },
+    session: { handle: "s4", title: "New session", tab: "Kiro Chat 1", status: "working", self: false },
     delivery: "started",
   });
 
@@ -404,14 +404,16 @@ test("start_session defaults to a new tab, passes the signal and names the new s
   assert.equal(asked[1]![2], "sameTab");
   assert.match(textOf(same), /in tab "Kiro Chat 1"/);
   await tool.call({ prompt: "p", where: null }, caller);
-  assert.equal(asked[2]![2], "newTab");
+  assert.equal(asked[2]![2], "sameTab");
+  await tool.call({ prompt: "p", where: "newTab" }, caller);
+  assert.equal(asked[3]![2], "newTab", "the wish is passed on (the host's setting decides)");
 });
 
 test("start_session refuses malformed arguments without asking the host", async () => {
   await expectInvalid("start_session", [
     [{}, /`prompt` is required/],
     [{ prompt: 1 }, /`prompt` must be a string/],
-    [{ prompt: "p", where: "newWindow" }, /`where` must be "newTab" or "sameTab" \(default "newTab"\)/],
+    [{ prompt: "p", where: "newWindow" }, /`where` must be "newTab" or "sameTab" \(default "sameTab"\)/],
     [{ prompt: "p", where: "NEWTAB" }, /`where` must be/],
     [{ prompt: "p", title: "x" }, /Unknown argument `title`; the arguments are `prompt`, `where`/],
   ]);

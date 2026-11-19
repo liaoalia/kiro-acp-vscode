@@ -63,7 +63,12 @@ let groupSeq = 0;
  */
 async function withLink(
   api: KiroAcpApi,
-  settings: { confirm?: "firstPerPair" | "always" | "never"; maxChain?: number; autoApprove?: boolean },
+  settings: {
+    confirm?: "firstPerPair" | "always" | "never";
+    maxChain?: number;
+    autoApprove?: boolean;
+    startIn?: "callerTab" | "newTab" | "asRequested";
+  },
   body: (ctx: LinkContext) => Promise<void>,
 ): Promise<void> {
   await ensureReady(api);
@@ -71,6 +76,7 @@ async function withLink(
   await setSetting("agentLink.confirm", settings.confirm ?? "never");
   if (settings.maxChain !== undefined) await setSetting("agentLink.maxChain", settings.maxChain);
   if (settings.autoApprove !== undefined) await setSetting("agentLink.autoApprove", settings.autoApprove);
+  if (settings.startIn !== undefined) await setSetting("agentLink.startIn", settings.startIn);
   const tabs: Tab[] = [];
   const open = async (name: string): Promise<Tab> => {
     const recorder = new Recorder();
@@ -92,6 +98,7 @@ async function withLink(
     await setSetting("agentLink.confirm", undefined);
     await setSetting("agentLink.maxChain", undefined);
     await setSetting("agentLink.autoApprove", undefined);
+    await setSetting("agentLink.startIn", undefined);
     await setSetting("agentLink.enabled", undefined);
   }
 }
@@ -722,10 +729,10 @@ test("F18.12 wait_for_session: needs_input, closed, timeout, and Stop in the cal
 // Starting sessions
 // ---------------------------------------------------------------------------
 
-test("F18.13 start_session: sameTab keeps the caller's view and lists the new session; newTab opens a chat tab; it asks first", async ({ api }) => {
+test("F18.13 start_session (startIn asRequested): sameTab keeps the caller's view and lists the new session; newTab opens a chat tab; it asks first", async ({ api }) => {
   await closeAllEditors();
   try {
-    await withLink(api, {}, async ({ open }) => {
+    await withLink(api, { startIn: "asRequested" }, async ({ open }) => {
       const a = await open("a");
       const hA = handleOf(api, a.sessionId);
       const idOf = (handle: string): string => {
@@ -938,18 +945,14 @@ test("F18.18 kiroAcp.agentLink.autoApprove answers Kiro's own card for an agent-
     const b = await open("b");
     const hB = handleOf(api, b.sessionId);
     const mark = a.recorder.mark();
-    const sender = await promptIn(api, a.sessionId, `/scenario link-send-asking ${hB}
-/scenario chat
-from a`);
+    const sender = await promptIn(api, a.sessionId, `/scenario link-send-asking ${hB}\n/scenario chat\nfrom a`);
     assertEqual(lastCall(sender, "send_message").status, "completed", "sent");
     assertEqual(a.recorder.ofType("permission", mark).length, 0, "no card in the sender (autoApprove is on by default)");
     await settled(api, b.sessionId, (s) => userMessages(s).some((m) => m.origin?.sessionId === a.sessionId), "the message in the target");
 
     // Turned off, Kiro's card shows again (and only Kiro's: confirm is never).
     await setSetting("agentLink.autoApprove", false);
-    const turn = api.controller.prompt(`/scenario link-send-asking ${hB}
-/scenario chat
-again`, [], a.sessionId);
+    const turn = api.controller.prompt(`/scenario link-send-asking ${hB}\n/scenario chat\nagain`, [], a.sessionId);
     const kiros = await waitFor(
       () => pendingOf(api, a.sessionId).find((p) => p.title === "Use kiro-acp-tabs/send_message"),
       15_000,
@@ -959,5 +962,27 @@ again`, [], a.sessionId);
     await withTimeout(turn, 15_000, "the second turn");
     const again = await settled(api, a.sessionId, () => true, "the second turn to end");
     assertEqual(lastCall(again, "send_message").status, "completed", "sent after Allow");
+  });
+});
+
+test("F18.19 by default (startIn callerTab) a session started by an agent joins the caller's session list, even when newTab was asked", async ({ api }) => {
+  await closeAllEditors();
+  await withLink(api, {}, async ({ open }) => {
+    const a = await open("a");
+    const before = new Set(api.panel.panels());
+    const turn = await promptIn(api, a.sessionId, "/scenario link-start newTab\n/scenario peer-echo\nwanted a new tab");
+    noReports(turn);
+    const handle = (outcomeOf(lastCall(turn, "start_session")).data.session as { handle: string }).handle;
+    const id = api.controller.listSessions(a.sessionId).find((s) => s.handle === handle)?.sessionId;
+    assert(id, `${handle} is listed`);
+    assertEqual(api.controller.sessionGroup(id), a.groupId, "in the caller's tab");
+    assertEqual(a.view.sessionId, a.sessionId, "the caller's view still shows the caller");
+    await waitFor(
+      () => a.view.snapshot().sessions.some((s) => s.id === id && s.handle === handle) || undefined,
+      15_000,
+      "the new session in the caller's session list",
+    );
+    assertEqual(api.panel.panels().filter((p) => !before.has(p)).length, 0, "no new chat tab");
+    await settled(api, id, (s) => agentText(s).includes("wanted a new tab"), "the new session's turn");
   });
 });

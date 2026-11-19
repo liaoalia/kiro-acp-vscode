@@ -2,7 +2,7 @@
   "name": "kiro-acp",
   "displayName": "Kiro ACP Chat",
   "description": "Chat with the Kiro agent inside VS Code over the Agent Client Protocol (ACP). Spawns `kiro-cli acp` locally; the extension itself makes no network calls.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "publisher": "liaoalia",
   "license": "MIT",
   "private": true,
@@ -369,6 +369,21 @@
           "default": true,
           "scope": "machine",
           "markdownDescription": "Answer Kiro's own permission requests for the agent-link tools (`kiro-acp-tabs`: list, read, send, wait, start) automatically, so a conversation between sessions does not show Kiro's card for every message. Sending and starting are still guarded by `#kiroAcp.agentLink.confirm#`; set that to `never` as well to be asked nothing at all. Other tools and other MCP servers are not affected."
+        },
+        "kiroAcp.agentLink.startIn": {
+          "type": "string",
+          "enum": [
+            "callerTab",
+            "newTab",
+            "asRequested"
+          ],
+          "enumDescriptions": [
+            "The new session joins the session list of the chat tab whose agent started it (the tab keeps showing what it showed).",
+            "The new session opens in a chat tab of its own, beside the one that started it.",
+            "As the agent asked (`start_session` `where`: `sameTab` or `newTab`)."
+          ],
+          "default": "callerTab",
+          "markdownDescription": "Where a session started by another session's agent (`start_session`) opens. By default it joins the session list of the tab that started it, so you can switch to it there."
         },
         "kiroAcp.agentLink.confirm": {
           "type": "string",
