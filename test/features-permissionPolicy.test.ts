@@ -273,3 +273,29 @@ test("offeredPolicies: the resource label is worded by capability", () => {
     "Reject network on https://example.com this session",
   ]);
 });
+
+test("a local subject (the extension's own confirmation, D30) is never decided by, offered or keyed for a policy", () => {
+  const policy = new PermissionPolicy();
+  // The user chose "Allow all actions of this kind" (and more) on Kiro's own requests in s1.
+  policy.set("s1", "kind:other", "allow");
+  policy.set("s1", "cap:agent_link_message", "allow");
+  policy.set("s1", "res:agent_link_message\u0000sess-2", "allow");
+  const confirmation = { toolKind: "other", capability: "agent_link_message", resource: "sess-2", local: true };
+
+  // No rule answers the confirmation, whatever its scope…
+  assert.equal(policy.lookup("s1", confirmation), undefined);
+  assert.equal(decide(policy, "s1", confirmation, options), undefined);
+  // …while Kiro's own request of the same shape is still answered as before.
+  const { local: _local, ...kiros } = confirmation;
+  assert.equal(decide(policy, "s1", kiros, options), "once");
+  assert.equal(decide(policy, "s1", { toolKind: "other" }, options), "once");
+
+  // Nothing is offered on the card, and nothing can be remembered from it.
+  assert.deepEqual(offeredPolicies(confirmation), []);
+  for (const scope of ["kind", "capability", "resource"] as const) {
+    assert.equal(policyKey(scope, confirmation), undefined, `no ${scope} key for a local subject`);
+  }
+  // `local: false` is an ordinary subject.
+  assert.equal(policyKey("kind", { ...confirmation, local: false }), "kind:other");
+  assert.equal(offeredPolicies({ ...confirmation, local: false }).length, 3);
+});

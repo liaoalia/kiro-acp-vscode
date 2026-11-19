@@ -25,6 +25,16 @@ export function normalizeOrigin(value: unknown): MessageOrigin | undefined {
   };
 }
 
+/**
+ * Whether the text of a message renders as markdown (sanitised like agent
+ * messages): agent messages and thoughts do, and so does a user message
+ * another agent session sent (D30), since an agent wrote it and agents write
+ * markdown. The user's own messages stay plain text, exactly as typed.
+ */
+export function rendersMarkdown(message: { role: string; origin?: unknown }): boolean {
+  return message.role !== "user" || normalizeOrigin(message.origin) !== undefined;
+}
+
 /** Identity of an origin for memo keys and no-op checks; "" when absent or malformed. */
 export function originKey(value: unknown): string {
   const origin = normalizeOrigin(value);

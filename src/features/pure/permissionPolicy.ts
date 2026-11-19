@@ -11,6 +11,12 @@
  * option ids: when the agent offers no matching option the request falls
  * through to the user.
  *
+ * A confirmation the extension asks itself (a {@link PolicySubject.local}
+ * subject: the agent-link cards, D30) takes no part in any of it: no rule
+ * answers it, none is offered on it and none can be remembered from it, so a
+ * rule for Kiro's own requests of kind `other` never sends a peer message and
+ * a click on such a card never approves Kiro's tool calls.
+ *
  * vscode-free; unit-tested in `test/features-permissionPolicy.test.ts`.
  */
 import * as path from "node:path";
@@ -33,6 +39,13 @@ export interface PolicySubject {
   capability?: string;
   /** `_meta.kiro.consent.resource` verbatim (a file path, a shell command, …). */
   resource?: string;
+  /**
+   * Asked by the extension itself, not by the agent (the agent-link
+   * confirmation cards, D30): session policies never answer it, are never
+   * offered on it and cannot be remembered from it. Its own memory (the
+   * `firstPerPair` mode) is the extension's business.
+   */
+  local?: boolean;
 }
 
 export type OfferedPolicy = NonNullable<PermissionView["policies"]>[number];
@@ -97,6 +110,7 @@ export function normalizeResource(resource: string, fsResource: boolean, platfor
  * rule remembered for one capability never matches another on the same path.
  */
 export function policyKey(scope: PermissionScope, subject: PolicySubject, platform?: NodeJS.Platform): string | undefined {
+  if (subject.local) return undefined;
   switch (scope) {
     case "kind":
       return `kind:${subject.toolKind}`;
@@ -152,9 +166,10 @@ export class PermissionPolicy {
 
   /**
    * The remembered decision for `subject`, consulting the resource, then the
-   * capability, then the kind rule.
+   * capability, then the kind rule. Never one for a `local` subject.
    */
   lookup(sessionId: string, subject: PolicySubject, platform?: NodeJS.Platform): PolicyDecision | undefined {
+    if (subject.local) return undefined;
     for (const scope of SCOPE_PRECEDENCE) {
       const key = policyKey(scope, subject, platform);
       if (key === undefined) continue;
@@ -223,9 +238,11 @@ export function decisionOfOption(
  * the capability (else the kind): "Allow all changes to <basename>" for
  * `fs_write`/`edit`, "Allow reading <basename>" for `fs_read`/`read`,
  * `Allow "<command>" every time` for `shell`/`execute`, and
- * "Allow <capability> on <basename|resource>" for anything else.
+ * "Allow <capability> on <basename|resource>" for anything else. None for a
+ * `local` subject (a confirmation the extension asks, D30).
  */
 export function offeredPolicies(subject: PolicySubject, platform?: NodeJS.Platform): OfferedPolicy[] {
+  if (subject.local) return [];
   const out: OfferedPolicy[] = [];
   const noun = kindNoun(subject.toolKind);
   out.push({

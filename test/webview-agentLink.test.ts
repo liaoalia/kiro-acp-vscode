@@ -5,6 +5,7 @@ import {
   normalizeOrigin,
   originKey,
   originLabel,
+  rendersMarkdown,
   sessionHandle,
   truncateTitle,
   withHandle,
@@ -75,4 +76,15 @@ test("session handles: trimmed when present, the title unchanged when absent", (
   assert.equal(withHandle("s3", "Fix the login bug"), "s3 · Fix the login bug");
   assert.equal(withHandle(undefined, "Fix the login bug"), "Fix the login bug");
   assert.equal(withHandle("  ", "New session"), "New session");
+});
+
+test("rendersMarkdown: agent text and peer messages are markdown, the user's own text stays plain", () => {
+  const origin = { sessionId: "sess-2", handle: "s2", title: "Fix it" };
+  assert.equal(rendersMarkdown({ role: "agent" }), true);
+  assert.equal(rendersMarkdown({ role: "thought" }), true);
+  assert.equal(rendersMarkdown({ role: "user" }), false);
+  assert.equal(rendersMarkdown({ role: "user", origin }), true);
+  // A malformed origin is no origin: plain text, like the header it would not get.
+  assert.equal(rendersMarkdown({ role: "user", origin: { handle: "s2" } }), false);
+  assert.equal(rendersMarkdown({ role: "user", origin: null }), false);
 });

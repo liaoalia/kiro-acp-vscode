@@ -290,9 +290,11 @@ const MAX_CHAIN_LIMIT = 50;
 const CONFIRM_ALLOW = "send";
 const CONFIRM_REJECT = "dont-send";
 /**
- * Consent capabilities of that card (`_meta.kiro.consent`, D23): a message
- * (resource: the target's session id) and a new session (no resource), apart,
- * so "allow all messages" never starts sessions.
+ * Consent capabilities of that card (`_meta.kiro.consent`, D23): they label
+ * it, nothing more. The card is a `local` request, so no session policy
+ * answers it or is offered on it (a "kind other" rule for Kiro's own tool
+ * calls must never send a message, nor a click on the card approve Kiro's
+ * calls); `firstPerPair` is its only memory (D30).
  */
 const CONFIRM_CAPABILITY = "agent_link_message";
 const CONFIRM_START_CAPABILITY = "agent_link_start_session";
@@ -1589,7 +1591,9 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   /**
    * Ask the user in `caller`'s chat (D30): a permission card synthesized
    * through the PermissionManager, so it renders, resolves and makes the
-   * caller `needs_input` like any other request. The card is also a tool call
+   * caller `needs_input` like any other request. It is a `local` request:
+   * session policies neither answer it nor are offered on it, in either
+   * direction (see {@link CONFIRM_CAPABILITY}). The card is also a tool call
    * in the caller's transcript: a `state` snapshot (tab switch, reload) only
    * renders permissions of tool calls it knows, and the call keeps the
    * decision on record. True for "Send" only; "Don't send", a cancel (the
@@ -1598,7 +1602,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   private async confirmPeerAction(
     caller: ChatSession,
     title: string,
-    consent: { capability: string; resource?: string },
+    consent: { capability: string },
     declinedText: string,
     signal: AbortSignal,
   ): Promise<boolean> {
@@ -1617,6 +1621,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
           _meta: { kiro: { consent } },
         },
         signal,
+        { local: true },
       );
       allowed = !signal.aborted && response.outcome.outcome === "selected" && response.outcome.optionId === CONFIRM_ALLOW;
     } finally {
@@ -1705,7 +1710,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       const allowed = await this.confirmPeerAction(
         caller,
         title,
-        { capability: CONFIRM_CAPABILITY, resource: session.id },
+        { capability: CONFIRM_CAPABILITY },
         "Not sent.",
         signal,
       );

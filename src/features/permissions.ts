@@ -42,6 +42,23 @@ export interface PendingPermission {
   /** Diff contents carried by `toolCall.content` (for the diff feature). */
   diffs: ToolDiffContent[];
   createdAt: number;
+  /**
+   * Asked by the extension itself (an agent-link confirmation, D30), not by
+   * the agent: no session policy answers it, offers itself on it or can be
+   * remembered from it.
+   */
+  local: boolean;
+}
+
+/** Options of {@link PermissionManager.request}. */
+export interface PermissionRequestOptions {
+  /**
+   * The extension asks, not the agent (an agent-link confirmation card, D30):
+   * the request is never answered by a session policy, its view offers no
+   * "always" policies and `setPolicy` refuses it. Only the extension can set
+   * this; a request from the agent never carries it.
+   */
+  local?: boolean;
 }
 
 /** Emitted whenever a pending request stops being pending. */
@@ -78,9 +95,10 @@ function asToolKind(kind: unknown): ToolKind | undefined {
   return typeof kind === "string" && TOOL_KINDS.has(kind) ? (kind as ToolKind) : undefined;
 }
 
-function subjectOf(entry: Pick<PendingPermission, "toolKind" | "consent">): PolicySubject {
+function subjectOf(entry: Pick<PendingPermission, "toolKind" | "consent" | "local">): PolicySubject {
   return {
     toolKind: entry.toolKind,
+    ...(entry.local ? { local: true } : {}),
     ...(entry.consent?.capability ? { capability: entry.consent.capability } : {}),
     ...(entry.consent?.resource ? { resource: entry.consent.resource } : {}),
   };
@@ -151,12 +169,15 @@ export class PermissionManager implements vscode.Disposable {
   /**
    * Answer a permission request: immediately from the session policy, or by
    * registering a pending entry the UI resolves later. Aborting `signal`
-   * (the agent cancelled the turn) answers `cancelled`.
+   * (the agent cancelled the turn) answers `cancelled`. A `local` request
+   * (the extension's own confirmation, D30) always goes to the user.
    */
   request(
     req: acp.RequestPermissionRequest,
     signal: AbortSignal,
+    requestOptions: PermissionRequestOptions = {},
   ): Promise<acp.RequestPermissionResponse> {
+    const local = requestOptions.local === true;
     const toolCallId = req.toolCall?.toolCallId ?? "";
     // The request's own kind, else the kind of the tool call it refers to in
     // the request's session (Kiro V3 sends none on the request), else `other`.
@@ -166,7 +187,7 @@ export class PermissionManager implements vscode.Disposable {
       "other";
     const options = Array.isArray(req.options) ? req.options : [];
     const consent = readConsent(req._meta);
-    const auto = decide(this.policy, req.sessionId, subjectOf({ toolKind, consent }), options);
+    const auto = decide(this.policy, req.sessionId, subjectOf({ toolKind, consent, local }), options);
     if (auto !== undefined) {
       return Promise.resolve({ outcome: { outcome: "selected", optionId: auto } });
     }
@@ -189,6 +210,7 @@ export class PermissionManager implements vscode.Disposable {
         consent,
         diffs: extractDiffs(req.toolCall?.content),
         createdAt: Date.now(),
+        local,
         resolve,
         cleanup: () => signal.removeEventListener("abort", onAbort),
       };
@@ -240,12 +262,17 @@ export class PermissionManager implements vscode.Disposable {
    * Remember `decision` for the rest of the session — for the request's tool
    * kind (default), its consent capability or its exact consent resource —
    * and answer the request accordingly.
-   * @throws when the request is unknown or has nothing to key `scope` on.
+   * @throws when the request is unknown, is the extension's own confirmation
+   *   (`local`, D30: answered with its own buttons only) or has nothing to key
+   *   `scope` on.
    */
   setPolicy(requestId: string, decision: PolicyDecision, scope: PermissionScope = "kind"): void {
     const entry = this.entries.get(requestId);
     if (!entry) {
       throw new Error(`Unknown permission request: ${requestId}`);
+    }
+    if (entry.local) {
+      throw new Error("This confirmation cannot be remembered for the session; answer it with its own buttons.");
     }
     const key = policyKey(scope, subjectOf(entry));
     if (key === undefined) {
@@ -395,5 +422,6 @@ function toRecord(entry: Entry): PendingPermission {
     ...(entry.consent ? { consent: { ...entry.consent } } : {}),
     diffs: entry.diffs.map((d) => ({ ...d })),
     createdAt: entry.createdAt,
+    local: entry.local,
   };
 }

@@ -10,7 +10,7 @@
  */
 import { quietLabel, quietTitle } from "./quiet.js";
 import { usageText } from "./usageText.js";
-import { normalizeOrigin, originKey, originLabel, sessionHandle, withHandle } from "./agentLinkText";
+import { normalizeOrigin, originKey, originLabel, rendersMarkdown, sessionHandle, withHandle } from "./agentLinkText";
 import { isSafeImageDataUrl } from "../ui/images";
 import type {
   ConnectionView,
@@ -912,7 +912,8 @@ function renderMessage(el: HTMLElement, message: MessageView): void {
   el.querySelector(":scope > .delivery")?.remove();
   if (message.role === "user" && message.delivery) el.appendChild(deliveryBadge(message.delivery));
   clear(body);
-  const plain = message.role === "user";
+  // The user's own text stays as typed; a peer message is agent-written markdown (D30).
+  const plain = !rendersMarkdown(message);
   let buffer = "";
   const flush = (): void => {
     if (!buffer) return;
@@ -1032,37 +1033,42 @@ function renderPermission(perm: PermissionView, call: ToolCallView): HTMLElement
           h("span", { class: "perm-hint" }, "You can edit the proposed side before accepting."),
         )
       : null,
-    h(
-      "div",
-      { class: "perm-policies", role: "group", "aria-label": "Allow for the rest of the session" },
-      ...policies.map((p) =>
-        actionButton("perm-always", [icon("check", "icon perm-policy-icon"), p.label], {
-          cls: "btn btn-sm btn-secondary perm-policy-allow",
-          data: { request: perm.requestId, decision: "allow", scope: p.scope },
-          title: "Remember this choice for the rest of the session",
-        }),
-      ),
-    ),
-    h(
-      "div",
-      { class: "perm-always", role: "group", "aria-label": "Reject for the rest of the session" },
-      ...policies.map((p) =>
-        actionButton("perm-always", p.rejectLabel, {
-          cls: "link-btn perm-policy-reject",
-          data: { request: perm.requestId, decision: "reject", scope: p.scope },
-          title: "Remember this choice for the rest of the session",
-        }),
-      ),
-    ),
+    policies.length > 0
+      ? h(
+          "div",
+          { class: "perm-policies", role: "group", "aria-label": "Allow for the rest of the session" },
+          ...policies.map((p) =>
+            actionButton("perm-always", [icon("check", "icon perm-policy-icon"), p.label], {
+              cls: "btn btn-sm btn-secondary perm-policy-allow",
+              data: { request: perm.requestId, decision: "allow", scope: p.scope },
+              title: "Remember this choice for the rest of the session",
+            }),
+          ),
+        )
+      : null,
+    policies.length > 0
+      ? h(
+          "div",
+          { class: "perm-always", role: "group", "aria-label": "Reject for the rest of the session" },
+          ...policies.map((p) =>
+            actionButton("perm-always", p.rejectLabel, {
+              cls: "link-btn perm-policy-reject",
+              data: { request: perm.requestId, decision: "reject", scope: p.scope },
+              title: "Remember this choice for the rest of the session",
+            }),
+          ),
+        )
+      : null,
   );
 }
 
 /**
  * The session-wide policies offered under a permission card: the host's
- * ready-made entries when present, else the legacy tool-kind pair.
+ * ready-made entries when it sent a list (an empty one offers none: the
+ * extension's own agent-link confirmation, D30), else the legacy tool-kind pair.
  */
 function permissionPolicies(perm: PermissionView): NonNullable<PermissionView["policies"]> {
-  if (perm.policies && perm.policies.length > 0) return perm.policies;
+  if (Array.isArray(perm.policies)) return perm.policies;
   const kindLabel = TOOL_KIND_LABEL[perm.kind] ?? perm.kind;
   return [
     {

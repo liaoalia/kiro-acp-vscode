@@ -204,7 +204,9 @@ export interface PermissionView {
   /**
    * Client-side "always" policies the host can offer for this request, with
    * ready-made labels (e.g. "Allow all edits this session",
-   * "Allow all changes to tasks.json this session").
+   * "Allow all changes to tasks.json this session"). An empty list offers
+   * none (the extension's own agent-link confirmation, D30); absent, the
+   * webview falls back to the tool-kind pair.
    */
   policies?: Array<{ scope: PermissionScope; label: string; rejectLabel: string }>;
 }
