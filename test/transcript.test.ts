@@ -6,6 +6,7 @@ import {
   applyUpdates,
   createTranscript,
   fileNameOfUri,
+  setMessageOrigin,
   snapshotToUiState,
   toConfigOptionViews,
   toMessageSegment,
@@ -331,4 +332,43 @@ test("snapshotToUiState composes transcript and host-owned fields", () => {
   assert.equal(ui.sessionId, "s1");
   assert.equal(ui.connection.status, "ready");
   assert.deepEqual(ui.configOptions, []);
+});
+
+test("setMessageOrigin marks one message, replaces an origin and ignores unknown ids", () => {
+  const { state } = applyUpdates(createTranscript(), [
+    chunk("user_message_chunk", "please review", "u1"),
+    chunk("agent_message_chunk", "on it", "a1"),
+    chunk("user_message_chunk", "and the tests", "u2"),
+  ]);
+  const ids = state.items.map((i) => (i.type === "message" ? i.message.id : ""));
+  assert.equal(ids.length, 3);
+  const peerId = ids[0];
+  const origin = { sessionId: "sess-2", handle: "s2", title: "Fix the login bug" };
+
+  const marked = setMessageOrigin(state, peerId, origin);
+  assert.notEqual(marked, state);
+  assert.notEqual(marked.items, state.items);
+  const peer = marked.items[0];
+  assert.ok(peer.type === "message");
+  assert.deepEqual(peer.message.origin, origin);
+  assert.notEqual(peer.message.origin, origin, "the origin is copied, not shared with the caller");
+  assert.deepEqual(peer.message.segments, [{ type: "text", text: "please review" }]);
+  // Other messages are the very same objects; the input is not mutated.
+  assert.equal(marked.items[1], state.items[1]);
+  assert.equal(marked.items[2], state.items[2]);
+  const before = state.items[0];
+  assert.ok(before.type === "message");
+  assert.equal(before.message.origin, undefined);
+
+  // A second origin replaces the first.
+  const moved = { sessionId: "sess-3", handle: "s3", title: "Orchestrator" };
+  const replaced = setMessageOrigin(marked, peerId, moved);
+  const again = replaced.items[0];
+  assert.ok(again.type === "message");
+  assert.deepEqual(again.message.origin, moved);
+  assert.equal(replaced.items[2], state.items[2]);
+
+  // Unknown id: the very same state object.
+  assert.equal(setMessageOrigin(state, "msg-404", origin), state);
+  assert.equal(setMessageOrigin(createTranscript(), peerId, origin).items.length, 0);
 });

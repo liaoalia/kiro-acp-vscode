@@ -14,6 +14,7 @@ import type {
   TranscriptItem,
   UiState,
 } from "../ui/protocol";
+import { normalizeOrigin, originKey } from "./agentLinkText";
 
 export function initialState(): UiState {
   return {
@@ -171,6 +172,20 @@ function reduceMessage(state: UiState, msg: ToWebview): UiState {
       // Drop the key entirely when cleared so the message equals a never-badged one.
       const { delivery: _dropped, ...rest } = existing;
       const message: MessageView = delivery ? { ...rest, delivery } : rest;
+      const items = state.items.slice();
+      items[idx] = { type: "message", message };
+      return { ...state, items };
+    }
+
+    case "messageOrigin": {
+      // Posted right after the echo of a peer message (D30); one for a message
+      // we do not hold (or a malformed origin) is dropped, never buffered.
+      const idx = findMessageIndex(state.items, msg.messageId);
+      const origin = normalizeOrigin(msg.origin);
+      if (idx < 0 || !origin) return state;
+      const existing = (state.items[idx] as { type: "message"; message: MessageView }).message;
+      if (originKey(existing.origin) === originKey(origin)) return state;
+      const message: MessageView = { ...existing, origin };
       const items = state.items.slice();
       items[idx] = { type: "message", message };
       return { ...state, items };

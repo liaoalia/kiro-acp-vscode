@@ -315,6 +315,10 @@ app.addEventListener("click", (event) => {
     case "select-session":
       if (d.sessionId && d.sessionId !== state.sessionId) post({ type: "selectSession", sessionId: d.sessionId });
       break;
+    case "reveal-session":
+      // "from s2 · …" on a peer message (D30): the host shows the sender wherever it lives.
+      if (d.sessionId) post({ type: "revealSession", sessionId: d.sessionId });
+      break;
     case "close-session":
       // Nested in the row: never let the row's select fire for this click.
       event.stopPropagation();

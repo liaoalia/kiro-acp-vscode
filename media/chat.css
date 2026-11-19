@@ -581,6 +581,59 @@ summary:focus-visible {
 .delivery-queued {
   opacity: 0.8;
 }
+/* A user message another agent session sent (D30): link-coloured edge and a
+   faint tint so it never reads as typed by the user. */
+.msg-user.msg-peer {
+  border-left: 3px solid var(--kiro-accent);
+  background: color-mix(in srgb, var(--kiro-accent) 7%, var(--vscode-input-background));
+}
+/* "↳ from s2 · “title”" header button: reveals the sending session. */
+.msg-origin {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin: 0 0 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--kiro-accent);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.msg-origin:hover {
+  color: var(--vscode-textLink-activeForeground, var(--kiro-accent));
+}
+.msg-origin:hover .msg-origin-handle,
+.msg-origin:hover .msg-origin-title {
+  text-decoration: underline;
+}
+.msg-origin:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+.msg-origin .icon svg {
+  width: 12px;
+  height: 12px;
+}
+.msg-origin-from,
+.msg-origin-sep {
+  flex: 0 0 auto;
+  color: var(--kiro-dim);
+}
+.msg-origin-handle {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+.msg-origin-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .msg-agent {
   align-self: stretch;
   padding: 0 2px;
@@ -1918,6 +1971,17 @@ summary:focus-visible {
     color: inherit;
     opacity: 0.75;
   }
+  /* Agent-link handle ("s3", D30): what other agents call this session. */
+  .sp-handle {
+    flex: 0 0 auto;
+    font-size: 10px;
+    color: var(--kiro-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .sp-row[aria-selected="true"] .sp-handle {
+    color: inherit;
+    opacity: 0.75;
+  }
   /* The close button takes the time's place on hover/focus; it keeps a zero
      width (not display:none) so it stays reachable with Tab. */
   .sp-close {
@@ -2032,6 +2096,7 @@ summary:focus-visible {
   /* Collapsed: icons only, centred in a 28px square */
   .session-panel.collapsed .sp-label,
   .session-panel.collapsed .sp-title,
+  .session-panel.collapsed .sp-handle,
   .session-panel.collapsed .sp-time,
   .session-panel.collapsed .sp-close {
     display: none;

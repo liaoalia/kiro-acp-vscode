@@ -222,3 +222,99 @@ test("a state snapshot carries `acceptsPromptsDuringTurn` and per-message `deliv
   const deliveries = next.items.map((it) => (it.type === "message" ? it.message.delivery : "tool"));
   assert.deepEqual(deliveries, ["steering", "queued", undefined]);
 });
+
+const ORIGIN = { sessionId: "sess-2", handle: "s2", title: "Fix the login bug" };
+
+test("`messageOrigin` marks a user message and survives later chunks and delivery changes", () => {
+  let state = reduce(initialState(), { type: "chunk", messageId: "u1", role: "user", segment: { type: "text", text: "Please " } });
+  state = reduce(state, { type: "chunk", messageId: "a1", role: "agent", segment: { type: "text", text: "ok" } });
+  const first = state.items[0];
+  const agent = state.items[1];
+  assert.ok(first.type === "message");
+  assert.equal(first.message.origin, undefined, "a new message has no origin");
+
+  const before = state;
+  state = reduce(state, { type: "messageOrigin", messageId: "u1", origin: ORIGIN });
+  assert.notEqual(state, before);
+  assert.notEqual(state.items, before.items, "items array is copied on change");
+  const marked = state.items[0];
+  assert.ok(marked.type === "message");
+  assert.notEqual(marked.message, first.message, "message object is replaced so the renderer re-renders it");
+  assert.deepEqual(marked.message.origin, ORIGIN);
+  assert.deepEqual(marked.message.segments, first.message.segments);
+  assert.equal(state.items[1], agent, "other messages are untouched");
+  // Not activity of its own: the echo chunk before it already stamped the session.
+  assert.equal(state.lastActivityAt, before.lastActivityAt);
+
+  // The same origin again is a no-op (same object).
+  assert.equal(reduce(state, { type: "messageOrigin", messageId: "u1", origin: { ...ORIGIN } }), state);
+
+  // Later chunks and a delivery badge keep it.
+  state = reduce(state, { type: "chunk", messageId: "u1", role: "user", segment: { type: "text", text: "review" } });
+  state = reduce(state, { type: "messageDelivery", messageId: "u1", delivery: "queued" });
+  const grown = state.items[0];
+  assert.ok(grown.type === "message");
+  assert.deepEqual(grown.message.segments, [{ type: "text", text: "Please review" }]);
+  assert.equal(grown.message.delivery, "queued");
+  assert.deepEqual(grown.message.origin, ORIGIN);
+  state = reduce(state, { type: "messageDelivery", messageId: "u1", delivery: null });
+  const delivered = state.items[0];
+  assert.ok(delivered.type === "message");
+  assert.deepEqual(delivered.message.origin, ORIGIN);
+
+  // A different origin replaces it.
+  const renamed = { ...ORIGIN, title: "Fix the login bug (v2)" };
+  state = reduce(state, { type: "messageOrigin", messageId: "u1", origin: renamed });
+  const replaced = state.items[0];
+  assert.ok(replaced.type === "message");
+  assert.deepEqual(replaced.message.origin, renamed);
+});
+
+test("`messageOrigin` for an unknown message, before its echo or malformed is ignored", () => {
+  const state = reduce(initialState(), { type: "chunk", messageId: "u1", role: "user", segment: { type: "text", text: "hi" } });
+  assert.equal(reduce(state, { type: "messageOrigin", messageId: "nope", origin: ORIGIN }), state);
+  // Arriving before the message exists: dropped, and the later echo is a plain user message.
+  let early = reduce(initialState(), { type: "messageOrigin", messageId: "u9", origin: ORIGIN });
+  assert.equal(early.items.length, 0);
+  early = reduce(early, { type: "chunk", messageId: "u9", role: "user", segment: { type: "text", text: "late echo" } });
+  const echo = early.items[0];
+  assert.ok(echo.type === "message");
+  assert.equal(echo.message.origin, undefined);
+  // An origin without a session id cannot be revealed: ignored.
+  const bad = { handle: "s2", title: "x" } as unknown as typeof ORIGIN;
+  assert.equal(reduce(state, { type: "messageOrigin", messageId: "u1", origin: bad }), state);
+  assert.equal(reduce(state, { type: "messageOrigin", messageId: "u1", origin: null as unknown as typeof ORIGIN }), state);
+  // Missing handle / title degrade to "" rather than breaking the label.
+  const sparse = reduce(state, { type: "messageOrigin", messageId: "u1", origin: { sessionId: "sess-2" } as unknown as typeof ORIGIN });
+  const item = sparse.items[0];
+  assert.ok(item.type === "message");
+  assert.deepEqual(item.message.origin, { sessionId: "sess-2", handle: "", title: "" });
+});
+
+test("a state snapshot carries per-message `origin` and later updates keep it", () => {
+  let state = reduce(
+    initialState(),
+    snapshot({
+      sessionId: "s1",
+      items: [
+        { type: "message", message: { id: "u1", role: "user", segments: [{ type: "text", text: "mine" }] } },
+        {
+          type: "message",
+          message: { id: "u2", role: "user", segments: [{ type: "text", text: "from a peer" }], delivery: "queued", origin: ORIGIN },
+        },
+      ],
+    }),
+  );
+  const origins = state.items.map((it) => (it.type === "message" ? it.message.origin : undefined));
+  assert.deepEqual(origins, [undefined, ORIGIN]);
+  // The host re-posting the same origin after the snapshot changes nothing.
+  assert.equal(reduce(state, { type: "messageOrigin", messageId: "u2", origin: { ...ORIGIN } }), state);
+  // Clearing the badge when the queued message is sent keeps the origin.
+  state = reduce(state, { type: "messageDelivery", messageId: "u2", delivery: null });
+  const sent = state.items[1];
+  assert.ok(sent.type === "message");
+  assert.equal(sent.message.delivery, undefined);
+  assert.deepEqual(sent.message.origin, ORIGIN);
+  // A session switch drops it with the rest of the transcript.
+  assert.deepEqual(reduce(state, { type: "session", sessionId: "s2" }).items, []);
+});

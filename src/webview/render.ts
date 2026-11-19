@@ -10,12 +10,14 @@
  */
 import { quietLabel, quietTitle } from "./quiet.js";
 import { usageText } from "./usageText.js";
+import { normalizeOrigin, originKey, originLabel, sessionHandle, withHandle } from "./agentLinkText";
 import { isSafeImageDataUrl } from "../ui/images";
 import type {
   ConnectionView,
   ContextChip,
   ImageSegment,
   MessageDelivery,
+  MessageOrigin,
   MessageView,
   PermissionView,
   SessionSummary,
@@ -29,9 +31,11 @@ import {
   TOOL_KIND_LABEL,
   TOOL_STATUS_LABEL,
   actionButton,
+  append,
   clear,
   h,
   icon,
+  type Child,
   mascot,
   reconcileChildren,
   safeJson,
@@ -111,9 +115,9 @@ function fullTime(updatedAt: number): string {
   return Number.isFinite(d.getTime()) ? d.toLocaleString() : "";
 }
 
-/** Identity of a session list as the header/select sees it: id, title and status of every row. */
+/** Identity of a session list as the header/select sees it: id, title, status and handle of every row. */
 function sessionOptionsKey(sessions: SessionSummary[]): string {
-  return sessions.map((s) => `${s.id}${SEP}${s.title ?? ""}${SEP}${s.status}`).join(ROW_SEP);
+  return sessions.map((s) => `${s.id}${SEP}${s.title ?? ""}${SEP}${s.status}${SEP}${sessionHandle(s.handle)}`).join(ROW_SEP);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,7 +290,7 @@ function renderSessionSelect(dom: HeaderDom, state: UiState): void {
         select.appendChild(
           h(
             "option",
-            { value: s.id, title: `${SESSION_STATUS_LABEL[s.status] ?? s.status}: ${title}` },
+            { value: s.id, title: `${SESSION_STATUS_LABEL[s.status] ?? s.status}: ${withHandle(s.handle, title)}` },
             `${SESSION_STATUS_GLYPH[s.status] ?? ""} ${title}`,
           ),
         );
@@ -453,14 +457,25 @@ function ensurePanelDom(el: HTMLElement): PanelDom {
   return panelDom;
 }
 
-/** Row identity: title, status, selection, layout and the minute bucket of `updatedAt` (plus the label it yields). */
+/** Row identity: title, status, handle, selection, layout and the minute bucket of `updatedAt` (plus the label it yields). */
 function sessionRowKey(s: SessionSummary, selected: boolean, collapsed: boolean, now: number): string {
-  return [s.title ?? "", s.status, selected, collapsed, Math.floor(s.updatedAt / 60_000), relativeTime(s.updatedAt, now)].join(SEP);
+  return [
+    s.title ?? "",
+    s.status,
+    sessionHandle(s.handle),
+    selected,
+    collapsed,
+    Math.floor(s.updatedAt / 60_000),
+    relativeTime(s.updatedAt, now),
+  ].join(SEP);
 }
 
 function renderSessionRow(s: SessionSummary, selected: boolean, collapsed: boolean, now: number): HTMLElement {
   const title = s.title?.trim() || "New session";
   const statusLabel = SESSION_STATUS_LABEL[s.status] ?? s.status;
+  // Agent-link handle (D30): what other agents call this session; absent → the row is unchanged.
+  const handle = sessionHandle(s.handle);
+  const named = withHandle(handle, title);
   const row = h(
     "div",
     {
@@ -468,16 +483,17 @@ function renderSessionRow(s: SessionSummary, selected: boolean, collapsed: boole
       role: "option",
       tabindex: 0,
       "aria-selected": String(selected),
-      "aria-label": `${title}, ${statusLabel}, ${relativeTime(s.updatedAt, now)}`,
+      "aria-label": `${title}, ${statusLabel}, ${relativeTime(s.updatedAt, now)}${handle ? `, ${handle}` : ""}`,
       "data-action": "select-session",
       "data-session-id": s.id,
-      title: collapsed ? `${title} — ${statusLabel}` : `${title}\n${statusLabel} · ${fullTime(s.updatedAt)}`,
+      title: collapsed ? `${named} — ${statusLabel}` : `${named}\n${statusLabel} · ${fullTime(s.updatedAt)}`,
     },
     sessionStatusIcon(s.status),
   );
   if (!collapsed) {
-    row.append(
+    append(row, [
       h("span", { class: "sp-title" }, title),
+      handle ? h("span", { class: "sp-handle", "aria-hidden": "true" }, handle) : null,
       h("span", { class: "sp-time", "aria-hidden": "true" }, relativeTime(s.updatedAt, now)),
       actionButton("close-session", icon("close"), {
         cls: "sp-close",
@@ -485,14 +501,14 @@ function renderSessionRow(s: SessionSummary, selected: boolean, collapsed: boole
         title: "Close session",
         ariaLabel: `Close session ${title}`,
       }),
-    );
+    ]);
   }
   return row;
 }
 
 /**
- * Right-hand session panel. Rows are memoised on (id, title, status, minute
- * bucket of `updatedAt`), so a new `sessions` array with only sub-minute
+ * Right-hand session panel. Rows are memoised on (id, title, status, handle,
+ * minute bucket of `updatedAt`), so a new `sessions` array with only sub-minute
  * timestamp changes rebuilds nothing; the minute of `now` refreshes the
  * relative times on the caller's timer.
  */
@@ -820,6 +836,8 @@ interface Entry {
   open: boolean;
   /** Delivery badge as last rendered (part of a message's identity). */
   delivery: MessageDelivery | undefined;
+  /** `originKey` of the peer-message header as last rendered; "" for none (D30). */
+  origin: string;
 }
 
 function itemKey(item: TranscriptItem): string {
@@ -857,10 +875,40 @@ function deliveryBadge(delivery: MessageDelivery): HTMLElement {
   );
 }
 
+/**
+ * Header of a user message another agent session sent (D30):
+ * "↳ from s2 · “Fix the login bug”". Clicking it reveals the sender
+ * (`revealSession`, delegated in main.ts).
+ */
+function originHeader(origin: MessageOrigin): HTMLButtonElement {
+  const label = originLabel(origin);
+  const parts: Child[] = [icon("peer"), h("span", { class: "msg-origin-from" }, "from")];
+  if (label.handle) parts.push(h("span", { class: "msg-origin-handle" }, label.handle));
+  if (label.handle && label.title) parts.push(h("span", { class: "msg-origin-sep", "aria-hidden": "true" }, "·"));
+  if (label.title) parts.push(h("span", { class: "msg-origin-title" }, `“${label.title}”`));
+  if (!label.handle && !label.title) parts.push(h("span", { class: "msg-origin-title" }, "another session"));
+  return actionButton("reveal-session", parts, {
+    cls: "msg-origin",
+    data: { "session-id": origin.sessionId },
+    title: label.tooltip,
+    ariaLabel: label.ariaLabel,
+  });
+}
+
+/** The origin a user message's header shows; undefined for the user's own (or a malformed one). */
+function peerOrigin(message: MessageView): MessageOrigin | undefined {
+  return message.role === "user" ? normalizeOrigin(message.origin) : undefined;
+}
+
 function renderMessage(el: HTMLElement, message: MessageView): void {
   const body = el.querySelector<HTMLElement>(".msg-body");
   if (!body) return;
-  // Delivery badge lives after the body so the body only ever holds content.
+  // The "from …" header of a peer message sits before the body, the delivery
+  // badge after it, so the body only ever holds content.
+  el.querySelector(":scope > .msg-origin")?.remove();
+  const origin = peerOrigin(message);
+  el.classList.toggle("msg-peer", origin !== undefined);
+  if (origin) el.insertBefore(originHeader(origin), body);
   el.querySelector(":scope > .delivery")?.remove();
   if (message.role === "user" && message.delivery) el.appendChild(deliveryBadge(message.delivery));
   clear(body);
@@ -1176,20 +1224,22 @@ export class TranscriptRenderer {
 
       if (item.type === "message") {
         if (!entry) {
-          entry = { el: messageSkeleton(item.message), rendered: undefined, perm: undefined, open: false, delivery: undefined };
+          entry = { el: messageSkeleton(item.message), rendered: undefined, perm: undefined, open: false, delivery: undefined, origin: "" };
           this.entries.set(key, entry);
         }
-        if (entry.rendered !== item.message || entry.delivery !== item.message.delivery) {
+        const origin = originKey(peerOrigin(item.message));
+        if (entry.rendered !== item.message || entry.delivery !== item.message.delivery || entry.origin !== origin) {
           renderMessage(entry.el, item.message);
           entry.rendered = item.message;
           entry.delivery = item.message.delivery;
+          entry.origin = origin;
         }
         if (item.message.role === "agent") lastAgent = entry.el;
         entry.el.classList.remove("streaming");
       } else {
         const call = state.toolCalls[item.toolCallId];
         if (!entry) {
-          entry = { el: h("div", { class: "tool" }), rendered: undefined, perm: undefined, open: false, delivery: undefined };
+          entry = { el: h("div", { class: "tool" }), rendered: undefined, perm: undefined, open: false, delivery: undefined, origin: "" };
           this.entries.set(key, entry);
         }
         if (!call) {

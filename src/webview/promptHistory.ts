@@ -1,6 +1,10 @@
 /**
  * Composer history: the prompts sent from this webview, recalled with Up /
  * Down like a shell. Pure (no DOM); the composer owns persistence.
+ *
+ * Only text typed and sent in the composer is recorded (`Composer.send`);
+ * the history is never rebuilt from the transcript, so messages another
+ * agent session sent (user bubbles with an `origin`, D30) are never offered.
  */
 export const HISTORY_LIMIT = 100;
 
