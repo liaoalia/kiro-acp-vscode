@@ -358,6 +358,7 @@
         },
         "kiroAcp.agentLink.maxChain": {
           "type": "integer",
+          "scope": "machine",
           "default": 6,
           "minimum": 1,
           "maximum": 50,
@@ -365,6 +366,7 @@
         },
         "kiroAcp.agentLink.confirm": {
           "type": "string",
+          "scope": "machine",
           "enum": [
             "firstPerPair",
             "always",

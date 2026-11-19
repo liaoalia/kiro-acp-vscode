@@ -37,8 +37,12 @@ import type { ConnectionView, ToWebview, ToolCallView, UiState } from "../../src
 // Settings, tabs, timing
 // ---------------------------------------------------------------------------
 
+/** Settings a workspace may not override (scope `machine`) are written to the user settings. */
+const MACHINE_SCOPED = new Set(["agentLink.confirm", "agentLink.maxChain", "fs.allowedWriteRoots"]);
+
 async function setSetting(key: string, value: unknown): Promise<void> {
-  await vscode.workspace.getConfiguration("kiroAcp").update(key, value, vscode.ConfigurationTarget.Workspace);
+  const target = MACHINE_SCOPED.has(key) ? vscode.ConfigurationTarget.Global : vscode.ConfigurationTarget.Workspace;
+  await vscode.workspace.getConfiguration("kiroAcp").update(key, value, target);
 }
 
 /** A webview stand-in that keeps the time each message arrived. */

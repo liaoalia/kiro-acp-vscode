@@ -724,7 +724,9 @@ Still behind `kiroAcp.agentLink.enabled`, off by default.
   one too (each asked the user). The order of the checks: self, paused,
   empty, over 32 KiB, chain, rate, then the confirmation.
 - **Confirmation as a synthetic permission card, isolated from policies.**
-  `kiroAcp.agentLink.confirm` (`firstPerPair` default / `always` / `never`)
+  `kiroAcp.agentLink.confirm` (`firstPerPair` default / `always` / `never`;
+  like `maxChain`, scope `machine`, so a repository's `.vscode/settings.json`
+  cannot switch the consent off or lengthen chains, as for D8's write roots)
   asks in the *sender's* chat through `PermissionManager.request` (kind
   `other`, options "Send" `allow_once` / "Don't send" `reject_once`,
   `_meta.kiro.consent.capability` `agent_link_message` /
