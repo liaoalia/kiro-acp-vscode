@@ -2,8 +2,8 @@
 
 A VS Code extension that talks to the [Kiro](https://kiro.dev) agent over the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com). It spawns
-`kiro-cli acp` as a child process and exchanges JSON-RPC over stdio using the
-official ACP TypeScript SDK. The goal is a Claude Code–like chat experience in
+`kiro-cli acp` as child processes (one per chat session) and exchanges
+JSON-RPC over stdio using the official ACP TypeScript SDK. The goal is a Claude Code–like chat experience in
 VS Code on top of Kiro.
 
 The extension itself makes **no outbound network calls** and has **no
@@ -18,6 +18,7 @@ only `kiro-cli` sessions holding a per-session token can use.
 | # | Feature | Where |
 |---|---------|-------|
 | 1 | Chat panel in the secondary sidebar: streaming replies, tool-call cards with status, cancel, new session, mode / model / config pickers (when the agent advertises them) | **Kiro** view in the secondary side bar |
+| 1a | Parallel sessions: every session runs in a `kiro-cli` process of its own, so chat tabs work at the same time; a session whose process exits is loaded into a new one by your next message | automatic, `kiroAcp.agentProcesses.max` |
 | 2 | Native diff review: proposed file changes open in VS Code's diff editor; Accept / Reject in the editor title or the chat card answer the agent's permission request; you can edit the proposed side before accepting and the edited text is what gets written | diff editor + chat |
 | 3 | Live plan document: the agent's plan is rendered as Markdown in an editor tab and updated as steps progress; Approve / Reject appear when the agent asks to leave plan mode | `Kiro: Open Plan` |
 | 4 | File context: type `@` in the input to pick workspace files; the active editor file is attached by default as a removable chip | chat input |
@@ -33,6 +34,13 @@ only `kiro-cli` sessions holding a per-session token can use.
 - **Several chat tabs**: the Kiro button in an editor's title bar (or
   `Kiro: New Chat Tab`) opens another tab with its own session;
   `Kiro: Focus Chat` and the status-bar item reveal the last active one.
+- **Sessions run in parallel**: every session gets a `kiro-cli acp` process
+  of its own (one process runs one turn at a time), so the tabs work at the
+  same time. A spare process is kept warm, so a new session opens at once.
+  Up to `kiroAcp.agentProcesses.max` processes (default 8); past that, new
+  sessions share the least busy process and take turns there. When a
+  session's process exits, only that session says so, and your next message
+  loads it into a new process.
 - **Several sessions per tab**: each tab is a group; the panel on the right
   lists the tab's own sessions with their status (⟳ working, ○ idle, **!**
   waiting for your input, × error). Click to switch, hover for the close
@@ -84,8 +92,9 @@ only `kiro-cli` sessions holding a per-session token can use.
   stay in the input while you switch sessions, but are not kept across a
   window reload. Images in restored sessions are shown when small, otherwise
   as an `[image]` chip.
-- Sessions live as long as the `kiro-cli acp` process; restarting the agent
-  ends them (restore a past session to pick one up again).
+- `Kiro: Restart Agent Process` (or `/restart`) stops every `kiro-cli`
+  process and ends the sessions (restore a past session to pick one up
+  again); signing in restores them by itself.
 
 ## Agents talking to each other
 
@@ -188,11 +197,15 @@ or messages are paused, stop messaging and tell your user. Tell your user whom y
 messaged and why.
 ```
 
-Known limits: all sessions share one `kiro-cli` process, which has been seen
-running one turn at a time; until that changes, a message to another session
-is worked on only after the sender's turn ends, and `wait_for_session` from
-inside a turn can only time out (end the turn instead: the reply comes back
-as a message). A session restored with `session/load` (Past sessions, a
+Each session runs in a process of its own, so a session that gets a message
+starts on it while the sender's turn still runs, and `wait_for_session` from
+inside a turn sees it work and finish. With `kiroAcp.agentProcesses.max` set
+to `1` (or two sessions sharing a process past the limit) a process runs one
+turn at a time again: the message waits for the sender's turn, and such a
+wait can only time out (end the turn instead: the reply comes back as a
+message).
+
+Known limits: a session restored with `session/load` (Past sessions, a
 sign-in) replays the messages it got from other agents as the framed text,
 without the "from …" header. Only `list_sessions` has been tried against the
 real Kiro CLI so far.
@@ -211,7 +224,7 @@ commands sent as text, so the extension routes them itself:
 | `/plan [text]` | Switch to the planner mode (when the agent has one) and send the text |
 | `/model <id>`, `/effort <level>` | Change the advertised config option; no argument lists the values |
 | `/usage`, `/context`, `/compact` | Call the matching advertised extension method (e.g. `_kiro/account/getUsage`, `_kiro/session/context`, `_kiro/session/compact`; matched by name pattern) and show the result in the chat |
-| `/capabilities`, `/caps` | Show what the connected agent advertises: extension methods, capabilities, modes, options, commands |
+| `/capabilities`, `/caps` | Show what the connected agent advertises: extension methods, capabilities, modes, options, commands; and the running `kiro-cli` processes with their sessions |
 | `/cancel`, `/restart` | Cancel the turn / restart `kiro-cli` |
 | `/login` | Sign in: runs `kiro-cli login` in a terminal, then reconnects and restores the open sessions |
 | anything else | Sent to the agent as a prompt (agent-advertised commands and custom prompts) |
@@ -277,6 +290,7 @@ into a compact header.
 |---------|---------|-------------|
 | `kiroAcp.cliPath` | `kiro-cli` | Path to the `kiro-cli` executable. A bare name is looked up on `PATH` and then in the default install locations (`C:\Program Files\Kiro-Cli\kiro-cli.exe`, `~/.local/bin/kiro-cli`, `/usr/local/bin/kiro-cli`, `/opt/homebrew/bin/kiro-cli`). Use a full path if VS Code does not see your shell's `PATH`. |
 | `kiroAcp.cliArgs` | `[]` | Extra arguments appended after `acp`, e.g. `["--agent-engine=v2"]` to force the CLI v2 harness. |
+| `kiroAcp.agentProcesses.max` | `8` | How many `kiro-cli acp` processes may run at once (1–32). Each session gets one of its own so sessions run in parallel; every process costs memory. Past the limit new sessions share the least busy process and take turns there; `1` runs every session in one shared process, as before. Applies at the next start or `Kiro: Restart Agent Process`. See DECISIONS D31. |
 | `kiroAcp.chatLocation` | `editor` | `editor`: the chat opens as a tab in the editor area (`Kiro: Focus Chat`, permission requests, `Send Selection`). `sidebar`: it opens in the **Kiro** view of the secondary side bar. Both can be open at once. |
 | `kiroAcp.showSettingsByDefault` | `false` | Show the mode / model / option pickers without pressing the ⚙ button in the chat header. |
 | `kiroAcp.attachActiveFile` | `false` | Attach the active editor file to each prompt as a removable chip. Off by default: add files with `@` or **Send Selection**. |
@@ -333,7 +347,7 @@ from `kiro-cli` (proxy errors appear there).
 | `Kiro: New Session` | Start a fresh ACP session |
 | `Kiro: Open Past Session…` | Pick one of the agent's past sessions for this workspace and restore it |
 | `Kiro: Cancel Current Turn` | Send `session/cancel` |
-| `Kiro: Restart Agent Process` | Kill and respawn `kiro-cli acp` |
+| `Kiro: Restart Agent Process` | Stop every `kiro-cli acp` process and start again (applies `kiroAcp.agentProcesses.max`) |
 | `Kiro: Log In (runs kiro-cli login)` | Open a terminal running the sign-in; when it exits (or on **Reconnect**) the agent is respawned and the open sessions restored |
 | `Kiro: Send Selection to Kiro Chat` | Attach the current selection as a chip |
 | `Kiro: Open Plan` | Open (or re-open) the live plan document |
@@ -367,7 +381,8 @@ sessions):
 
 Scenarios: `tour`, `chat`, `cancel`, `permission-reject`, `switch-mode`,
 `refusal`, `bad-request`, `crash`; add `--engine v2` or `--auth-required` to
-see the CLI v2 surface or the sign-in banner. Typing `/scenario <name>` in the
+see the CLI v2 surface or the sign-in banner, or `--serial-turns` to make each
+process run one turn at a time like the real CLI. Typing `/scenario <name>` in the
 chat switches scenario per turn. With the agent link on, `/scenario link-send s2`
 followed by lines sends those lines to `s2`; a line `/scenario peer-echo` in
 them makes the receiving session answer with the exact text its agent got (the

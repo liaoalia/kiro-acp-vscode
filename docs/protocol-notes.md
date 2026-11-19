@@ -326,13 +326,12 @@ Stages 2–4 add `read_session`, `send_message`, `wait_for_session` and
 tab 1 to "ask the session in the other tab what it is working on and wait for
 its answer", then record:
 
-- **One turn at a time.** All sessions share one kiro-cli process (D19), and
-  on 2026-11-19, of three tabs prompted at once, one worked and the other two
-  got nothing for 33 minutes.
-  Check whether a session that receives a message while the sender's turn
-  runs starts before that turn ends; if not, `wait_for_session` from inside a
-  turn can only time out until sessions get their own processes
-  (docs/plans/2026-11-19-process-per-session.md).
+- **One turn at a time per process.** On 2026-11-19, of three tabs sharing
+  one kiro-cli process, one worked and the other two got nothing for 33
+  minutes; since D31 every session has a process of its own. Check that a
+  session receiving a message while the sender's turn runs starts at once,
+  and that `wait_for_session` from inside the sender's turn ends `idle` with
+  the target's answer (see "Process per session" below).
 - **Long calls.** `wait_for_session` keeps the HTTP request open for up to
   `timeoutSeconds` (default 120 s, at most 600 s). Does Kiro's MCP client time
   out earlier — after how long, and what does the turn show then (a failed tool
@@ -362,6 +361,47 @@ its answer", then record:
   the replayed user message shows the frame, without the "from …" header
   (expected, see the plan's follow-ups).
 
+## Process per session (D31) **[unverified]**
+
+Since D31 every session runs in a `kiro-cli acp` process of its own
+(`kiroAcp.agentProcesses.max`, default 8; a spare is kept warm). The Kiro ACP
+output channel logs every spawn, assignment, release and exit as
+`agent-pool: …` and `/capabilities` lists the processes with their pids.
+Only the fake agent (`--serial-turns`, e2e F19) has run it so far. On a
+signed-in machine, record:
+
+- **Three tabs at once.** Open three chat tabs, send each a prompt that takes
+  a while, all within a few seconds: do all three stream at the same time
+  (the 2026-11-19 failure: one worked, two showed "no reply for 33 min")?
+- **Memory and start time.** The resident memory of one idle `kiro-cli acp`
+  process, and of one after a turn (Task Manager / `ps -o rss`); the time from
+  `agent-pool: process N` spawning to `started` (and to `Agent ready`) in the
+  log. That decides whether 8 is a sensible default.
+- **`session/list` across processes.** Create a session in tab 1 and chat,
+  then open Past sessions from tab 2 (the listing goes to the spare process):
+  does a session created by another process appear, with its title? (Kiro
+  presumably lists its on-disk store; the fake agent lists only its own.)
+- **`session/load` of a session live elsewhere.** With a session open in tab
+  1, try to load the same id from another process (Past sessions in another
+  VS Code window): does it load, fail, or take the session over? The
+  extension never does this itself in one window (an open session is
+  selected, not loaded), but a second window can.
+- **Concurrent writes to the session store.** Run turns in two tabs at the
+  same time, then reload the window and open both from Past sessions: are
+  both conversations complete (no lost or interleaved messages)?
+- **Exit and reload.** Kill one session's `kiro-cli` (its pid from
+  `/capabilities`): only that tab shows "Kiro's process for this session
+  exited"; its next message loads it into a new process and continues the
+  conversation (does Kiro's replay match the transcript, does the model
+  remember the earlier turns?). Also: close a tab mid-turn and check in Past
+  sessions whether the cancelled turn was saved before its process stopped.
+- **Sign-in.** With several tabs open, sign in again (`/login`): every
+  session comes back, each in its own process (the loads run four at a
+  time).
+- **Shared MCP servers.** Every process starts the user's configured MCP
+  servers of its own: check that several processes running the same local
+  MCP server (a stdio server, a port-binding server) do not conflict.
+
 ## Verification
 
 | # | Feature | Fake agent (unit + extension-host E2E) | Real `kiro-cli acp` |
@@ -375,6 +415,7 @@ its answer", then record:
 | 7 | Permissions: allow once / always for session / reject per tool kind | ✅ `test/features-permissionPolicy.test.ts`, `test/e2e/f7-permissions.e2e.ts` | ⏳ |
 | 8 | Image attachments (paste / drop / pick → ACP `image` blocks, D29) | ✅ `test/features-images.test.ts`, `test/webview-attachments.test.ts`, `test/e2e/f16-images.e2e.ts` (the fake agent reports the image blocks it received) | ⏳ (`promptCapabilities.image: true` is advertised; whether Kiro forwards the `uri` field or limits sizes below 5 MB is unknown) |
 | 9 | Agent link: per-session MCP server `kiro-acp-tabs`, tools `list_sessions`, `read_session`, `send_message`, `wait_for_session`, `start_session` (D30) | ✅ `test/agentLink-*.test.ts` (dispatch, server guards and tokens, tool texts and argument checks, frame, rate limiter), `test/features-transcriptText.test.ts`, `test/acp-client.test.ts` (`mcpServers` on new/load, the fake agent's `mcp_call`, peer-message scenarios), `test/e2e/f17-agent-link.e2e.ts` (two tabs see each other; setting off; agent without `mcpCapabilities.http`), `test/e2e/f18-agent-messages.e2e.ts` (delivery, origin and frame, refusals, replies, chain and rate limits, confirmation modes and their isolation from session policies, read, waits, start, reveal, pause, handles across a sign-in) | 🟡 `list_sessions` works (2026-11-19, 0.3.12); the other tools ⏳, see "Agent link" above |
+| 10 | One `kiro-cli` process per session (D31): parallel turns, `agentProcesses.max`, spare, release on close, per-session exit and reload, parallel sign-in restore | ✅ `test/agentPool.test.ts` (pool against fake-agent processes), `test/e2e/f19-processes.e2e.ts` (`--serial-turns`: parallel tabs, `max = 1`, close, kill, mid-turn exit, reload, restore, agent-link waits) | ⏳ see "Process per session" above |
 
 To complete the right-hand column: install Kiro CLI, run `kiro-cli login`,
 then (a) `node scripts/record-acp.mjs --prompt "hello" --out docs/recordings/kiro-initialize.ndjson`

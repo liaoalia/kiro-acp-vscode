@@ -190,6 +190,12 @@ Closing a session cancels its turn and permissions; agent exit marks all
 sessions `error`. Session titles come from the first prompt (≤ 40 chars)
 until the agent reports one via `session_info_update`.
 
+**Superseded in part by D31 (2026-11-19):** the "one `kiro-cli acp` process"
+part. A process runs one turn at a time, so every session now gets a process
+of its own behind the same `KiroAgent` facade; the views, groups, focus and
+per-session state above are unchanged. "Agent exit" now means the whole pool
+stopping (or `Kiro: Restart`); one process exiting ends only its sessions.
+
 ## D20. Sessions are grouped by tab; closing a tab ends its sessions
 With several chat tabs open, every tab listed every session of the process,
 which read as "the same chat four times". Each editor tab (WebviewPanel) is
@@ -469,7 +475,8 @@ sessions of the tab's list were gone. `restorePlan()` now takes every live
 session with a conversation (empty ones are not worth a `session/load`, and
 sessions still restoring or closing are left out). The focused session goes
 first, then the displayed ones, then the rest. `restoreSessions()` loads them
-one at a time into their old group, each view showing its own session again,
+one at a time (since D31: four at a time, each into a process of its own)
+into their old group, each view showing its own session again,
 and keeps each `updatedAt` so the list order survives. With anything to
 restore, the new process opens no first session (`startOnce(false)`). Views
 still without a session then get a fresh one, and focus returns to the
@@ -753,12 +760,108 @@ Still behind `kiroAcp.agentLink.enabled`, off by default.
   the agent got, without `origin` (the replay is the agent's history; the
   frame could be parsed back into an origin, see the plan's follow-ups).
   Kiro may ask its own permission for the MCP tool call as well, so a first
-  message can show two cards (Kiro's, then the confirmation). Every session
-  shares one kiro-cli process (D19), and on 2026-11-19 a signed-in CLI was
-  seen running one turn at a time: until sessions get processes of their own
-  (docs/plans/2026-11-19-process-per-session.md), a message "started" in
-  another session only runs once the sender's turn ends, and a
-  `wait_for_session` from inside a turn can only time out. The fake agent
-  runs turns in parallel, so the e2e tests do not show this.
+  message can show two cards (Kiro's, then the confirmation).
   **[unverified]** every stage-2–4 tool against the real CLI
   (protocol-notes, "Agent link").
+- **One turn at a time per process, solved by D31.** On 2026-11-19 a
+  signed-in CLI ran one turn at a time for all the sessions of its one
+  process, so a message "started" in another session only ran once the
+  sender's turn ended, and a `wait_for_session` from inside a turn could
+  only time out. Since D31 every session has a process of its own: the
+  target runs while the sender waits (e2e F19.7, against the fake agent
+  with `--serial-turns`). With `kiroAcp.agentProcesses.max = 1`, or past the
+  limit when sender and target share a process, the old limit is back
+  (F19.9).
+
+## D31. One kiro-cli process per session (agent pool)
+On 2026-11-19 (0.3.12, signed in) three tabs were prompted at once: one
+answered, the other two showed "no reply for 33 min". The extension sends
+every `session/prompt` at once; the CLI runs **one turn at a time per
+process**, and `kiro-cli acp --help` has no option for more. The agent link
+(D30) hits the same wall: a `wait_for_session` from inside a turn can never
+see its target run when both share the process. The user decided: one
+process per session. Plan: `docs/plans/2026-11-19-process-per-session.md`.
+
+- **A pool behind the same facade.** `AgentPool` (`src/acp/pool.ts`)
+  implements `KiroAgent` over several `KiroAgentImpl` processes, so the
+  controller still talks to one `KiroAgent`. Session-scoped calls (prompt,
+  cancel, mode, config option, model, an extension call whose params name a
+  `sessionId`) go to the process hosting the session; process-wide calls
+  (`session/list`, `authenticate`, extension calls without a session) go to
+  the spare, else any ready process. The client services (fs, terminals,
+  permissions) were already keyed by session id and are shared. A process's
+  own log lines carry `process N:`; the pool logs every spawn, assignment,
+  release and exit (`agent-pool: …`).
+- **A warm spare.** Starting the agent starts one process, the spare; the
+  connection is ready once it answered `initialize`, and its `AgentInfo` is
+  what the banner, the capabilities and `/capabilities` show (every process
+  runs the same CLI). `session/new` and `session/load` take the spare and
+  warm the next one in the background, so a new session opens as fast as
+  with one process.
+- **A limit, then sharing.** `kiroAcp.agentProcesses.max` (default 8, 1–32,
+  the spare included) bounds the processes. Past it a new session shares the
+  process with the fewest sessions, and there sessions take turns again.
+  `1` is the old single shared process. Read at every start; `Kiro: Restart
+  Agent Process` applies a change. `/capabilities` lists `Processes: N
+  running (max M)` and one line per process (number, pid, its sessions'
+  handles or `spare`).
+- **Memory.** Every process is a whole kiro-cli (its runtime, its MCP
+  servers and their children); the cost per process and its start time are
+  **[unverified]** (protocol-notes). Eight covers a few tabs with a couple of
+  sessions each. A session that closes (also `/clear` and a failed restore)
+  releases its process (`releaseSession`), which stops unless it becomes the
+  spare.
+- **Failure isolation.** A process that exits on its own ends only its own
+  sessions (`SessionEvent` `process_exited`); the pool, the connection
+  banner and every other session go on, and a new spare warms up. Only the
+  pool as a whole failing (no spare can start) or being stopped is "the
+  agent went away" (every session `error`, Restart). Each session of the
+  dead process: its turn ends, its queue is dropped (the usual notice), its
+  permission requests are cancelled, the commands it still runs are killed
+  (no agent is left to release them), its agent-link token is revoked, and
+  one notice says "Kiro's process for this session exited (…). Your next
+  message loads the session again in a new process." (an error when it cut
+  a turn short, else a warning). On Windows the turn's `session/prompt`
+  rejects ("ACP connection closed") *before* the exit event arrives: the
+  exit notice replaces that "Prompt failed" when it comes within 5 s with no
+  turn in between, so the user sees one notice. A `wait_for_session` on such
+  a session ends `idle`, as after any failed turn: the session can be
+  messaged again.
+- **Transparent reload.** The session keeps its `ChatSession` (transcript,
+  handle, notices, place in the list), marked `processLost`. Its next turn —
+  a message the user sends, a queued one, a peer message — and a mode /
+  model / option change or a slash command that asks the agent first
+  `session/load` it into a new process, with a new agent-link token bound to
+  its id; the history the agent replays is dropped, the transcript shows it
+  already. Meanwhile the turn shows as running and text typed into it queues
+  (there is no process to steer). Stop ends that turn locally: the load goes
+  on, the prompt is not sent. A load that fails says "Could not load this
+  session into a new Kiro process: …" (the message is not sent); the
+  session stays marked and the next message tries again. An empty session
+  whose process exited is not handed to a new tab as its first session.
+- **Parallel restore.** A sign-in restart (D25) loads up to four sessions
+  at once, each into a process of its own. They start in the plan order
+  (focused, displayed, the rest), each `ChatSession` is created and the
+  focused one focused when its load starts, and every session keeps its old
+  `updatedAt`: order and focus come out as before, whichever load ends first.
+- **Kept as it was.** `auth_required` from one process (its prompt was
+  rejected as signed out) switches the whole connection to the sign-in
+  banner and blocks prompts in every session; signing in restarts the pool
+  and restores everything. kiro-cli stderr errors (D27) still reach every
+  session with a running turn: a stderr line does not tell the controller
+  which process printed it, and throttling per process would be needed
+  before narrowing it (a proxy error usually hits every process anyway).
+- **Limits.** Closing a session mid-turn stops its process right after
+  `session/cancel`; whether Kiro saved the cancelled turn first is
+  **[unverified]**. Whether one process's `session/list` sees sessions
+  another process created, whether `session/load` works for a session still
+  live in another process, and how Kiro's session store takes concurrent
+  writes are **[unverified]** (protocol-notes, D31 checklist). The fake agent
+  keeps sessions in memory per process: only its canned past sessions load
+  into another process, so the e2e tests (F19) reload those; a fresh fake
+  session cannot be loaded elsewhere, which F19.4 uses for the failure path.
+- **How to change.** `kiroAcp.agentProcesses.max = 1` brings the shared
+  process back (an exit is still handled per session: the one process dying
+  ends every session, and each reloads on its next message). Dropping the
+  pool altogether is one line in `ChatController.startAgent`
+  (`createKiroAgent`).

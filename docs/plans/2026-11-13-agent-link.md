@@ -141,7 +141,7 @@ Decisions taken for the packages:
 - [ ] the confirmation card quotes 80 characters of the message; the full text could go into the card's tool call content so the user can read all of it before choosing Send
 - [ ] `lastAgentAnswer` returns null when the newest agent message has no text (a turn that ended right after a tool call), even if an earlier answer of that turn had text
 - [ ] whether Kiro's MCP client times out long `wait_for_session` calls (protocol-notes checklist); if it does, cap `WAIT_MAX_SECONDS` below it
-- [ ] one kiro-cli process for every session runs one turn at a time (seen 2026-11-19): a message "started" in another session only runs after the sender's turn, and `wait_for_session` from inside a turn can only time out, until docs/plans/2026-11-19-process-per-session.md lands; the fake agent runs turns in parallel, so F18 does not show it
+- [x] one kiro-cli process for every session runs one turn at a time (seen 2026-11-19): a message "started" in another session only ran after the sender's turn, and `wait_for_session` from inside a turn could only time out. Solved by D31 (docs/plans/2026-11-19-process-per-session.md): every session has a process of its own; e2e F19.7 (wait sees the target run, fake agent with `--serial-turns`) and F19.9 (with `agentProcesses.max = 1` it can only time out)
 
 ## Stage 5 — Real CLI, release
 
