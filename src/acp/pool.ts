@@ -72,6 +72,9 @@ interface PoolEntry {
   failure: string | null;
 }
 
+/** `session/list` cursors remembered at once; older ones (abandoned listings) are forgotten first. */
+const MAX_TRACKED_CURSORS = 32;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -95,6 +98,8 @@ export class AgentPool implements KiroAgent {
   private readonly entries = new Set<PoolEntry>();
   private spare: PoolEntry | null = null;
   private readonly bindings = new Map<string, PoolEntry>();
+  /** `session/list` `nextCursor` → the process that issued it (pages of one listing stay on one process). */
+  private readonly cursorIssuers = new Map<string, PoolEntry>();
   /** Process stops in flight (release, unused process), awaited by `stop()`. */
   private readonly exiting = new Set<Promise<void>>();
   private readonly connectionListeners = new Set<(change: ConnectionStateChange) => void>();
@@ -253,7 +258,30 @@ export class AgentPool implements KiroAgent {
   async listSessions(
     options?: { cwd?: string; cursor?: string },
   ): Promise<{ sessions: SessionListEntry[]; nextCursor: string | null }> {
-    return (await this.anyProcess()).agent.listSessions(options);
+    // A cursor belongs to the process that issued it: the next page must come
+    // from there even if the spare changed in between (a session took it).
+    let entry: PoolEntry;
+    if (options?.cursor !== undefined) {
+      const issuer = this.cursorIssuers.get(options.cursor);
+      this.cursorIssuers.delete(options.cursor);
+      if (!issuer || !this.entries.has(issuer) || !isLive(issuer)) {
+        throw new AcpError("session/list cursor expired: the process that issued it is gone; list again from the start");
+      }
+      entry = issuer;
+    } else {
+      entry = await this.anyProcess();
+    }
+    const page = await entry.agent.listSessions(options);
+    if (page.nextCursor !== null) {
+      this.cursorIssuers.set(page.nextCursor, entry);
+      // Cursors of abandoned listings must not pile up.
+      while (this.cursorIssuers.size > MAX_TRACKED_CURSORS) {
+        const oldest = this.cursorIssuers.keys().next().value;
+        if (oldest === undefined) break;
+        this.cursorIssuers.delete(oldest);
+      }
+    }
+    return page;
   }
 
   async authenticate(methodId: string): Promise<void> {

@@ -436,6 +436,51 @@ test("routing: listSessions and session-less extension calls go to the spare, se
   }
 });
 
+test("session/list pages follow their cursor to the process that issued it, even after the spare changed", async () => {
+  const h = launchPool({ args: ["--scenario", "chat", "--list-page-size", "1"] });
+  try {
+    await h.pool.start();
+    const issuer = await readySpare(h.pool);
+    const first = await h.pool.listSessions();
+    assert.deepEqual(first.sessions.map((s) => s.sessionId), ["past-1"]);
+    assert.ok(first.nextCursor, "a second page");
+
+    // A new session takes the spare (the issuer); a new spare starts.
+    const s1 = (await h.pool.newSession(h.cwd)).sessionId;
+    assert.equal(hostOf(h.pool, s1).id, issuer.id);
+    const spare = await readySpare(h.pool);
+    assert.notEqual(spare.id, issuer.id);
+
+    h.calls.length = 0;
+    const second = await h.pool.listSessions({ cursor: first.nextCursor });
+    assert.ok(second.sessions.length > 0, "the issuer served the next page");
+    assert.deepEqual(h.calls, [{ process: issuer.id, method: "listSessions" }]);
+    // A listing from the start goes to the spare again.
+    await h.pool.listSessions();
+    assert.deepEqual(h.calls.at(-1), { process: spare.id, method: "listSessions" });
+  } finally {
+    await h.pool.stop();
+  }
+});
+
+test("session/list: a cursor whose process is gone is refused with a clear error, not sent elsewhere", async () => {
+  const h = launchPool({ args: ["--scenario", "chat", "--list-page-size", "1"] });
+  try {
+    await h.pool.start();
+    const first = await h.pool.listSessions();
+    assert.ok(first.nextCursor);
+    const s1 = (await h.pool.newSession(h.cwd)).sessionId;
+    await readySpare(h.pool);
+    h.pool.releaseSession(s1); // the issuer hosts nothing and a spare exists: it is stopped
+    await waitFor(() => !h.pool.processes().some((p) => p.sessionIds.includes(s1)), 10_000, "the issuer stopped");
+    h.calls.length = 0;
+    await assert.rejects(() => h.pool.listSessions({ cursor: first.nextCursor! }), /cursor expired/);
+    assert.deepEqual(h.calls, [], "not sent to another process");
+  } finally {
+    await h.pool.stop();
+  }
+});
+
 test("auth_required: signed out, the spare's refusal reaches the pool and the spare is kept; authenticate runs the login", async () => {
   const h = launchPool({ args: ["--scenario", "chat", "--auth-required"] });
   try {
