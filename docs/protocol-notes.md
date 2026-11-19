@@ -298,7 +298,8 @@ The **Kiro ACP** output channel logs `agent-link listening on …`, one
 `agent-link <session|unbound> <method>[ <tool>] -> <status>` line per MCP
 request and `agent-link refused <status>: <reason>` for refused ones; `/capabilities`
 ends with `Agent link: on — 127.0.0.1:<port>, N sessions linked` (or why it is off).
-None of this has been seen against the real CLI yet. To record, on a signed-in
+Against the real CLI only one thing has been seen so far: V3 calls
+`list_sessions` (2026-11-19, below). To record the rest, on a signed-in
 machine, with the setting on and two chat tabs open, ask the agent in one tab
 to "list the other chat sessions with the kiro-acp-tabs tool", then fill in:
 
@@ -315,6 +316,52 @@ to "list the other chat sessions with the kiro-acp-tabs tool", then fill in:
 - Which MCP client and protocol version it uses: the `agent-link … initialize
   (client <name> <version>, protocol <requested> -> <negotiated>)` line.
 
+2026-11-19, 0.3.12: on a signed-in machine Kiro called `list_sessions` and saw
+the sessions of the other tabs (V3 accepts a client-supplied http server and
+calls it); the details above are still to be recorded.
+
+Stages 2–4 add `read_session`, `send_message`, `wait_for_session` and
+`start_session` (D30 addendum), exercised so far only against the fake agent
+(`test/e2e/f18-agent-messages.e2e.ts`). With two tabs open, ask the agent in
+tab 1 to "ask the session in the other tab what it is working on and wait for
+its answer", then record:
+
+- **One turn at a time.** All sessions share one kiro-cli process (D19), and
+  on 2026-11-19, of three tabs prompted at once, one worked and the other two
+  got nothing for 33 minutes.
+  Check whether a session that receives a message while the sender's turn
+  runs starts before that turn ends; if not, `wait_for_session` from inside a
+  turn can only time out until sessions get their own processes
+  (docs/plans/2026-11-19-process-per-session.md).
+- **Long calls.** `wait_for_session` keeps the HTTP request open for up to
+  `timeoutSeconds` (default 120 s, at most 600 s). Does Kiro's MCP client time
+  out earlier — after how long, and what does the turn show then (a failed tool
+  card, an error the model sees, a retry)? Ask for `timeoutSeconds: 300` against
+  a busy session to find out. The output channel shows `agent-link sX waits for
+  sY (up to N s)` and `… wait for sY: <outcome>` (`aborted` when the client went
+  away first).
+- **Permissions per MCP tool.** Does Kiro send its own
+  `session/request_permission` for each tool (once per tool, per call, or
+  never; read-only tools treated differently from `send_message` /
+  `start_session` with `readOnlyHint: false`)? Record `toolCall.kind`, title,
+  options and `_meta.kiro.consent`. Our confirmation card comes in addition
+  (`kiroAcp.agentLink.confirm`), so a first message may show two cards.
+- **How results read.** How the `send_message` result ("Delivered to s3 … it
+  started working on it now …") appears in the sender's transcript (tool card
+  content, rawOutput, does the model relay it), and whether the model calls
+  `wait_for_session` by itself afterwards.
+- **The receiving side.** Does the target's model treat the framed message
+  (`[Message from another Kiro agent session — …]`) as a peer request rather
+  than its user's instruction, reply with `send_message` only when needed, and
+  stop at a `chain_limit` / `paused` refusal? Tune the frame, the tool
+  descriptions and the server `instructions` until it does unprompted.
+- **`start_session`.** Does a session started in a new tab get the server and
+  answer its first prompt; does Kiro name the new session itself
+  (`session_info_update.title`)?
+- **Replay.** Restore a session that received peer messages (Past sessions):
+  the replayed user message shows the frame, without the "from …" header
+  (expected, see the plan's follow-ups).
+
 ## Verification
 
 | # | Feature | Fake agent (unit + extension-host E2E) | Real `kiro-cli acp` |
@@ -327,7 +374,7 @@ to "list the other chat sessions with the kiro-acp-tabs tool", then fill in:
 | 6 | Client fs (dirty buffers, WorkspaceEdit writes) and terminal methods | ✅ `test/acp-client.test.ts`, `test/e2e/f6-fs-terminal.e2e.ts` | ⏳ |
 | 7 | Permissions: allow once / always for session / reject per tool kind | ✅ `test/features-permissionPolicy.test.ts`, `test/e2e/f7-permissions.e2e.ts` | ⏳ |
 | 8 | Image attachments (paste / drop / pick → ACP `image` blocks, D29) | ✅ `test/features-images.test.ts`, `test/webview-attachments.test.ts`, `test/e2e/f16-images.e2e.ts` (the fake agent reports the image blocks it received) | ⏳ (`promptCapabilities.image: true` is advertised; whether Kiro forwards the `uri` field or limits sizes below 5 MB is unknown) |
-| 9 | Agent link: per-session MCP server `kiro-acp-tabs`, tool `list_sessions` (D30) | ✅ `test/agentLink-*.test.ts` (dispatch, server guards and tokens, tool text), `test/acp-client.test.ts` (`mcpServers` on new/load, the fake agent's `mcp_call`), `test/e2e/f17-agent-link.e2e.ts` (two tabs see each other; setting off; agent without `mcpCapabilities.http`) | ⏳ see "Agent link" above |
+| 9 | Agent link: per-session MCP server `kiro-acp-tabs`, tools `list_sessions`, `read_session`, `send_message`, `wait_for_session`, `start_session` (D30) | ✅ `test/agentLink-*.test.ts` (dispatch, server guards and tokens, tool texts and argument checks, frame, rate limiter), `test/features-transcriptText.test.ts`, `test/acp-client.test.ts` (`mcpServers` on new/load, the fake agent's `mcp_call`, peer-message scenarios), `test/e2e/f17-agent-link.e2e.ts` (two tabs see each other; setting off; agent without `mcpCapabilities.http`), `test/e2e/f18-agent-messages.e2e.ts` (delivery, origin and frame, refusals, replies, chain and rate limits, confirmation modes and their isolation from session policies, read, waits, start, reveal, pause, handles across a sign-in) | 🟡 `list_sessions` works (2026-11-19, 0.3.12); the other tools ⏳, see "Agent link" above |
 
 To complete the right-hand column: install Kiro CLI, run `kiro-cli login`,
 then (a) `node scripts/record-acp.mjs --prompt "hello" --out docs/recordings/kiro-initialize.ndjson`

@@ -667,3 +667,98 @@ transport and one read-only tool, `list_sessions`, behind
   message as *queued* and gets it when its turn ends. Unlike agterm we know
   exactly when a turn ends, so "wait for the other agent" needs no screen
   scraping.
+
+### D30 addendum: stages 2–4 — reading, messages, waits, new sessions (2026-11-19)
+
+The same server gains `read_session`, `send_message`, `wait_for_session` and
+`start_session` (plan Tasks 8–11; README "Agents talking to each other").
+Still behind `kiroAcp.agentLink.enabled`, off by default.
+
+- **Framing.** The receiving chat shows the sender's raw text as a user
+  message carrying `origin` (sender's session id, handle, title): a "from s2 ·
+  “title”" header that reveals the sender when clicked, and its text rendered
+  as markdown like an agent message (an agent wrote it; the user's own
+  messages stay plain text). The receiving *agent* gets
+  `framePeerMessage(...)` (`src/agentLink/peerMessage.ts`): a header naming
+  the sender (handle, title, tab) and saying it is not the user's
+  instruction, the chain position from the second message on, the text
+  verbatim, and a footer saying how to reply (`send_message` to the sender's
+  handle) and not to reply just to acknowledge. The server `instructions`
+  name the header's prefix, so the model can tell peer messages from its
+  user.
+- **Delivery** is the D22 queue: an idle target starts a turn (`started`),
+  a busy one (a turn running or prompts queued) gets the message badged
+  *queued* and runs it when its turn ends (`queued`). Never `_session/steer`:
+  another agent's request must not slip into the turn the user is watching,
+  and the queue keeps the order and the "done" signal exact.
+- **Chain depth, per turn.** A turn the user started has depth 0; a turn a
+  peer message started has the sender's depth + 1 (carried through the queue
+  in `QueuedPrompt.depth`). `send_message` / `start_session` from a turn
+  whose depth already equals `kiroAcp.agentLink.maxChain` (default 6) is
+  refused with `chain_limit`, and both chats get one notice per turn, since
+  the agents will not tell their users. Anything the user types starts at 0
+  again. Depth is a better guard than a per-pair counter: it also stops
+  A → B → C → A rings.
+- **Rate.** 10 messages (sends and starts together) per sender per sliding
+  minute; only an attempt that passed the other checks counts, a declined
+  one too (each asked the user). The order of the checks: self, paused,
+  empty, over 32 KiB, chain, rate, then the confirmation.
+- **Confirmation as a synthetic permission card, isolated from policies.**
+  `kiroAcp.agentLink.confirm` (`firstPerPair` default / `always` / `never`)
+  asks in the *sender's* chat through `PermissionManager.request` (kind
+  `other`, options "Send" `allow_once` / "Don't send" `reject_once`,
+  `_meta.kiro.consent.capability` `agent_link_message` /
+  `agent_link_start_session` as a label), so it renders, resolves on Stop
+  and makes the sender `needs_input` like any request, and is also kept as a
+  local tool call in the sender's transcript (a `state` snapshot only renders
+  cards of tool calls it knows; the call ends completed / failed "Not
+  sent."). It is a **`local` request**: no session policy answers it, none
+  is offered on it (`policies: []`, which the webview now renders as no
+  "always" buttons rather than the legacy kind pair) and `setPolicy` refuses
+  it. Otherwise a "kind other" rule chosen on one of Kiro's own cards (an MCP
+  tool call, say) would send peer messages unasked, and an "Allow all actions
+  of this kind" on the card would approve Kiro's own `other` tool calls.
+  `firstPerPair` remembers an allowed (sender, target) pair until either
+  closes; that memory is the card's only "always". Starting a session asks
+  unless the mode is `never`.
+- **Waits.** `wait_for_session` resolves at once when the target is idle
+  (no turn, nothing queued, not restoring) or waits for its user (a pending
+  permission request); otherwise a waiter is re-checked whenever a turn,
+  queue or permission changes, after the synchronous work settles (a turn
+  that ends may start the next queued one at once). It ends `closed` when
+  the target goes away or the agent dies, `timeout` after `timeoutSeconds`
+  (default 120, at most 600), and is dropped when the caller's tool call
+  goes away (Stop in the caller aborts kiro-cli's HTTP request, the server
+  aborts the call) or the caller's session closes (its grant is revoked,
+  which now aborts the grant's running calls). The result carries the
+  target's last agent answer (≤ 8000 characters, its end).
+- **Start.** `start_session` passes the same gates and asks, creates the
+  session and delivers the prompt as a peer message from the caller (so its
+  title and its chain depth come from it). `sameTab` creates it in the
+  caller's group without switching the caller's view; `newTab` opens a chat
+  tab on it without taking the focus (the caller's tab stays in front).
+  A caller that closed, or a Stop, while `session/new` ran closes the new
+  session again: nobody would learn its handle.
+- **Pause.** `Kiro: Pause Agent Messages` (not persisted) drops the queued
+  peer messages of every session (the usual "N queued messages discarded"
+  notice; what the user queued stays) and refuses send / start with `paused`
+  until `Kiro: Resume Agent Messages`; running turns go on. `/capabilities`
+  lists the tools, the chain limit, the confirmation mode and the pause.
+- **Handles across a restore.** A sign-in restore (D25) carries each
+  session's handle in its `RestoreEntry`, so the agents keep addressing it
+  by the same name; a past session opened by the user gets a new one.
+  Handles are never reused within a window (`s<seq>`, the counter only
+  grows).
+- **Known limits.** `session/load` replays a peer message as the framed text
+  the agent got, without `origin` (the replay is the agent's history; the
+  frame could be parsed back into an origin, see the plan's follow-ups).
+  Kiro may ask its own permission for the MCP tool call as well, so a first
+  message can show two cards (Kiro's, then the confirmation). Every session
+  shares one kiro-cli process (D19), and on 2026-11-19 a signed-in CLI was
+  seen running one turn at a time: until sessions get processes of their own
+  (docs/plans/2026-11-19-process-per-session.md), a message "started" in
+  another session only runs once the sender's turn ends, and a
+  `wait_for_session` from inside a turn can only time out. The fake agent
+  runs turns in parallel, so the e2e tests do not show this.
+  **[unverified]** every stage-2–4 tool against the real CLI
+  (protocol-notes, "Agent link").

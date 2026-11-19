@@ -100,35 +100,52 @@ Decisions taken for the packages:
 ## Stage 2 — Messages between sessions
 
 ### Task 8: Handles and reading
-- [ ] stable short handles per session (`s1`, `s2`, … in creation order, kept across sign-in restore), shown in `list_sessions` and as a hover in the session list
-- [ ] tool `read_session { session, last? }`: plain-text tail of a transcript (user / agent messages, tool call titles and status), size-capped; pure renderer in `src/features/pure/transcriptText.ts` with tests
+- [x] stable short handles per session (`s1`, `s2`, … in creation order, kept across sign-in restore), shown in `list_sessions` and as a hover in the session list (B, C; also a muted label in expanded rows; any case resolves)
+- [x] tool `read_session { session, last? }`: plain-text tail of a transcript (user / agent messages, tool call titles and status), size-capped; pure renderer in `src/features/pure/transcriptText.ts` with tests (A; peer messages as `message from s2 "title":`, thoughts left out; a session may read itself)
 
 ### Task 9: `send_message`
-- [ ] tool `send_message { to, text }`: the target gets a user turn framed as a message from another agent session (sender handle + title, a reminder that it is not the user's instruction and how to answer with `send_message`); idle → turn starts now, busy → `queued` badge, sent when its turn ends; never `_session/steer`
-- [ ] errors as tool results: unknown / closed / restoring target, sending to oneself, empty text, text over 32 KiB
-- [ ] UI: such a user bubble shows "from «title»" (new `MessageOrigin` in `src/ui/protocol.ts`), clicking it switches to the sender session
-- [ ] unit + e2e: idle target starts a turn; busy target queues and gets it after; reply comes back to the sender
+- [x] tool `send_message { to, text }`: the target gets a user turn framed as a message from another agent session (sender handle + title, a reminder that it is not the user's instruction and how to answer with `send_message`); idle → turn starts now, busy → `queued` badge, sent when its turn ends; never `_session/steer` (A frame + tool, B delivery; the frame also names the tab and, from message 2 on, the chain position)
+- [x] errors as tool results: unknown / closed / restoring target, sending to oneself, empty text, text over 32 KiB (`structuredContent.error` carries the `AgentLinkErrorCode`)
+- [x] UI: such a user bubble shows "from «title»" (new `MessageOrigin` in `src/ui/protocol.ts`), clicking it switches to the sender session (C: "from s2 · “title”", reveals the sender's tab; a closed sender gives a notice)
+- [x] ➕ the text of a peer message renders as markdown (sanitised like agent messages; `rendersMarkdown` in `src/webview/agentLinkText.ts`); the user's own messages stay plain text (D)
+- [x] unit + e2e: idle target starts a turn; busy target queues and gets it after; reply comes back to the sender (F18.1, F18.2, F18.4)
 
 ## Stage 3 — Safety and limits
 
 ### Task 10: Loops, rate, consent
-- [ ] chain counter: a turn started by a peer message carries the chain depth; `send_message` from it is refused past `kiroAcp.agentLink.maxChain` (default 6) with a notice in both sessions
-- [ ] rate limit per sender (e.g. 10 messages / minute)
-- [ ] `kiroAcp.agentLink.confirm`: `firstPerPair` (default) / `always` / `never` — a confirmation card in the sender's chat before the first message to a session
-- [ ] command `Kiro: Pause Agent Messages` (also in `/capabilities`): drops queued peer messages and refuses new ones until resumed
-- [ ] tests for each rule
+- [x] chain counter: a turn started by a peer message carries the chain depth; `send_message` from it is refused past `kiroAcp.agentLink.maxChain` (default 6) with a notice in both sessions (`start_session` too; one notice per turn)
+- [x] rate limit per sender (e.g. 10 messages / minute) (sends and starts together, sliding window; declined attempts count)
+- [x] `kiroAcp.agentLink.confirm`: `firstPerPair` (default) / `always` / `never` — a confirmation card in the sender's chat before the first message to a session (starting a session always asks unless `never`)
+- [x] ➕ found in D: the card is a synthesized permission request, so session policies leaked both ways (a "kind other" rule from one of Kiro's own cards auto-approved the confirmation; "Allow all actions of this kind" on the card approved Kiro's own `other` tool calls). Confirmations are now `local` requests: never answered by a policy, `policies: []` (the webview shows no "always" buttons for an empty list), `setPolicy` refuses them; the consent resource (the target's internal session id) is no longer put on the card
+- [x] command `Kiro: Pause Agent Messages` (also in `/capabilities`): drops queued peer messages and refuses new ones until resumed (`Kiro: Resume Agent Messages`; not persisted; what the user queued stays)
+- [x] tests for each rule (unit: tools, rate limiter, `test/features-permissionPolicy.test.ts` local subjects; e2e F18.3, F18.5–F18.9, F18.15)
 
 ## Stage 4 — Orchestration
 
 ### Task 11: Wait and spawn
-- [ ] tool `wait_for_session { session, timeoutSeconds? }`: returns when the target's turn ends (status + last answer tail) or it needs the user; capped timeout; aborted when the caller's HTTP request closes (Stop in the caller)
-- [ ] ➕ `revoke()` / `revokeSession()` abort the tool calls still running for that grant (today only `stop()` and a client disconnect do), so closing the caller's session ends its waits
-- [ ] tool `start_session { prompt, where: "newTab" | "sameTab" }`: creates a session, sends the prompt as a peer message, returns its handle
-- [ ] e2e: orchestrator starts a helper, waits for it, reads its answer
+- [x] tool `wait_for_session { session, timeoutSeconds? }`: returns when the target's turn ends (status + last answer tail) or it needs the user; capped timeout; aborted when the caller's HTTP request closes (Stop in the caller) (outcomes `idle` — only once the queue drained —, `needs_input`, `timeout`, `closed`; default 120 s, at most 600 s)
+- [x] ➕ `revoke()` / `revokeSession()` abort the tool calls still running for that grant (today only `stop()` and a client disconnect do), so closing the caller's session ends its waits
+- [x] tool `start_session { prompt, where: "newTab" | "sameTab" }`: creates a session, sends the prompt as a peer message, returns its handle (default `newTab`, opened without the focus; `sameTab` keeps the caller's view on the caller)
+- [x] e2e: orchestrator starts a helper, waits for it, reads its answer (F18.17; F18.10–F18.13 for each tool)
+
+### Package D (2026-11-19): fake agent, e2e, fixes, docs
+- [x] ➕ fake agent: `/scenario <name> <args>` gives `arg1`…`arg9` (numbers as numbers, missing as null), `args`, `rest` (the lines after the selector) and `turnId`; a framed peer message selects the `/scenario` line in its body and sets `peer.from` / `peer.body` / `peer.depth`; every prompt is logged to stderr; `{{…}}` in `mcp_call` arguments already worked
+- [x] ➕ recordings `link-send`, `link-send-wait`, `link-wait`, `link-read`, `link-start`, `link-send-burst`, `link-send-asking` (Kiro asks its own permission for the MCP call first), `link-orchestrate`, `peer-echo` (answers with the exact text received), `peer-reply`, `peer-slow`, `slow-long`
+- [x] ➕ `test/e2e/f18-agent-messages.e2e.ts` F18.1–F18.17; `KIRO_E2E_GREP` narrows an e2e run to matching test names
+- [x] ➕ fixes: confirmation cards isolated from session policies (Task 10); peer message bodies as markdown (Task 9)
+- [x] docs: README section and settings rows, DECISIONS D30 addendum, protocol-notes checklist for the new tools
+- [x] `npm run typecheck`, `npm test`, `npm run build`, `npm run test:e2e` (twice) pass
+
+### Follow-ups
+- [ ] replayed peer messages after `session/load` (Past sessions, sign-in restore) show the framed text the agent got, without `origin`: parse the frame of a replayed user message back into its text and an origin (handle and title; the sender's session may be gone, so revealing it may only give the "closed" notice)
+- [ ] the confirmation card quotes 80 characters of the message; the full text could go into the card's tool call content so the user can read all of it before choosing Send
+- [ ] `lastAgentAnswer` returns null when the newest agent message has no text (a turn that ended right after a tool call), even if an earlier answer of that turn had text
+- [ ] whether Kiro's MCP client times out long `wait_for_session` calls (protocol-notes checklist); if it does, cap `WAIT_MAX_SECONDS` below it
+- [ ] one kiro-cli process for every session runs one turn at a time (seen 2026-11-19): a message "started" in another session only runs after the sender's turn, and `wait_for_session` from inside a turn can only time out, until docs/plans/2026-11-19-process-per-session.md lands; the fake agent runs turns in parallel, so F18 does not show it
 
 ## Stage 5 — Real CLI, release
 
 ### Task 12: Verify and ship
 - [ ] ⚠️ every tool against a signed-in kiro-cli; tune tool descriptions / server `instructions` until Kiro uses them unprompted; record in protocol-notes
-- [ ] README section "Agents talking to each other" (with a suggested steering text); decide whether `kiroAcp.agentLink.enabled` becomes `true` by default
+- [ ] decide whether `kiroAcp.agentLink.enabled` becomes `true` by default (➕ the README section "Agents talking to each other" with a suggested steering text was written in package D; revisit it after the real-CLI check)
 - [ ] version bump, revmux review rounds, release tag

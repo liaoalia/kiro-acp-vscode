@@ -336,7 +336,7 @@
         "kiroAcp.agentLink.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Experimental. Give every Kiro session a small MCP server (`kiro-acp-tabs`) on `127.0.0.1` so the agent in one chat tab can see the sessions of the other tabs. Each session gets its own token; nothing outside this machine can reach it. Applies to sessions created after the change; turning it off cuts the live sessions off too."
+          "markdownDescription": "Experimental. Give every Kiro session a small MCP server (`kiro-acp-tabs`) on `127.0.0.1` so the agents in different chat tabs can work together: list and read the other sessions, send them messages, wait for them and start new ones (see `kiroAcp.agentLink.confirm` and `kiroAcp.agentLink.maxChain`). Each session gets its own token; nothing outside this machine can reach it. Applies to sessions created after the change; turning it off cuts the live sessions off too."
         },
         "kiroAcp.agentLink.maxChain": {
           "type": "integer",
