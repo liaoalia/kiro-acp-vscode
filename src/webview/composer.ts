@@ -25,7 +25,7 @@ import {
 import { actionButton, h, icon, setChildren, shortPath } from "./dom";
 import { clipboardImageFiles, makePreview, readFileAsBase64 } from "./imageFiles";
 import { PromptHistory } from "./promptHistory";
-import { loadDraft, loadHistory, post, saveDraft, saveHistory } from "./vscodeApi";
+import { loadDraft, post, saveDraft } from "./vscodeApi";
 
 export interface ComposerHost {
   /** Chips to send with the prompt (extension chips + local `@` chips). */
@@ -118,8 +118,15 @@ export class Composer {
   private awaitingQuery = false;
   private queryTimer: number | undefined;
   private draftTimer: number | undefined;
-  /** Sent prompts, recalled with Up / Down when the caret is on the first / last line. */
-  private readonly history = new PromptHistory(loadHistory());
+  /**
+   * Prompts sent in the displayed session, recalled with Up / Down when the
+   * caret is on the first / last line. One per session: the host keeps them
+   * and hands over the session's list with every switch and after every
+   * prompt it records ({@link setHistory}).
+   */
+  private history = new PromptHistory();
+  /** The session {@link history} belongs to; `undefined` until the first snapshot. */
+  private historySession: string | null | undefined = undefined;
   private turnActive = false;
   /** The host accepts prompts while a turn runs (`UiState.acceptsPromptsDuringTurn`). */
   private composableDuringTurn = false;
@@ -256,6 +263,23 @@ export class Composer {
     this.updateSendState();
   }
 
+  /**
+   * The host's prompt history of `sessionId` (a `state` snapshot's
+   * `promptHistory`, or a `promptHistory` message after the host recorded a
+   * prompt). Another session than the current one starts a fresh history;
+   * the same session's list is merged ({@link PromptHistory.merge}): Send
+   * records here at once and the host only when the message arrives, so a
+   * list that is behind this copy never rolls it back.
+   */
+  setHistory(sessionId: string | null, entries: readonly string[]): void {
+    if (sessionId !== this.historySession) {
+      this.historySession = sessionId;
+      this.history = new PromptHistory(entries);
+      return;
+    }
+    this.history.merge(entries);
+  }
+
   /** True when Enter/Send would post a prompt right now. */
   private canSend(): boolean {
     return !this.turnActive || this.composableDuringTurn;
@@ -345,10 +369,8 @@ export class Composer {
     if (!hasText && images.length === 0) return;
     const chips = this.host.getChips();
     post(images.length > 0 ? { type: "prompt", text, chips, images } : { type: "prompt", text, chips });
-    if (hasText) {
-      this.history.push(text);
-      saveHistory(this.history.list());
-    }
+    // The host records the same text in the session's history when the prompt arrives.
+    if (hasText) this.history.push(text);
     this.images = [];
     this.renderAttachments();
     this.textarea.value = "";

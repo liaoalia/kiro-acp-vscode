@@ -60,6 +60,7 @@ function normalizeSnapshot(s: Partial<UiState> | null | undefined): UiState {
     notices: Array.isArray(s.notices) ? s.notices.slice() : [],
     usage: s.usage ?? null,
     lastActivityAt: typeof s.lastActivityAt === "number" ? s.lastActivityAt : null,
+    promptHistory: Array.isArray(s.promptHistory) ? s.promptHistory.filter((e): e is string => typeof e === "string") : [],
     // Host display defaults; applied once by main.ts until the user toggles.
     prefs: s.prefs && typeof s.prefs === "object" ? { ...s.prefs } : undefined,
   };

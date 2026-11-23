@@ -171,3 +171,25 @@ test("F11.5 openPastSession() of an unknown id fails with a notice and keeps the
     "the notice is part of the displayed session's state",
   );
 });
+
+test("F11.6 a past session restored again recalls the prompts typed in it before it was closed", async ({ api, recorder }) => {
+  await ensureReady(api);
+  if (!api.controller.sessionIds().includes(PAST_1)) {
+    assertEqual(await withTimeout(api.controller.openPastSession(PAST_1), 15_000, "restore past-1"), PAST_1, "past-1 restored");
+  }
+  api.controller.selectSession(PAST_1);
+  const text = "/scenario chat typed-before-close";
+  await withTimeout(api.controller.handle({ type: "prompt", text, chips: [] }), 30_000, "a prompt typed in past-1");
+  await waitFor(() => !api.controller.snapshot(PAST_1).turnActive, 15_000, "the turn in past-1 to end");
+  const before = api.controller.snapshot(PAST_1).promptHistory ?? [];
+  assertEqual(before[before.length - 1], text, "the typed prompt is in past-1's history");
+
+  await withTimeout(api.controller.closeSession(PAST_1), 15_000, "close past-1");
+  assert(!api.controller.sessionIds().includes(PAST_1), "past-1 is closed");
+  const mark = recorder.mark();
+  assertEqual(await withTimeout(api.controller.openPastSession(PAST_1), 15_000, "restore past-1 again"), PAST_1, "past-1 restored again");
+  assertEqual(JSON.stringify(api.controller.snapshot(PAST_1).promptHistory), JSON.stringify(before), "Up / Down recall what was typed before the close");
+  const snapshots = recorder.ofType("state", mark).filter((m) => m.state.sessionId === PAST_1);
+  assert(snapshots.length > 0, "the restore posted past-1's snapshot");
+  assertEqual(JSON.stringify(snapshots[0]?.state.promptHistory), JSON.stringify(before), "the first snapshot of the restore already carries the history");
+});

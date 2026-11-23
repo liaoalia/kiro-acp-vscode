@@ -256,6 +256,10 @@ function handle(msg: ToWebview): void {
       // Composer-owned (D29): never part of UiState.
       void composer.addImages(Array.isArray(msg.images) ? msg.images : []);
       return;
+    case "promptHistory":
+      // Composer-owned like the draft; only for the session this view displays.
+      if (msg.sessionId === state.sessionId) composer.setHistory(msg.sessionId, Array.isArray(msg.entries) ? msg.entries : []);
+      return;
     case "state":
       if ((msg.state?.sessionId ?? null) !== state.sessionId) resetLocal();
       stuckToBottom = true;
@@ -278,6 +282,8 @@ function handle(msg: ToWebview): void {
   state = reduce(state, msg);
   // Immediately, not on the next frame: an attach right after the connection changed must see it.
   composer.setImagesAllowed(state.connection.acceptsImages === true);
+  // Each session has its own Up / Down history; a snapshot of a newly displayed session brings it.
+  if (msg.type === "state") composer.setHistory(state.sessionId, state.promptHistory ?? []);
   scheduleRender();
 }
 

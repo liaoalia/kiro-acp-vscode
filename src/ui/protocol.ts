@@ -328,6 +328,13 @@ export interface UiState {
    * turn, usage, delivery) and clears it when the session switches.
    */
   lastActivityAt?: number | null;
+  /**
+   * Prompts typed in a composer for the displayed session, oldest first: what
+   * Up / Down recall. Each session has its own; the composer starts from this
+   * list when the displayed session changes and merges later lists of the
+   * same session (a snapshot, a `promptHistory` message) into its own copy.
+   */
+  promptHistory?: string[];
   /** Host-side display preferences (defaults; the webview may override locally). */
   prefs?: {
     /** Show the mode/model/config pickers without pressing the settings toggle. */
@@ -382,6 +389,13 @@ export type ToWebview =
   | { type: "clearNotice"; id: string }
   /** Context / token usage of the displayed session changed (D26). */
   | { type: "usage"; usage: SessionUsage | null }
+  /**
+   * The host recorded a typed prompt in `sessionId`'s Up / Down history (it
+   * may be another session than the one the composer pushed it under: `/clear`
+   * forwarded it, or the view got its first session meanwhile). The composer
+   * of a view displaying that session merges the list into its own copy.
+   */
+  | { type: "promptHistory"; sessionId: string; entries: string[] }
   | { type: "focusInput" }
   /**
    * Images read by the host for `pickImages` / `dropFiles`, posted to the

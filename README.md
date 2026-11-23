@@ -81,8 +81,11 @@ only `kiro-cli` sessions holding a per-session token can use.
   seconds later, the turn is ended locally (a notice says so) and its late
   reply is ignored.
 - **Prompt history**: Up on the first line of the input recalls the previous
-  message you sent from this chat, Down walks forward again (back to what
-  you were typing); the history survives switching tabs.
+  message you typed in this session, Down walks forward again (back to what
+  you were typing). Each session has its own history: switching sessions
+  switches it, `/clear` keeps it, and a past session you restore recalls
+  its prompts again (kept for the 30 sessions of the workspace you typed in
+  most recently). Messages other agent sessions sent are never offered.
 - **Images**: `Ctrl+V` with a screenshot (or an image copied in a browser)
   in the clipboard attaches it; when the clipboard also holds text (a range
   copied from Excel or Word) the text is pasted instead. Image files can be
@@ -286,8 +289,8 @@ The composer at the bottom has `+` (attach a workspace file, same as typing
 `@`), `/` (slash commands advertised by the agent), the current model and
 mode as pills, and a send button that turns into **Stop** while Kiro is
 working (Esc anywhere in the chat does the same; Stop also kills the
-session's running commands). Up / Down on the first / last line recall sent
-messages. In the narrow secondary-sidebar layout the same controls collapse
+session's running commands). Up / Down on the first / last line recall the
+messages sent in the displayed session. In the narrow secondary-sidebar layout the same controls collapse
 into a compact header.
 
 ## Settings

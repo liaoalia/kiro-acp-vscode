@@ -15,7 +15,10 @@ declare function acquireVsCodeApi(): {
 
 interface PersistedState {
   draft?: string;
-  /** Prompts sent from this webview, oldest first (Up / Down recall them). */
+  /**
+   * Prompts sent from this webview across all its sessions (older versions).
+   * No longer read: the host keeps one history per session; dropped on the next write.
+   */
   history?: string[];
   showSettings?: boolean;
   sessionPanelCollapsed?: boolean;
@@ -38,7 +41,8 @@ function readState(): PersistedState {
 
 function writeState(patch: PersistedState): void {
   try {
-    api.setState({ ...readState(), ...patch } satisfies PersistedState);
+    const { history: _legacy, ...kept } = readState();
+    api.setState({ ...kept, ...patch } satisfies PersistedState);
   } catch {
     // Persisting UI state is a convenience only.
   }
@@ -51,15 +55,6 @@ export function loadDraft(): string {
 
 export function saveDraft(draft: string): void {
   writeState({ draft });
-}
-
-export function loadHistory(): string[] {
-  const s = readState();
-  return Array.isArray(s.history) ? s.history.filter((e): e is string => typeof e === "string") : [];
-}
-
-export function saveHistory(history: readonly string[]): void {
-  writeState({ history: [...history] });
 }
 
 /** `undefined` when the user never toggled the settings pane in this webview. */

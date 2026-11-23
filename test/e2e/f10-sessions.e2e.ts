@@ -359,3 +359,84 @@ test("F10.11 closing a tab while its first session/new is in flight closes that 
   assertEqual(after.length, before.length, "the session created for the closed tab was closed again");
   assert(api.controller.snapshot().sessionId, "a session remains focused");
 });
+
+test("F10.12 Up / Down history is per session: typed prompts stay in their session, API prompts are not recorded, /clear keeps it", async ({ api, recorder }) => {
+  await closeAllEditors();
+  await ensureReady(api);
+  const a = await freshSession(api);
+  const b = await freshSession(api);
+  /** A prompt typed in the composer of the focused session (the webview's `prompt` message). */
+  const typed = async (text: string): Promise<void> => {
+    await withTimeout(api.controller.handle({ type: "prompt", text, chips: [] }), 30_000, `typed ${JSON.stringify(text)}`);
+    await waitFor(() => !api.controller.snapshot().turnActive, 15_000, `the turn of ${JSON.stringify(text)} to end`);
+  };
+
+  api.controller.selectSession(a);
+  await typed("/scenario chat a-one");
+  await typed("/scenario chat a-two");
+  await typed("/scenario chat a-two"); // a repeat of the newest prompt is stored once
+  api.controller.selectSession(b);
+  await typed("/scenario chat b-one");
+  // Sent through the API (as a peer message or a test would): not typed, not recalled.
+  await withTimeout(api.controller.prompt("/scenario chat api", [], b), 30_000, "API prompt in B");
+  await waitFor(() => !api.controller.snapshot(b).turnActive, 15_000, "the API turn to end");
+
+  assertEqual(
+    JSON.stringify(api.controller.snapshot(a).promptHistory),
+    JSON.stringify(["/scenario chat a-one", "/scenario chat a-two"]),
+    "A recalls only what was typed in A",
+  );
+  assertEqual(JSON.stringify(api.controller.snapshot(b).promptHistory), JSON.stringify(["/scenario chat b-one"]), "B recalls only what was typed in B");
+
+  const mark = recorder.mark();
+  api.controller.selectSession(a);
+  const switched = recorder.ofType("state", mark).filter((m) => m.state.sessionId === a);
+  assert(switched.length > 0, "switching to A posted its snapshot");
+  assertEqual(
+    JSON.stringify(switched[switched.length - 1]?.state.promptHistory),
+    JSON.stringify(["/scenario chat a-one", "/scenario chat a-two"]),
+    "the snapshot of the switch carries A's history for the composer",
+  );
+
+  // A prompt typed while /clear is still creating the replacement goes there
+  // (F12.7), and so does its history entry (revmux round 25).
+  const clearMark = recorder.mark();
+  const clear = api.controller.handle({ type: "prompt", text: "/clear", chips: [] });
+  const typedMeanwhile = api.controller.handle({ type: "prompt", text: "/scenario chat after-clear", chips: [] });
+  await withTimeout(Promise.all([clear, typedMeanwhile]), 30_000, "/clear and the prompt typed right after it");
+  await waitFor(() => api.controller.snapshot().sessionId !== a && !api.controller.snapshot().turnActive, 15_000, "the replacement's turn to end");
+  const replacement = api.controller.snapshot();
+  assert(replacement.sessionId !== null && replacement.sessionId !== a && replacement.sessionId !== b, "a new session replaced A");
+  const expected = ["/scenario chat a-one", "/scenario chat a-two", "/clear", "/scenario chat after-clear"];
+  assertEqual(JSON.stringify(replacement.promptHistory), JSON.stringify(expected), "/clear keeps the history, and the prompt it forwarded joins it");
+  const pushed = recorder.ofType("promptHistory", clearMark).filter((m) => m.sessionId === replacement.sessionId);
+  assertEqual(
+    JSON.stringify(pushed[pushed.length - 1]?.entries),
+    JSON.stringify(expected),
+    "the composer is told about the forwarded prompt (it pushed it under A)",
+  );
+});
+
+test("F10.13 the first prompt typed in a new tab before it has a session joins that session's history", async ({ api }) => {
+  await closeAllEditors();
+  await ensureReady(api);
+  // As in F10.11: no empty session to adopt, so the tab's session/new is still in flight when the prompt is typed.
+  for (const id of api.controller.sessionIds()) {
+    if (api.controller.snapshot(id).items.length > 0) continue;
+    await withTimeout(api.controller.prompt("/scenario chat", [], id), 30_000, `a chat turn in ${id}`);
+    await waitFor(() => !api.controller.snapshot(id).turnActive, 15_000, `the turn in ${id} to end`);
+  }
+  const panel = api.panel.openNew();
+  try {
+    const view = api.panel.viewOf(panel);
+    assert(view, "the tab has a view");
+    const text = "/scenario chat first-in-tab";
+    await withTimeout(api.controller.handle({ type: "prompt", text, chips: [] }, view), 30_000, "the first prompt in the new tab");
+    const sessionId = view.sessionId;
+    assert(sessionId, "the tab got a session");
+    await waitFor(() => !api.controller.snapshot(sessionId).turnActive, 15_000, "the first turn in the tab to end");
+    assertEqual(JSON.stringify(api.controller.snapshot(sessionId).promptHistory), JSON.stringify([text]), "the prompt is in the history of the session it went to");
+  } finally {
+    panel.dispose();
+  }
+});

@@ -61,3 +61,26 @@ test("the strip tooltip names the last event time only once quiet", () => {
   assert.equal(quietTitle(at, at + 1000), "Esc stops the turn");
   assert.match(quietTitle(at, at + 10 * 60_000), /^Last event from Kiro at 13:25\. Esc stops the turn/);
 });
+
+test("merge ignores a host list this copy is ahead of and takes one that is not a prefix", () => {
+  const h = new PromptHistory(["a", "b"]);
+  h.merge(["a"]); // the host has not recorded "b" yet
+  assert.deepEqual(h.list(), ["a", "b"]);
+  h.merge([]);
+  assert.deepEqual(h.list(), ["a", "b"], "an empty host list never wipes this copy");
+  h.merge(["a", "b", "c"]); // recorded on the host for this session (e.g. forwarded by /clear)
+  assert.deepEqual(h.list(), ["a", "b", "c"]);
+  const fresh = new PromptHistory([]);
+  fresh.merge(["first"]); // the view's first session arrived with an empty snapshot, then the host recorded
+  assert.deepEqual(fresh.list(), ["first"]);
+  assert.equal(fresh.recall(-1, ""), "first");
+});
+
+test("merge while browsing keeps the distance from the newest entry and the draft", () => {
+  const h = new PromptHistory(["a", "b"]);
+  assert.equal(h.recall(-1, "draft"), "b");
+  h.merge(["x", "a", "b"]);
+  assert.equal(h.recall(-1, "ignored"), "a", "Up goes on from where browsing was");
+  assert.equal(h.recall(1, "ignored"), "b");
+  assert.equal(h.recall(1, "ignored"), "draft", "the draft is still restored past the newest entry");
+});

@@ -50,6 +50,7 @@ import {
   type TranscriptState,
 } from "../features/pure/transcript.js";
 import { lastAgentAnswer, transcriptText } from "../features/pure/transcriptText.js";
+import { appendPrompt, parsePromptHistories, withSessionHistory } from "../features/pure/promptHistory.js";
 import { buildPromptBlocks } from "../features/pure/contentBlocks.js";
 import {
   checkImageAttachment,
@@ -232,6 +233,9 @@ export interface RememberedSessionOptions {
 /** `workspaceState` key of {@link RememberedSessionOptions}. */
 export const SESSION_OPTIONS_KEY = "kiroAcp.sessionOptions";
 
+/** `workspaceState` key of the per-session prompt histories (`PromptHistories`, Up / Down in the composer). */
+export const PROMPT_HISTORY_KEY = "kiroAcp.promptHistory";
+
 /**
  * Kiro V3 extension method that injects a prompt into the running turn. Its
  * parameter shape (`{ sessionId, prompt }`) mirrors `session/prompt` and is a
@@ -347,6 +351,11 @@ class ChatSession {
   agentTitle: string | null = null;
   /** First prompt text sent to the agent (or replayed by `session/load`), truncated: the fallback title. */
   firstPrompt: string | null = null;
+  /**
+   * Prompts typed in a composer for this session, oldest first: what Up /
+   * Down recall there. Stored by session id under {@link PROMPT_HISTORY_KEY}.
+   */
+  promptHistory: string[] = [];
   /** True while `session/load` replays the session's history (see D21). */
   loading = false;
   /**
@@ -718,6 +727,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       toolCalls,
       commands: mergeCommands(transcript.commands, this.slashContext(transcript)),
       prefs: { showSettings, sessionPanelCollapsed },
+      promptHistory: session ? session.promptHistory.slice() : [],
     };
   }
 
@@ -1373,7 +1383,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     return vscode.workspace.getConfiguration("kiroAcp").get<boolean>("agentLink.autoApprove", true) !== false;
   }
 
-  private async createSession(groupId: string): Promise<ChatSession | null> {
+  private async createSession(groupId: string, promptHistory: readonly string[] = []): Promise<ChatSession | null> {
     const agent = this.agent;
     if (!agent) return null;
     let grant: AgentLinkGrant | null = null;
@@ -1386,6 +1396,10 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       if (grant && linked) this.keepLinkGrant(state.sessionId, grant);
       else grant?.revoke();
       const session = new ChatSession(state, ++this.sessionSeq, groupId);
+      if (promptHistory.length > 0) {
+        session.promptHistory = promptHistory.slice();
+        this.storePromptHistory(session);
+      }
       this.sessions.set(session.id, session);
       this.deps.output.appendLine(
         `[info] session ${session.id} opened (group ${groupId}${linked ? ", agent link" : ""})`,
@@ -2174,6 +2188,38 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     });
   }
 
+  // ---------------------------------------------------------------------
+  // Prompt history (Up / Down in the composer), one per session
+  // ---------------------------------------------------------------------
+
+  /**
+   * Record `text`, typed in a composer showing `session`, in its history and
+   * store it. Same rule as the composer's own copy: blank text (an
+   * images-only send) and a repeat of the newest entry are not recorded.
+   */
+  private recordPrompt(session: ChatSession, text: string): void {
+    const history = session.promptHistory;
+    if (text.trim().length === 0 || history[history.length - 1] === text) return;
+    session.promptHistory = appendPrompt(history, text);
+    this.storePromptHistory(session);
+    // The composer pushed it under the session it showed, which may not be this one.
+    this.postTo(session.id, { type: "promptHistory", sessionId: session.id, entries: session.promptHistory.slice() });
+  }
+
+  /** The stored history of `sessionId` (a session restored into this window), oldest first. */
+  private storedPromptHistory(sessionId: string): string[] {
+    const stored = parsePromptHistories(this.deps.context.workspaceState.get<unknown>(PROMPT_HISTORY_KEY))[sessionId];
+    return stored ? stored.entries : [];
+  }
+
+  private storePromptHistory(session: ChatSession): void {
+    const state = this.deps.context.workspaceState;
+    const next = withSessionHistory(parsePromptHistories(state.get<unknown>(PROMPT_HISTORY_KEY)), session.id, session.promptHistory, Date.now());
+    void state.update(PROMPT_HISTORY_KEY, next).then(undefined, (error: unknown) => {
+      this.deps.output.appendLine(`[warn] could not store the prompt history of session ${session.id}: ${errorMessage(error)}`);
+    });
+  }
+
   /** One line for `/capabilities`: what the next session gets. */
   private describeRememberedOptions(): string {
     const remembered = this.rememberedSessionOptions();
@@ -2342,9 +2388,10 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   /**
    * Create a session (keeping the others), focus it and display it in
    * `view` (or the focused view). Returns the new session id, or null when
-   * no session could be created.
+   * no session could be created. `options.promptHistory` seeds its Up / Down
+   * history (`/clear` keeps the replaced session's).
    */
-  async newSession(view?: ViewHandle): Promise<string | null> {
+  async newSession(view?: ViewHandle, options: { promptHistory?: readonly string[] } = {}): Promise<string | null> {
     const binding = asBinding(view) ?? this.focusedView;
     const groupId = binding?.groupId ?? this.focusedView?.groupId ?? DEFAULT_GROUP;
     if (!this.agent || this.agent.status !== "ready") {
@@ -2356,7 +2403,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       }
       return this.focusedId;
     }
-    const session = await this.createSession(groupId);
+    const session = await this.createSession(groupId, options.promptHistory);
     if (!session) return null;
     if (binding && !binding.follows) {
       if (await this.dropIfOrphaned(session, binding)) return null;
@@ -2560,6 +2607,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     const session = new ChatSession(placeholder, ++this.sessionSeq, target.groupId, target.handle);
     session.loading = true;
     session.agentTitle = target.agentTitle;
+    // What was typed in it before (another tab, an earlier window): Up / Down recall it again.
+    session.promptHistory = this.storedPromptHistory(sessionId);
     this.sessions.set(sessionId, session);
     this.deps.output.appendLine(`[info] session ${sessionId} restoring (group ${target.groupId})`);
     for (const view of target.views) this.setViewSession(view, sessionId);
@@ -2909,6 +2958,12 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     sessionId?: string,
     view?: ViewHandle,
     images: readonly ImageAttachment[] = [],
+    /**
+     * `typed`: the text was typed in a composer (the webview's `prompt`
+     * message), so it joins the Up / Down history of the session it goes to.
+     * API prompts and agent-link peer messages are never recorded.
+     */
+    options: { typed?: boolean } = {},
   ): Promise<void> {
     await this.ensureStarted();
     const agent = this.agent;
@@ -2934,11 +2989,17 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       // to a closing session (D22).
       const replacement = session.replacement ? await session.replacement : null;
       if (replacement === null) {
+        // No replacement: when `/clear` failed this session stays in use, and Up recalls the text to resend it.
+        if (options.typed) this.recordPrompt(session, text);
         this.notice(session, "warning", "The session is closing; send the message again in a new one.");
         return;
       }
-      return this.prompt(text, chips, replacement, view, images);
+      return this.prompt(text, chips, replacement, view, images, options);
     }
+    // Here, not in handle(): only now is the session it goes to known (the
+    // view's first session was just assigned, `/clear` forwarded it above). A
+    // send refused below (still restoring, a refused image) is still history.
+    if (options.typed) this.recordPrompt(session, text);
     this.focus(session.id);
     if (session.loading) {
       // The client still flags the session's updates as replay until `session/load`
@@ -3551,7 +3612,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
 
     switch (message.type) {
       case "prompt":
-        await this.prompt(message.text, message.chips, sessionId ?? undefined, binding, message.images ?? []);
+        // Typed in this view's composer: recorded in the Up / Down history of the session it goes to.
+        await this.prompt(message.text, message.chips, sessionId ?? undefined, binding, message.images ?? [], { typed: true });
         return;
       case "pickImages":
         await this.pickImages(session ?? null, binding);
@@ -3934,7 +3996,8 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
         this.discardQueue(session, this.discardRemaining(session));
         if (session.turnActive) await this.cancel(sessionId);
         const replacement = (async (): Promise<string | null> => {
-          const created = await this.newSession(view);
+          // Same chat, fresh context: Up / Down still recall what was typed before `/clear`.
+          const created = await this.newSession(view, { promptHistory: session.promptHistory });
           if (created !== null && created !== sessionId) {
             await this.closeSession(sessionId);
             return created;

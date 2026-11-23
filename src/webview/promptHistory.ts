@@ -1,10 +1,13 @@
 /**
- * Composer history: the prompts sent from this webview, recalled with Up /
- * Down like a shell. Pure (no DOM); the composer owns persistence.
+ * Composer history: the prompts sent in the displayed session, recalled with
+ * Up / Down like a shell. Pure (no DOM). One per session: the host keeps
+ * each session's list (`src/features/pure/promptHistory.ts`) and the
+ * composer starts a new `PromptHistory` from it when the session changes.
  *
- * Only text typed and sent in the composer is recorded (`Composer.send`);
- * the history is never rebuilt from the transcript, so messages another
- * agent session sent (user bubbles with an `origin`, D30) are never offered.
+ * Only text typed and sent in a composer is recorded (`Composer.send`, and
+ * the host on the `prompt` message); the history is never rebuilt from the
+ * transcript, so messages another agent session sent (user bubbles with an
+ * `origin`, D30) are never offered.
  */
 export const HISTORY_LIMIT = 100;
 
@@ -37,6 +40,20 @@ export class PromptHistory {
       if (this.entries.length > HISTORY_LIMIT) this.entries.splice(0, this.entries.length - HISTORY_LIMIT);
     }
     this.reset();
+  }
+
+  /**
+   * Take the host's list for the same session. Ignored when it is a prefix
+   * of this copy (this copy is ahead: a prompt sent since has not reached the
+   * host yet); else it replaces this copy. Browsing stays the same distance
+   * from the newest entry, and the draft is kept.
+   */
+  merge(entries: readonly string[]): void {
+    const next = entries.filter((e) => typeof e === "string" && e.length > 0).slice(-HISTORY_LIMIT);
+    if (next.length <= this.entries.length && next.every((e, i) => this.entries[i] === e)) return;
+    const back = this.entries.length - this.index;
+    this.entries.splice(0, this.entries.length, ...next);
+    this.index = Math.max(0, this.entries.length - back);
   }
 
   /** Forget the browsing position (the user edited the text or sent it). */
