@@ -303,6 +303,12 @@ export class AgentPool implements KiroAgent {
     return page;
   }
 
+  /** Asked of the process that would serve next (the spare first): the pool follows it to `auth_required`. */
+  requireSignIn(message: string): void {
+    const entry = [...(this.spare ? [this.spare] : []), ...this.entries].find(isLive);
+    entry?.agent.requireSignIn(message);
+  }
+
   async authenticate(methodId: string): Promise<void> {
     // The process that asked for the sign-in offered the methods the host shows (D25).
     const entry = this.askingForSignIn() ?? (await this.anyProcess());

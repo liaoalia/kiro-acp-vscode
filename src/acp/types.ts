@@ -214,6 +214,13 @@ export interface KiroAgent {
   setModel(sessionId: string, modelId: string): Promise<void>;
   /** Run an advertised auth method. Terminal methods are delegated back to the host. */
   authenticate(methodId: string): Promise<void>;
+  /**
+   * The host found the agent signed out without a request being rejected
+   * (Kiro's `initialize` then offers a sign-in and no `session/load`, see
+   * protocol-notes): switch a `ready` agent to `auth_required`, as a request
+   * rejected as signed out would (D25). `message` is the banner's text.
+   */
+  requireSignIn(message: string): void;
   /** Call a Kiro extension method advertised in `kiroExtensionMethods`. */
   callExtension<T = unknown>(method: string, params: unknown): Promise<T>;
 }

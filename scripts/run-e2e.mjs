@@ -137,6 +137,10 @@ writeFileSync(
 
 console.log(`[e2e] workspace: ${workspace}`);
 
+// The fake agent's sign-in state (test/fake-agent/agent.mjs): shared by every
+// process of the run, the login terminal's included (it inherits this env).
+process.env.KIRO_FAKE_AUTH_FILE = path.join(tmpRoot, "fake-auth.json");
+
 let exitCode = 1;
 try {
   await runTests({
@@ -151,6 +155,7 @@ try {
     ],
     extensionTestsEnv: {
       KIRO_E2E_WORKSPACE: workspace,
+      KIRO_FAKE_AUTH_FILE: process.env.KIRO_FAKE_AUTH_FILE,
       // `KIRO_E2E_GREP=F18 npm run test:e2e` runs only the tests whose name contains it.
       ...(process.env.KIRO_E2E_GREP ? { KIRO_E2E_GREP: process.env.KIRO_E2E_GREP } : {}),
     },

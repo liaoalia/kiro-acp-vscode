@@ -685,3 +685,18 @@ test("stop() right after a new session (next spare still starting) rejects the r
   assert.equal(h.pool.status, "stopped");
   assert.deepEqual(exits(h.events), []);
 });
+
+test("requireSignIn: the pool follows the process it asks (the spare) to auth_required", async () => {
+  const h = launchPool({ args: ["--scenario", "chat"] });
+  try {
+    await h.pool.start();
+    await readySpare(h.pool);
+    h.pool.requireSignIn("Kiro is not signed in.");
+    assert.equal(h.pool.status, "auth_required");
+    const change = h.changes[h.changes.length - 1];
+    assert.equal(change?.status, "auth_required");
+    assert.equal(change?.message, "Kiro is not signed in.");
+  } finally {
+    await h.pool.stop();
+  }
+});

@@ -87,9 +87,18 @@
  * `--serial-turns`: like the real kiro-cli, the process runs one turn at a
  * time: a `session/prompt` arriving while another turn runs waits until it
  * ends (why each session gets its own process, D31).
+ *
+ * Sign-in state (`KIRO_FAKE_AUTH_FILE`): like the real CLI's credential
+ * store, a JSON file `{ "signedIn": bool, "loginCompletes": bool }` shared by
+ * every process (missing: signed in). `logout` signs out; `login` and
+ * `acp --login` sign in unless `loginCompletes` is false (a sign-in that
+ * ended before it completed). A process started while signed out answers
+ * `initialize` like kiro-cli 3.2.1 does then (`loadSession: false`, no
+ * session capabilities, its `kiro-login-terminal` method) and rejects every
+ * other request with -32000; one started signed in stays signed in.
  */
 import * as acp from "@agentclientprotocol/sdk";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
@@ -102,15 +111,29 @@ const recordingsDir = join(here, "..", "recordings");
 // ---------------------------------------------------------------------------
 
 const argv = process.argv.slice(2);
+/** The shared sign-in state (see the header); null: always signed in unless `--auth-required`. */
+const AUTH_FILE = process.env.KIRO_FAKE_AUTH_FILE || null;
+function readAuth() {
+  try {
+    return JSON.parse(readFileSync(AUTH_FILE, "utf8"));
+  } catch {
+    return { signedIn: true };
+  }
+}
+function writeAuth(patch) {
+  writeFileSync(AUTH_FILE, JSON.stringify({ ...readAuth(), ...patch }));
+}
 const standaloneLogin = argv[0] === "login";
 if (argv[0] === "acp") argv.shift();
 if (argv[0] === "logout") {
+  if (AUTH_FILE) writeAuth({ signedIn: false });
   process.stdout.write("fake kiro-cli: logged out\n");
   process.exit(0);
 }
 // Sign-in stand-ins: the fallback runs `<cliPath> login`; the advertised terminal
 // method appends `--login` to the agent invocation (`<cliPath> acp … --login`).
 if (standaloneLogin || argv.includes("--login")) {
+  if (AUTH_FILE && readAuth().loginCompletes !== false) writeAuth({ signedIn: true });
   process.stdout.write("fake kiro-cli: logged in\n");
   process.exit(0);
 }
@@ -272,7 +295,9 @@ function flattenOptions(options) {
 // Agent state
 // ---------------------------------------------------------------------------
 
-let authenticated = !config.authRequired;
+let authenticated = !config.authRequired && (!AUTH_FILE || readAuth().signedIn !== false);
+/** Started while the shared state said signed out: `initialize` answers like kiro-cli 3.2.1 signed out. */
+const signedOutLikeKiro = AUTH_FILE !== null && !authenticated;
 const sessions = new Map();
 let sessionCounter = 0;
 /**
@@ -911,6 +936,26 @@ const app = acp
       agentInfo: { name: "fake-kiro", title: "Fake Kiro", version: AGENT_VERSION },
       authMethods: [],
     };
+    if (signedOutLikeKiro) {
+      // Recorded from kiro-cli 3.2.1 signed out (2026-11-24, protocol-notes).
+      response.agentCapabilities = {
+        loadSession: false,
+        promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        mcpCapabilities: { http: false, sse: false },
+        sessionCapabilities: {},
+        auth: {},
+      };
+      response.authMethods = [
+        {
+          type: "terminal",
+          id: "kiro-login-terminal",
+          name: "Log in to Kiro",
+          description: "Runs `kiro-cli login` in a terminal",
+          args: ["--login"],
+        },
+      ];
+      return response;
+    }
     if (config.authAgentMethods) {
       response.authMethods = [
         { id: "aws-builder-id", name: "AWS Builder ID" },

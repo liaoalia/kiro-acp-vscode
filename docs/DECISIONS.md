@@ -500,6 +500,56 @@ Once the agent stops being ready, the remaining sessions are left for Past
 sessions. The fake agent's session ids now differ per process, as UUIDs do,
 so a restarted fake cannot hand out an id the old process used.
 
+**Addendum (0.4.4): a restart keeps the sessions.** A user reported that
+signing in from the banner emptied every tab (the sessions were still in
+Kiro and could be reopened from Past sessions), while signing in outside the
+extension lost nothing. The restart dropped every session first
+(`endAllSessions()`) and only then learned whether the new process could load
+them. When it could not, the loss was silent: a process started while Kiro
+is still signed out (the login terminal exited before Kiro had a usable
+token, or **Reconnect** was clicked first) answers `initialize` with
+`loadSession: false`, no session capabilities and its terminal method
+(recorded from kiro-cli 3.2.1, protocol-notes), so the restore logged
+"the agent cannot load sessions" and gave every tab a fresh session; the
+next sign-in had nothing left to restore. Restart, `/restart` and
+`Kiro: Restart` never restored at all, and `/login` while the agent was down
+lost the sessions in `ensureStarted()` before the sign-in began. Signing in
+elsewhere works because nothing restarts: the running processes read the new
+token from the CLI's store.
+
+Now every start of a new agent (a sign-in, Restart, `/restart`,
+`Kiro: Restart`, a changed `cliPath`, a start after the agent stopped) goes
+through `detachSessions()`: each session with a conversation stays with its
+transcript, handle, group, place in the list and the views that show it,
+marked as hosted by no process (`processLost`, as after a process exit,
+D31). Its turn ends ("Kiro restarted and the turn ended."), its queue is
+dropped, its permission requests are cancelled, its commands are killed and
+its agent-link token is revoked; its permission policies stay, as after a
+process exit. Empty, closing and still-loading sessions are dropped as
+before. Once the new agent is ready, `restoreKept()` loads the kept ones
+with `reloadSession()` (four at a time, focused, displayed, then the rest;
+the replayed history is dropped, the transcript has it), so a tab is not
+re-rendered and keeps its focus. A new agent that offers a sign-in and no
+`session/load` is taken as signed out: nothing is loaded, the pool is
+switched to `auth_required` (`KiroAgent.requireSignIn()`, which the spare
+answers as a rejected request would) with "Kiro is not signed in. Sign in to
+load your sessions again.", and each kept session says "This session is not
+loaded: Kiro is not signed in. It loads again once you sign in." (withdrawn
+once it loads). Sessions left when the agent stops being ready mid-way wait
+the same way. A `login()` that ends with the agent still asking for a
+sign-in adds "Signing in did not complete: …". A session the agent rejects
+for another reason is dropped and named in its tab, as before; one an agent
+without `session/load` (v2) cannot load is now named there too, not only in
+the output channel. `restart()` no longer takes `restoreSessions`, and
+`startOnce()` no longer takes `openSessions`: the kept sessions are loaded
+before `openFirstSessions()`, which opens a first session only when none is
+left. The fake agent gained a shared sign-in state (`KIRO_FAKE_AUTH_FILE`,
+set by `scripts/run-e2e.mjs`): `logout` signs out, `login` signs in unless
+the test says the sign-in does not complete, and a process started signed
+out answers `initialize` like kiro-cli 3.2.1. Covered by e2e F14.3 (an
+incomplete sign-in keeps the sessions, the next one loads them), F14.4
+(Restart keeps them) and F14.5 (a sign-in while the agent is down).
+
 ## D26. Context and token usage come from whatever the agent reports
 The header shows a usage pill ("42% ctx · 12k tokens", tooltip with the
 exact numbers) once anything is known about the displayed session. The
@@ -887,6 +937,8 @@ process per session. Plan: `docs/plans/2026-11-19-process-per-session.md`.
   (focused, displayed, the rest), each `ChatSession` is created and the
   focused one focused when its load starts, and every session keeps its old
   `updatedAt`: order and focus come out as before, whichever load ends first.
+  (Since 0.4.4 every restart does this, and the sessions stay in their tabs
+  while they load: D25 addendum 0.4.4.)
 - **Kept as it was.** `auth_required` from one process (its prompt was
   rejected as signed out) switches the whole connection to the sign-in
   banner and blocks prompts in every session; signing in restarts the pool

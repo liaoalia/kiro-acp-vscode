@@ -1,7 +1,10 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type * as acp from "@agentclientprotocol/sdk";
 import {
   AcpError,
@@ -1141,4 +1144,54 @@ describe("agent link: mcpServers and the fake agent's mcp_call", () => {
       await stub.close();
     }
   });
+});
+
+test("signed out like kiro-cli 3.2.1 (shared sign-in state): initialize offers its terminal login and no session/load; requireSignIn switches to auth_required", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "kiro-auth-"));
+  const file = join(dir, "auth.json");
+  writeFileSync(file, JSON.stringify({ signedIn: false }));
+  const previous = process.env.KIRO_FAKE_AUTH_FILE;
+  process.env.KIRO_FAKE_AUTH_FILE = file;
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    const info = await h.agent.start();
+    assert.equal(info.agentCapabilities.loadSession, false);
+    assert.deepEqual(
+      info.authMethods.map((m) => m.id),
+      ["kiro-login-terminal"],
+    );
+    assert.equal(h.agent.status, "ready", "initialize alone does not say signed out");
+
+    h.agent.requireSignIn("Kiro is not signed in.");
+    assert.equal(h.agent.status, "auth_required");
+    const change = h.changes[h.changes.length - 1];
+    assert.equal(change?.status, "auth_required");
+    assert.equal(change?.message, "Kiro is not signed in.");
+    assert.deepEqual(
+      h.agent.agent?.authMethods.map((m) => m.id),
+      ["kiro-login-terminal"],
+      "the agent's terminal method is the one offered",
+    );
+    const count = h.changes.length;
+    h.agent.requireSignIn("again");
+    assert.equal(h.changes.length, count, "no second change while already asking for a sign-in");
+  } finally {
+    await h.agent.stop();
+    if (previous === undefined) delete process.env.KIRO_FAKE_AUTH_FILE;
+    else process.env.KIRO_FAKE_AUTH_FILE = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("requireSignIn leaves a signed-in agent that is not ready alone, and a ready one asks for the sign-in", async () => {
+  const h = launch({ args: ["--scenario", "chat"] });
+  try {
+    h.agent.requireSignIn("not started");
+    assert.equal(h.agent.status, "stopped", "nothing to switch before start()");
+    await h.agent.start();
+    h.agent.requireSignIn("signed out");
+    assert.equal(h.agent.status, "auth_required");
+  } finally {
+    await h.agent.stop();
+  }
 });

@@ -95,9 +95,10 @@ only `kiro-cli` sessions holding a per-session token can use.
   stay in the input while you switch sessions, but are not kept across a
   window reload. Images in restored sessions are shown when small, otherwise
   as an `[image]` chip.
-- `Kiro: Restart Agent Process` (or `/restart`) stops every `kiro-cli`
-  process and ends the sessions (restore a past session to pick one up
-  again); signing in restores them by itself.
+- `Kiro: Restart Agent Process` (or `/restart`, or **Restart** on the error
+  banner) stops every `kiro-cli` process and starts again; every session
+  with a conversation stays in its tab and is loaded back into the new
+  process, as after a sign-in.
 
 ## Agents talking to each other
 
@@ -266,8 +267,11 @@ terminal method; otherwise a fresh sign-in: `kiro-cli logout`, then
 `kiro-cli login` — the expired token is never "refreshed"). When that process exits successfully the
 chat reconnects by itself (click **Reconnect** in the notification to do it
 sooner): the agent is respawned and every session with a conversation is
-restored into its chat tab, not only the one on screen. `/login` and
-`Kiro: Log In` do the same at any time.
+restored into its chat tab, not only the one on screen. Your sessions stay
+in their tabs even when the sign-in did not complete (the terminal was
+closed, or **Reconnect** clicked, before Kiro had a token): the chat says
+so, and they load as soon as you sign in. `/login` and `Kiro: Log In` do the
+same at any time.
 
 ## Install the extension (VSIX)
 
@@ -360,7 +364,7 @@ from `kiro-cli` (proxy errors appear there).
 | `Kiro: Open Past Session…` | Pick one of the agent's past sessions for this workspace and restore it |
 | `Kiro: Cancel Current Turn` | Send `session/cancel` |
 | `Kiro: Restart Agent Process` | Stop every `kiro-cli acp` process and start again (applies `kiroAcp.agentProcesses.max`) |
-| `Kiro: Log In (runs kiro-cli login)` | Open a terminal running the sign-in; when it exits (or on **Reconnect**) the agent is respawned and the open sessions restored |
+| `Kiro: Log In (runs kiro-cli login)` | Open a terminal running the sign-in; when it exits (or on **Reconnect**) the agent is respawned and the open sessions restored (they wait in their tabs if Kiro is still signed out) |
 | `Kiro: Send Selection to Kiro Chat` | Attach the current selection as a chip |
 | `Kiro: Open Plan` | Open (or re-open) the live plan document |
 | `Kiro: Accept Proposed Change` / `Reject Proposed Change` | Answer a pending diff permission |

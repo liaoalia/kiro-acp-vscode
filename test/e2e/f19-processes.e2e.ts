@@ -455,12 +455,14 @@ test("F19.6 a sign-in restores every session into a process of its own, loading 
     const p2 = processOf(api, "past-2");
     assert(p1.id !== p2.id, `each restored session has a process of its own (${p1.id}, ${p2.id})`);
     assert(!p1.spare && !p2.spare, "neither is the spare");
-    // Both loads start before either ends: `restoring` twice, then `restored`.
+    // Both loads start before either ends (the restart keeps the sessions and
+    // loads them again, D25 addendum 0.4.4): `loading it …` twice, then `loaded again`.
     const at = (text: string): number => output.lines.findIndex((l) => l.includes(text));
-    const restoring = [at("session past-1 restoring"), at("session past-2 restoring")];
-    const restored = [at("session past-1 restored"), at("session past-2 restored")];
-    assert(restoring.every((i) => i >= 0) && restored.every((i) => i >= 0), `restore lines: ${JSON.stringify(output.lines.filter((l) => l.includes("restor")))}`);
-    assert(Math.max(...restoring) < Math.min(...restored), `the loads ran in parallel: ${JSON.stringify(output.lines.filter((l) => l.includes("restor")))}`);
+    const restoring = [at("session past-1: loading it into"), at("session past-2: loading it into")];
+    const restored = [at("session past-1: loaded again"), at("session past-2: loaded again")];
+    const lines = JSON.stringify(output.lines.filter((l) => /past-[12]: (loading it|loaded again)/.test(l)));
+    assert(restoring.every((i) => i >= 0) && restored.every((i) => i >= 0), `restore lines: ${lines}`);
+    assert(Math.max(...restoring) < Math.min(...restored), `the loads ran in parallel: ${lines}`);
     const answered = await promptIn(api, "past-2", "/scenario chat");
     assert(agentText(answered).includes("The answer is 42."), "a restored session answers");
   });

@@ -593,12 +593,23 @@ export class KiroAgentImpl implements KiroAgent {
   private markAuthRequired(request: string, err: AcpError): void {
     if (!this._agent || !this.connection) return;
     this.options.logger.warn(`${request} rejected (${err.code ?? "no code"}): ${err.message}; sign-in required`);
+    this.switchToSignIn(err.message);
+  }
+
+  requireSignIn(message: string): void {
+    if (this._status !== "ready" || !this._agent || !this.connection) return;
+    this.options.logger.warn("signed out (initialize offers a sign-in and no session/load): sign-in required");
+    this.switchToSignIn(message);
+  }
+
+  private switchToSignIn(message: string): void {
+    if (!this._agent) return;
     // Only a terminal login is offered. Kiro 3.x also advertises `aws-builder-id` /
     // `aws-iam-identity-center`, but its `authenticate` merely tries to refresh the
     // cached token, which is exactly what just failed: a dead end for the user.
     const terminal = this._agent.authMethods.filter(isTerminalMethod);
     this._agent = { ...this._agent, authMethods: terminal.length > 0 ? terminal : [FALLBACK_LOGIN_METHOD] };
-    this.setStatus("auth_required", { agent: this._agent, message: err.message });
+    this.setStatus("auth_required", { agent: this._agent, message });
   }
 
   async authenticate(methodId: string): Promise<void> {

@@ -251,11 +251,17 @@ const STDERR_NOTICE_INTERVAL_MS = 60_000;
 const DEFAULT_MAX_PROCESSES = 8;
 const MAX_PROCESSES_LIMIT = 32;
 /**
- * Sessions a sign-in restore loads at the same time (D25, D31): each load
+ * Sessions a restart loads back at the same time (D25, D31): each load
  * starts a process of its own, so a few at once bring a full window back
  * faster without spawning every process in the same instant.
  */
 const RESTORE_CONCURRENCY = 4;
+/** `processLost` of the sessions a restart keeps until the new agent loads them (D25 addendum 0.4.4). */
+const RESTART_REASON = "Kiro restarted";
+/** The sign-in banner's text when the new agent is not signed in and sessions wait for it. */
+const SIGNED_OUT_MESSAGE = "Kiro is not signed in. Sign in to load your sessions again.";
+/** The notice of a kept session that waits for the sign-in. */
+const SIGNED_OUT_NOTICE = "This session is not loaded: Kiro is not signed in. It loads again once you sign in.";
 /**
  * A turn that failed this shortly before its process's exit was reported
  * failed by that exit (the connection closed first): the exit notice
@@ -280,25 +286,13 @@ interface QueuedPrompt {
   fromSessionId?: string;
 }
 
-/**
- * A live session that a sign-in restart loads back (`session/load`) into the
- * new agent process: into its group, shown again by the views that showed it,
- * at its old place in the session list (D25).
- */
-interface RestoreEntry {
-  sessionId: string;
-  /** Its agent-link handle (`s3`): the agents keep addressing it by the same name (D30). */
-  handle: string;
+/** A session a restart kept but the new agent could not load (D25): what its tab is told. */
+interface UnrestoredSession {
   groupId: string;
-  agentTitle: string | null;
-  /** Its title before the restart, for a failure notice. */
+  /** Its title before the restart. */
   title: string;
-  /** Kept across the restore, so the session list keeps its order. */
-  updatedAt: number;
-  /** The views that displayed it. */
-  views: ViewBinding[];
-  /** It was the focused session. */
-  focused: boolean;
+  sessionId: string;
+  message: string;
 }
 
 const TURN_ACTIVE_KEY = "kiroAcp.turnActive";
@@ -422,6 +416,11 @@ class ChatSession {
   processLost: string | null = null;
   /** That `session/load` while in flight; its replayed history is dropped (the transcript has it). */
   reload: Promise<string | null> | null = null;
+  /**
+   * The notice saying that a restart kept this session but could not load it
+   * yet (signed out, the agent went away): withdrawn once a process hosts it.
+   */
+  restoreNotice: string | null = null;
   /**
    * The "Prompt failed" notice of the last turn and the `turnGeneration` its
    * end left: a process exit that arrives after the failure it caused
@@ -1055,20 +1054,19 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     return process.cwd();
   }
 
-  /** Start the agent process (idempotent) and open a first session when none exists. */
+  /**
+   * Start the agent process (idempotent): the sessions kept from a previous
+   * agent are loaded back, then a first session opens when none exists.
+   */
   async ensureStarted(): Promise<void> {
-    return this.startOnce(true);
+    return this.startOnce();
   }
 
-  /**
-   * {@link ensureStarted}. With `openSessions: false` the new process opens
-   * no first session and gives the views none: a sign-in restart hands them
-   * their own sessions back instead. A start already in flight is joined as is.
-   */
-  private startOnce(openSessions: boolean): Promise<void> {
+  /** {@link ensureStarted}; a start already in flight is joined as is. */
+  private startOnce(): Promise<void> {
     if (this.starting) return this.starting;
     if (this.agent && this.agent.status !== "stopped" && this.agent.status !== "error") return Promise.resolve();
-    this.starting = this.startAgent(openSessions).finally(() => {
+    this.starting = this.startAgent().finally(() => {
       this.starting = null;
     });
     return this.starting;
@@ -1083,7 +1081,7 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     await this.assignPendingViews();
   }
 
-  private async startAgent(openSessions: boolean): Promise<void> {
+  private async startAgent(): Promise<void> {
     const config = vscode.workspace.getConfiguration("kiroAcp");
     const configured = config.get<string>("cliPath", "kiro-cli");
     const extraArgs = config.get<string[]>("cliArgs", []);
@@ -1104,9 +1102,11 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       this.deps.services,
       { maxProcesses },
     );
-    // Sessions belong to the processes; a new pool starts without any, and
-    // the old capabilities / auth methods must not leak into its `starting` view.
-    this.endAllSessions();
+    // Sessions belong to the processes: the new pool starts without any, but
+    // every session with a conversation stays in its tab and is loaded back
+    // below (D25 addendum 0.4.4). The old capabilities / auth methods must not
+    // leak into the new pool's `starting` view.
+    const kept = this.detachSessions();
     await this.teardownAgent();
     this.agentInfo = null;
     this.agentLinkRefused = false;
@@ -1119,7 +1119,20 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     try {
       this.agentInfo = await agent.start();
       this.setConnection(this.connectionFromAgent("ready"));
-      if (openSessions) await this.openFirstSessions();
+      const failed = await this.restoreKept(agent, kept);
+      if (this.agent !== agent) return;
+      await this.openFirstSessions();
+      if (!this.focusedId) {
+        const shown = this.focusedView?.sessionId ?? this.sortedSessions()[0]?.id ?? null;
+        if (shown) this.focus(shown);
+      }
+      for (const { groupId, title, sessionId, message } of failed) {
+        // Told in the tab the session belonged to, which shows another session
+        // by now; a group no view lists has the output-channel line only.
+        const view = [...this.views].find((v) => !v.follows && v.groupId === groupId && v.displayed !== null);
+        const target = view?.displayed ? (this.sessions.get(view.displayed) ?? null) : null;
+        if (target) this.notice(target, "warning", `Could not restore session "${title}" (${sessionId}): ${message}`);
+      }
     } catch (error) {
       const message = errorMessage(error);
       logger.error(`agent start failed: ${message}`);
@@ -1165,124 +1178,190 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
   }
 
   /**
-   * Spawn a fresh agent process. With `restoreSessions` (a sign-in) every
-   * session with a conversation is loaded back (`session/load`) once the new
-   * process is ready: into its group, shown again by the views that showed
-   * it, so a sign-in loses neither a tab's open conversation nor the others in
-   * its session list (D25). Views left without a session get a fresh one.
+   * Stop the agent and start a fresh one (Restart, `/restart`, `Kiro:
+   * Restart`, a sign-in). Every session with a conversation stays in its tab
+   * (transcript, handle, place in the list, the views that show it) and is
+   * loaded back into the new agent (`session/load`, D25): a restart loses no
+   * conversation a tab shows or lists. Views left without a session get a
+   * fresh one.
    */
-  async restart(options: { restoreSessions?: boolean } = {}): Promise<void> {
-    const plan = options.restoreSessions ? this.restorePlan() : [];
-    this.endAllSessions();
+  async restart(): Promise<void> {
+    this.detachSessions();
     await this.teardownAgent();
     this.contextPollUnsupported = false;
     this.setConnection({ status: "stopped" });
-    // With sessions to bring back, the new process opens no session of its
-    // own first: it would linger as an empty "New session" in the focused tab.
-    await this.startOnce(plan.length === 0);
-    const agent = this.agent;
-    if (plan.length === 0 || !agent || !this.agentInfo) return;
-    let failed: Array<{ entry: RestoreEntry; message: string }> = [];
-    if (this.agentInfo.agentCapabilities.loadSession === true) {
-      failed = await this.restoreSessions(agent, plan);
-    } else {
-      this.deps.output.appendLine(`[warn] the agent cannot load sessions: ${plan.length} session(s) not restored`);
-    }
-    if (this.agent !== agent) return;
-    await this.openFirstSessions();
-    const shown = this.focusedView?.sessionId ?? null;
-    if (shown) this.focus(shown);
-    else if (!this.focusedId) {
-      const newest = this.sortedSessions()[0];
-      if (newest) this.focus(newest.id);
-    }
-    for (const { entry, message } of failed) {
-      // Told in the tab the session belonged to, which shows a fresh session
-      // by now; a group no view lists has the output-channel line only.
-      const view = [...this.views].find((v) => !v.follows && v.groupId === entry.groupId && v.displayed !== null);
-      const target = view?.displayed ? (this.sessions.get(view.displayed) ?? null) : null;
-      if (target) this.notice(target, "warning", `Could not restore session "${entry.title}" (${entry.sessionId}): ${message}`);
-    }
+    await this.startOnce();
   }
 
   /**
-   * What a sign-in restart brings back: every live session with a
-   * conversation (an empty one is not worth a `session/load`), the focused
-   * one first, then the displayed ones, then the rest, most recent first.
-   * Sessions still restoring or closing are left out: their own pending
-   * request ends with the old process and cleans up after itself.
+   * The agent is going away (a restart, a sign-in, a start after it
+   * stopped). Every session with a conversation stays: its transcript,
+   * handle, group, place in the list and the views that show it, marked as
+   * hosted by no process (as after a process exit, D31) until the new agent
+   * loads it back ({@link restoreKept}). Its turn ends, its queue is
+   * dropped, its permission requests are cancelled, its commands are killed
+   * and its agent-link token is revoked. Dropped instead: sessions without a
+   * conversation (an empty one may never have been saved, and a fresh one
+   * costs the same), closing ones, and ones still loading (their own
+   * `session/load` fails with the old process and cleans up after itself).
+   * Returns the kept sessions in restore order: the focused one, the
+   * displayed ones, then the rest, most recent first. Calling it again
+   * keeps the same sessions.
    */
-  private restorePlan(): RestoreEntry[] {
-    const entries: RestoreEntry[] = [];
+  private detachSessions(): ChatSession[] {
+    const displayed = new Set<string>();
+    for (const view of this.views) {
+      if (!view.follows && view.displayed) displayed.add(view.displayed);
+    }
+    const kept: ChatSession[] = [];
+    const dropped: string[] = [];
+    const ids: string[] = [];
     for (const session of this.sortedSessions()) {
-      if (session.loading || session.closing || session.transcript.items.length === 0) continue;
-      entries.push({
-        sessionId: session.id,
-        handle: session.handle,
-        groupId: session.groupId,
-        agentTitle: session.agentTitle,
-        title: session.title(),
-        updatedAt: session.updatedAt,
-        views: [...this.views].filter((v) => !v.follows && v.displayed === session.id),
-        focused: session.id === this.focusedId,
-      });
+      const id = session.id;
+      ids.push(id);
+      this.deps.permissions.cancelAll(id);
+      this.revokeLink(id);
+      if (session.closing || session.loading || session.transcript.items.length === 0) {
+        dropped.push(id);
+        continue;
+      }
+      kept.push(session);
+      const hosted = session.processLost === null;
+      if (hosted) {
+        session.processLost = RESTART_REASON;
+        session.lastFailure = null;
+      }
+      // A turn may also be waiting for the session's load into the old agent (D31).
+      if (session.turnActive) {
+        this.endTurn(session, "error");
+        this.notice(session, "warning", "Kiro restarted and the turn ended.");
+      } else if (hosted) {
+        this.discardQueue(session, this.discardRemaining(session));
+      }
     }
-    const rank = (e: RestoreEntry): number => (e.focused ? 0 : e.views.length > 0 ? 1 : 2);
-    return entries.sort((a, b) => rank(a) - rank(b));
+    // The processes that started their commands are going away, and the
+    // commands are ours (children of the extension host), so they stop too —
+    // as on close (revmux round 23).
+    void Promise.all(ids.map((id) => this.deps.terminal.killSession(id))).then(
+      (killed) => {
+        const all = killed.flat();
+        if (all.length > 0) this.deps.output.appendLine(`[info] killed running terminal(s) ${all.join(", ")} (Kiro restarted)`);
+      },
+      (error: unknown) => this.deps.output.appendLine(`[warn] killing the sessions' terminals failed: ${errorMessage(error)}`),
+    );
+    for (const id of dropped) {
+      this.deps.permissions.clearPolicies(id);
+      this.sessions.delete(id);
+      // Waits on it end `closed` (D30).
+      this.forgetLinkSession(id);
+      if (this.focusedId === id) this.clearFocus();
+      for (const view of this.views) {
+        if (view.follows || view.displayed !== id) continue;
+        view.displayed = null;
+        this.postSessionState(view, null);
+      }
+    }
+    if (kept.length > 0) {
+      this.deps.output.appendLine(`[info] ${kept.length} session(s) kept for the new agent: ${kept.map((s) => s.id).join(", ")}`);
+    }
+    // Waits on the kept ones end `idle`, as after a process exit (D30, D31).
+    this.notifyLinkWaiters();
+    this.scheduleSessions();
+    const rank = (s: ChatSession): number => (s.id === this.focusedId ? 0 : displayed.has(s.id) ? 1 : 2);
+    return kept.sort((a, b) => rank(a) - rank(b));
   }
 
   /**
-   * Load the {@link restorePlan} back into the new agent, up to
-   * {@link RESTORE_CONCURRENCY} sessions at a time, each into a process of
-   * its own (D31). They start in plan order, so the focused and the
-   * displayed ones come first, and each `ChatSession` is created (and the
-   * focused one focused) synchronously when its load starts; every session
-   * keeps its old `updatedAt`, so the list order does not depend on which
-   * load finishes first. A view shows its session again unless it shows
-   * another one by now. Returns the sessions the agent could not load, in
-   * plan order; a session whose tab was closed meanwhile, or that something
-   * else restored already, is skipped, and once the agent is no longer ready
-   * (it exited, or wants a sign-in again) the rest are left for Past sessions.
+   * Load the sessions {@link detachSessions} kept back into the new agent,
+   * up to {@link RESTORE_CONCURRENCY} at a time, each into a process of its
+   * own (D31), in restore order. Each keeps its `ChatSession` (the history
+   * the agent replays is dropped: the transcript shows it already) and its
+   * `updatedAt`, so the list order does not depend on which load ends first.
+   * A Kiro that is not signed in offers a sign-in and no `session/load` in
+   * `initialize` (protocol-notes): then none is loaded, the connection asks
+   * for the sign-in and the sessions wait for it, as do the ones left when
+   * the agent stops being ready on the way. Returns the sessions the agent
+   * could not load, dropped by now, in restore order.
    */
-  private async restoreSessions(
-    agent: AgentPool,
-    plan: readonly RestoreEntry[],
-  ): Promise<Array<{ entry: RestoreEntry; message: string }>> {
-    const failed: Array<{ entry: RestoreEntry; message: string } | undefined> = [];
+  private async restoreKept(agent: AgentPool, kept: readonly ChatSession[]): Promise<UnrestoredSession[]> {
+    const waiting = (s: ChatSession): boolean => this.sessions.get(s.id) === s && !s.closing && this.unhosted(s);
+    const queue = kept.filter(waiting);
+    if (queue.length === 0) return [];
+    const info = agent.agent;
+    if (info?.agentCapabilities.loadSession !== true) {
+      if (info && info.authMethods.length > 0) {
+        this.deps.output.appendLine(
+          `[warn] Kiro is not signed in (initialize offers a sign-in and no session/load): ${queue.length} session(s) wait for the sign-in`,
+        );
+        agent.requireSignIn(SIGNED_OUT_MESSAGE);
+        for (const session of queue) this.noteNotRestored(session, SIGNED_OUT_NOTICE);
+        return [];
+      }
+      const message = "the agent cannot load sessions (no `loadSession` capability)";
+      this.deps.output.appendLine(`[warn] ${message}: ${queue.length} session(s) not restored`);
+      return queue.map((session) => this.dropUnrestored(session, message));
+    }
+    const failed: Array<UnrestoredSession | undefined> = [];
     let next = 0;
-    let halted = false;
     const worker = async (): Promise<void> => {
-      while (!halted && next < plan.length) {
+      while (next < queue.length) {
+        if (this.agent !== agent || agent.status !== "ready") return;
         const index = next++;
-        const entry = plan[index]!;
-        if (this.agent !== agent || agent.status !== "ready") {
-          halted = true;
-          this.deps.output.appendLine(`[warn] ${plan.length - index} session(s) not restored: the agent is ${agent.status}`);
-          return;
-        }
-        if (this.closedGroups.has(entry.groupId) || this.sessions.has(entry.sessionId)) continue;
-        const result = await this.loadInto(agent, entry.sessionId, {
-          handle: entry.handle,
-          groupId: entry.groupId,
-          views: entry.views.filter((v) => this.views.has(v) && v.displayed === null),
-          focus: entry.focused,
-          agentTitle: entry.agentTitle,
-          updatedAt: entry.updatedAt,
-          fallback: null,
-        });
-        if (typeof result !== "string") continue;
-        failed[index] = { entry, message: result };
-        if (this.focusedId === entry.sessionId) this.clearFocus();
+        const session = queue[index]!;
+        if (!waiting(session)) continue; // closed, or loaded by its own next message
+        // A load into the old agent still in flight fails with it: wait for that first.
+        if (session.reload) await session.reload;
+        if (!waiting(session)) continue;
+        if (this.agent !== agent || agent.status !== "ready") return;
+        const failure = await this.reloadSession(session);
+        if (failure === null || !waiting(session)) continue;
+        // Rejected as signed out (or the agent went away): it waits with the rest.
+        if (this.agent !== agent || agent.status !== "ready") continue;
+        failed[index] = this.dropUnrestored(session, failure);
       }
     };
-    const workers = Math.min(RESTORE_CONCURRENCY, plan.length);
-    await Promise.all(Array.from({ length: workers }, () => worker()));
-    return failed.filter((f): f is { entry: RestoreEntry; message: string } => f !== undefined);
+    await Promise.all(Array.from({ length: Math.min(RESTORE_CONCURRENCY, queue.length) }, () => worker()));
+    const left = queue.filter(waiting);
+    if (left.length > 0 && this.agent === agent) {
+      this.deps.output.appendLine(`[warn] ${left.length} session(s) not restored yet: the agent is ${agent.status}`);
+      const text =
+        agent.status === "auth_required"
+          ? SIGNED_OUT_NOTICE
+          : `This session is not loaded: Kiro is ${agent.status}. It loads again with your next message or the next restart.`;
+      for (const session of left) this.noteNotRestored(session, text);
+    }
+    return failed.filter((f): f is UnrestoredSession => f !== undefined);
+  }
+
+  /** Say on a kept session why it is not loaded yet; one such notice at a time, withdrawn once it is. */
+  private noteNotRestored(session: ChatSession, text: string): void {
+    if (session.restoreNotice) this.clearNotice(session, session.restoreNotice);
+    session.restoreNotice = this.notice(session, "info", text).id;
+  }
+
+  /** A kept session the new agent could not load: forgotten, its views emptied (a fresh session follows). */
+  private dropUnrestored(session: ChatSession, message: string): UnrestoredSession {
+    const id = session.id;
+    this.deps.output.appendLine(`[error] session ${id} restore failed: ${message}`);
+    this.sessions.delete(id);
+    this.deps.permissions.cancelAll(id);
+    this.deps.permissions.clearPolicies(id);
+    this.revokeLink(id);
+    this.forgetLinkSession(id);
+    // No process keeps it (D31); a no-op when the pool never bound it.
+    this.agent?.releaseSession(id);
+    if (this.focusedId === id) this.clearFocus();
+    for (const view of this.views) {
+      if (!view.follows && view.displayed === id) this.setViewSession(view, null);
+    }
+    this.scheduleSessions();
+    return { groupId: session.groupId, title: session.title(), sessionId: id, message };
   }
 
   /**
    * Stop the agent process without forgetting the sessions: they stay listed
-   * with status `error` until {@link restart}, exactly as after a crash.
+   * with status `error` until {@link restart} loads them back, exactly as
+   * after a crash.
    * (Used by the integration tests to simulate an agent exit.)
    */
   async shutdownAgent(): Promise<void> {
@@ -2355,36 +2434,6 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
     }
   }
 
-  /** Forget every session (agent restart). */
-  private endAllSessions(): void {
-    const ids = [...this.sessions.keys()];
-    for (const session of this.sessions.values()) {
-      this.deps.permissions.cancelAll(session.id);
-      this.deps.permissions.clearPolicies(session.id);
-      this.revokeLink(session.id);
-    }
-    // The processes that started their commands are going away, and the
-    // commands are ours (children of the extension host), so they stop too —
-    // as on close (revmux round 23).
-    void Promise.all(ids.map((id) => this.deps.terminal.killSession(id))).then(
-      (killed) => {
-        const all = killed.flat();
-        if (all.length > 0) this.deps.output.appendLine(`[info] killed running terminal(s) ${all.join(", ")} (sessions ended)`);
-      },
-      (error: unknown) => this.deps.output.appendLine(`[warn] killing the sessions' terminals failed: ${errorMessage(error)}`),
-    );
-    this.sessions.clear();
-    // Waits on them end `closed`; a restored session starts with no consents or rate history (D30).
-    for (const id of ids) this.forgetLinkSession(id);
-    for (const view of this.views) {
-      if (view.follows || view.displayed === null) continue;
-      view.displayed = null;
-      this.postSessionState(view, null);
-    }
-    this.clearFocus();
-    this.scheduleSessions();
-  }
-
   /**
    * Create a session (keeping the others), focus it and display it in
    * `view` (or the focused view). Returns the new session id, or null when
@@ -2774,6 +2823,10 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       }
       if (grant) this.keepLinkGrant(id, grant);
       session.processLost = null;
+      if (session.restoreNotice) {
+        this.clearNotice(session, session.restoreNotice);
+        session.restoreNotice = null;
+      }
       this.applySessionState(session, state);
       const host = agent.processes().find((p) => p.sessionIds.includes(id));
       this.deps.output.appendLine(
@@ -3757,7 +3810,15 @@ export class ChatController implements vscode.Disposable, AgentLinkHost {
       FALLBACK_LOGIN_METHOD.id;
     try {
       await agent.authenticate(id);
-      await this.restart({ restoreSessions: true });
+      await this.restart();
+      if (this.agent?.status === "auth_required") {
+        // The login ended (or Reconnect was clicked) before Kiro had a usable token.
+        this.notice(
+          null,
+          "warning",
+          "Signing in did not complete: Kiro still reports that you are not signed in. Your sessions stay and load once you sign in.",
+        );
+      }
     } catch (error) {
       this.notice(null, "error", `Sign-in failed: ${errorMessage(error)}`);
     }

@@ -76,6 +76,29 @@ fallback method runs. After the terminal login completes the client must
 **reconnect** (spawn a new process). The exact error code is **[unverified]**; the extension treats any
 `session/new` failure while `authMethods` is non-empty as "auth required".
 
+**Recorded 2026-11-24 (kiro-cli 3.2.1, Windows, signed out, no token):**
+`initialize` answers
+
+```json
+{"protocolVersion":1,
+ "agentCapabilities":{"loadSession":false,
+   "promptCapabilities":{"image":false,"audio":false,"embeddedContext":false},
+   "mcpCapabilities":{"http":false,"sse":false},"sessionCapabilities":{},"auth":{}},
+ "authMethods":[{"type":"terminal","id":"kiro-login-terminal","name":"Log in to Kiro",
+   "description":"Runs `kiro-cli login` in a terminal","args":["--login"]}],
+ "agentInfo":{"name":"Kiro CLI Agent","title":"Kiro CLI Agent","version":"3.2.1"}}
+```
+
+and `session/list`, `session/load` and `session/new` all fail with
+`-32000` "Authentication required. Not logged in. Set the KIRO_API_KEY
+environment variable or run `kiro-cli login` first. Then reconnect to start
+the Kiro agent." (stderr: "Not logged in. …"). So a signed-out process is
+recognisable from `initialize` alone: a sign-in method and no `loadSession`.
+The extension relies on that only after a restart with sessions to load
+back (D25 addendum 0.4.4): it then switches to the sign-in banner instead of
+dropping the sessions. Signed in, the same CLI advertises `loadSession: true`
+and no `authMethods`.
+
 **Observed 2026-11-11 (Kiro CLI 3.x, V3, cached token expired):** `initialize`
 returned **no** `authMethods`, `session/new` succeeded, and the first
 `session/prompt` failed with the JSON-RPC error message
@@ -397,7 +420,9 @@ signed-in machine, record:
   sessions whether the cancelled turn was saved before its process stopped.
 - **Sign-in.** With several tabs open, sign in again (`/login`): every
   session comes back, each in its own process (the loads run four at a
-  time).
+  time). Also click **Reconnect** before finishing the sign-in (0.4.4): the
+  tabs keep their sessions, the banner says Kiro is not signed in, and the
+  sign-in that follows loads them. And **Restart**: the tabs keep theirs.
 - **Shared MCP servers.** Every process starts the user's configured MCP
   servers of its own: check that several processes running the same local
   MCP server (a stdio server, a port-binding server) do not conflict.
